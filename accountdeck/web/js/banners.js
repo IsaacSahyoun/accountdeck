@@ -12,8 +12,8 @@
   const { STRINGS, fill } = AD.format;
 
   const DEV_KINDS = new Set(['demo', 'safe_mode']);
-  // The page shows only Claude Code (terminal) accounts: banners that exist for Codex alone stay off it.
-  const offPage = (b) => b.provider === 'codex';
+  // The page shows only Claude Code (terminal) accounts: banners that exist for Codex or Muse alone stay off it.
+  const offPage = (b) => b.provider === 'codex' || b.provider === 'muse';
   const LOOK = {
     outage: ['warning', 'warning'], degraded: ['warning', 'warning'], recovery: ['warning', 'warning'],
     paused: ['pause', 'info'], self_protect: ['stop', 'warning'], read_only: ['lock', 'warning'],
@@ -212,12 +212,12 @@
 
   function loginItem(state) {
     const login = state.login;
-    const codex = login.provider === 'codex';
+    const [title, text] = AD.switch.loginText(login);
+    // The code to compare stays visible after the sign-in dialog closes or the page reloads.
+    const message = login.user_code ? `${text} ${fill(STRINGS.login.deviceCode, { code: login.user_code })}` : text;
     return {
       key: `login:${login.provider}`, sig: JSON.stringify(login),
-      build: () => banner({ kind: 'login', icon: 'info', level: 'info',
-        title: codex ? STRINGS.login.codexTitle : STRINGS.login.claudeTitle,
-        message: codex ? STRINGS.login.codex : STRINGS.login.claude,
+      build: () => banner({ kind: 'login', icon: 'info', level: 'info', title, message,
         actions: AD.switch.loginActions(login, { small: true }) }),
     };
   }

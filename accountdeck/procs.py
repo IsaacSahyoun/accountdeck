@@ -53,8 +53,9 @@ __all__ = [
 ]
 
 KINDS = ("claude_desktop", "claude_code", "claude_foreign", "claude_unknown", "codex_tui", "codex_daemon",
-         "codex_daemon_updater", "codex_app_server_child", "codex_desktop", "other")
+         "codex_daemon_updater", "codex_app_server_child", "codex_desktop", "muse_session", "muse_host", "other")
 CONSUMER_KINDS = frozenset({"codex_tui", "codex_app_server_child", "codex_desktop"})
+MUSE_KINDS = frozenset({"muse_session", "muse_host"})     # every Muse process uses the Muse login
 STOPPABLE_CONSUMER_KINDS = frozenset({"codex_tui", "codex_app_server_child"})
 
 # ---- what this Mac's processes are called (docs/mac/PLAN.md §1.2, §8), compared lower-case ----
@@ -70,17 +71,21 @@ CODEX_APP_NAMES = frozenset({"chatgpt"})
 CODEX_APP_BUNDLE_IDS = frozenset({"com.openai.codex"})
 NOT_CLAUDE_NAMES = frozenset({"chrome-native-host", "cowork-svc", "shipit"})
 PROTECTED_NAMES = frozenset({"chrome-native-host", "cowork-svc", "chatgpt", "shipit"})   # never signalled
-CMDLINE_NAMES = frozenset({"codex", "chatgpt"})            # the only rows whose argv is read
-INSPECTED_NAMES = CLAUDE_NAMES | CODEX_NAMES | CODEX_APP_NAMES | NOT_CLAUDE_NAMES
+# Muse Code runs as ~/.local/bin/muse-bin-<version> (its launcher `exec`s it), so such a row is "muse".
+MUSE_NAMES = frozenset({"muse"})
+CMDLINE_NAMES = frozenset({"codex", "chatgpt", "muse"})    # the only rows whose argv is read
+INSPECTED_NAMES = CLAUDE_NAMES | CODEX_NAMES | CODEX_APP_NAMES | NOT_CLAUDE_NAMES | MUSE_NAMES
 # Claude Desktop's bundled Claude Code: ~/Library/Application Support/Claude/claude-code/<version>/claude.
 CODE_CHILD_PATH = re.compile(r"/claude/claude-code/[^/]+/claude$", re.IGNORECASE)
 # The native installer's Claude Code runs as ~/.local/share/claude/versions/<version>, so its executable is
 # named by the version: such a row is "claude".
 NATIVE_CLAUDE_PATH = re.compile(r"/\.local/share/claude/versions/[^/]+$")
 CODEX_APP_PATH = re.compile(r"(?:^|/)ChatGPT\.app/Contents/", re.IGNORECASE)   # if its plist is unreadable
+MUSE_BIN_PATH = re.compile(r"/muse-bin-[^/]+$")     # Muse Code's binary, whatever its version string
 
 MAX_DESKTOP_ROWS = 40
-API_KEY_NAMES = ("OPENAI_API_KEY", "CODEX_API_KEY")
+# META_API_KEY takes priority over Muse's account login, so no helper may inherit it.
+API_KEY_NAMES = ("OPENAI_API_KEY", "CODEX_API_KEY", "META_API_KEY")
 PIPE, DEVNULL = subprocess.PIPE, subprocess.DEVNULL   # spawn() stdio for callers, which may not name subprocess
 READY_FOR_QUIT = "marking readyForQuit"
 QUIT_STARTED_LINE = "Starting onQuitCleanup, hiding windows"
@@ -115,6 +120,8 @@ def process_name(path: str | None, fallback: str = "") -> str:
         return fallback
     if NATIVE_CLAUDE_PATH.search(path):
         return "claude"
+    if MUSE_BIN_PATH.search(path):
+        return "muse"
     return path.rpartition("/")[2] or fallback
 
 
@@ -304,6 +311,14 @@ def _kind(row: ProcessInfo, desktop: dict, paths) -> str:
         return "codex_app_server_child"
     if name in CODEX_APP_NAMES and row.family == "?":
         return "codex_desktop"   # cannot tell whether it is the Codex app: count it as a consumer
+    if name in MUSE_NAMES and MUSE_BIN_PATH.search(str(row.path or "")):
+        # Only Muse Code's own binary counts: another program named muse (a Mac app, a Homebrew tool) is not it.
+        # `muse serve` is a session host an editor or app keeps running; anything else is a terminal session.
+        try:
+            words = shlex.split(row.cmdline or "")
+        except ValueError:
+            words = []
+        return "muse_host" if len(words) > 1 and words[1] == "serve" else "muse_session"
     return "other"
 
 
@@ -506,6 +521,13 @@ class ProcessController(abc.ABC):
         excluded = self._helper_tree() if rows else set()
         return [row for row in rows if (row.pid, row.ctime) not in excluded]
 
+    def muse_consumers(self, rows=None) -> list[ProcessInfo]:
+        """Muse processes using the Muse login (in `rows`, or a fresh snapshot); AccountDeck's own Muse probes
+        and sign-ins (spawn_helper children) do not count."""
+        rows = [row for row in (self.snapshot() if rows is None else rows) if row.kind in MUSE_KINDS]
+        excluded = self._helper_tree() if rows else set()
+        return [row for row in rows if (row.pid, row.ctime) not in excluded]
+
     def codex_daemon(self) -> ProcessInfo | None:
         daemons = self.classify(self.snapshot())["codex_daemon"]
         return daemons[0] if daemons else None
@@ -540,16 +562,17 @@ class ProcessController(abc.ABC):
 
     # ---- spawn ----
     def spawn(self, args, *, cwd=None, env=None, stdin=None, stdout=None, stderr=None, text=None, encoding=None,
-              strip_api_keys=False) -> subprocess.Popen:
-        """Starts a process. `env` holds overrides merged onto this process's environment. In safe mode
-        only this Python or an executable under a test root may start (checked before anything else)."""
+              strip_api_keys=False, remove_env=()) -> subprocess.Popen:
+        """Starts a process. `env` holds overrides merged onto this process's environment, after the names in
+        `remove_env` (and with `strip_api_keys` the API keys) were dropped from it. In safe mode only this
+        Python or an executable under a test root may start (checked before anything else)."""
         argv = [os.fspath(arg) for arg in args]
         if not argv:
             raise DeckError("There is nothing to start.", "invalid")
         _check_spawn_target(argv[0])
         environment = None
-        if env or strip_api_keys:
-            environment = config.child_env(remove=API_KEY_NAMES if strip_api_keys else (),
+        if env or strip_api_keys or remove_env:
+            environment = config.child_env(remove=(API_KEY_NAMES if strip_api_keys else ()) + tuple(remove_env),
                                            **{str(key): str(value) for key, value in (env or {}).items()})
         process = _popen(argv, cwd=cwd, env=environment, stdin=stdin, stdout=stdout, stderr=stderr, text=text,
                          encoding=encoding)
@@ -750,6 +773,14 @@ class FakeProcessController(ProcessController):
         """Claude Code in a terminal, as the native installer runs it (named by its version)."""
         path = Path(self.paths.home) / ".local" / "share" / "claude" / "versions" / self.CLAUDE_CODE_VERSION
         return self.add_row("claude", path=path, parent=1)
+
+    MUSE_VERSION = "1.4.13-R6996.1"
+
+    def add_muse(self, kind: str = "muse_session", *, parent: int = 1) -> ProcessInfo:
+        """A Muse Code process of the given kind (muse_session: a terminal session; muse_host: `muse serve`)."""
+        exe = Path(self.paths.home) / ".local" / "bin" / f"muse-bin-{self.MUSE_VERSION}"
+        arguments = {"muse_session": [], "muse_host": ["serve"]}[kind]
+        return self.add_row("muse", path=exe, parent=parent, cmdline=shlex.join([str(exe), *arguments]))
 
     def add_codex(self, kind: str = "codex_tui", *, parent: int = 1) -> ProcessInfo:
         """A Codex process of the given kind (codex_tui, codex_daemon, codex_daemon_updater,

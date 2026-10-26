@@ -17,15 +17,15 @@
 
   const STRINGS = freeze({
     app: 'AccountDeck 2',
-    apps: { claude: 'Claude Desktop', codex: 'Codex', claude_cli: 'Claude Code' },
-    provider: { claude: 'Claude', codex: 'Codex', claude_cli: 'Claude Code' },
+    apps: { claude: 'Claude Desktop', codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse Code' },
+    provider: { claude: 'Claude', codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse' },
 
     shell: {
       version: 'AccountDeck {version}', updated: 'Updated {age} ago', updatedNow: 'Updated just now',
       checking: 'Checking now…', paused: 'Usage checks paused', stillChecking: 'Still checking… last update {age} ago',
       refreshed: 'Accounts refreshed.', themeChanged: 'Appearance: {mode}',
       quitTitle: 'Quit AccountDeck 2?',
-      quitBody: 'Usage checks, auto-switch and alerts stop until you open it again. Claude and Codex keep running as they are.',
+      quitBody: 'Usage checks, auto-switch and alerts stop until you open it again. Claude, Codex and Muse keep running as they are.',
       shortcuts: 'Keyboard Shortcuts', demo: 'Demo clock', demoOffset: '{sign}{offset} from the demo time',
       demoNow: 'At the demo time', switching: 'Switching…',
     },
@@ -115,7 +115,7 @@
     },
     modal: {
       switchTerminals: 'Switch your terminals to {label}?',
-      switchClaude: 'Switch Claude to {label}?', switchCodex: 'Switch Codex to {label}?',
+      switchClaude: 'Switch Claude to {label}?', switchCodex: 'Switch Codex to {label}?', switchMuse: 'Switch Muse to {label}?',
       managed: 'Claude will close and reopen on its own. If it does not close within 10 seconds it will be closed by force.',
       graceful: 'Claude will close by itself and reopen.',
       interrupt: 'Switch now and interrupt {names}?', interruptOther: 'Continue now and interrupt {names}?',
@@ -127,15 +127,22 @@
       headsUp: 'Heads-up', rowNow: 'Now', rowAfter: 'After', remember: "Don't ask again when Claude is idle",
       blocked: 'This cannot start yet.', unsavedHint: 'You can switch to it after the next switch away from it.',
       consumers: '{n} Codex sessions are running. Switch when they finish, or end them one by one.',
+      museConsumers: '{n} Muse sessions are open. The switch waits until you close them.',
       progressTitle: 'Working…',
       purpose: {
         add: 'Add a Claude account', capture: 'Save the account Claude is signed in to?',
         recover: 'Recover the previous sign-in?', 'finish-login': 'Save the new account?',
         'cancel-login': 'Stop adding the account?', quit: 'Close Claude?',
       },
+      purposeMuse: {
+        add: 'Add a Muse account', capture: 'Save the account Muse is signed in to?',
+        recover: 'Recover the previous Muse sign-in?', 'finish-login': 'Save the new Muse account?',
+        'cancel-login': 'Stop adding the Muse account?',
+      },
       endTitle: 'End this Codex session?', endBody: 'It stops right away; anything it was doing is interrupted.',
       consumerFrom: 'from {parent}', consumerStarted: 'started {clock}',
       consumerKind: { tui: 'Codex in a terminal', exec: 'A Codex command', app_server_child: 'Codex in an editor', other: 'A Codex session' },
+      museConsumerKind: { tui: 'Muse in a terminal', app_server_child: 'Muse session host (muse serve)', other: 'A Muse session' },
     },
     progress: {
       title: 'Switching to {label}', waitingOn: 'Waiting for {names}',
@@ -152,6 +159,8 @@
       claudeTitle: 'Sign in to the new account in Claude',
       claude: 'When you have signed in, choose Save Account. Claude closes briefly to save the sign-in.',
       codexTitle: 'Finish signing in with ChatGPT', codex: 'Your new Codex account appears here once you have signed in.',
+      museTitle: 'Finish signing in with Meta',
+      muse: 'Open the sign-in page, check the code matches, and approve it. Then choose Save Sign-In.',
       open: 'Open Sign-In Page', save: 'Save Account', saveCodex: 'Save Sign-In', cancel: 'Cancel Sign-In',
       deviceCode: 'Device code: {code}',
       hint: 'Sign in with the account you intend to add; a browser already signed in to another Claude account can approve the wrong one.',

@@ -171,6 +171,43 @@ def codex_usage(data, tokens=None, *, now=None):
             "tokens": scalars((tokens or {}).get("summary") or {}) or None}
 
 
+def muse_usage(data, *, now=None):
+    """`muse usage --json` (schemaVersion 1): `allowance.window` is Muse's rolling 5-hour-class block and
+    `allowance.weekly` its weekly one, each {usedPercent, resetsAtMs, windowDurationMins?}; usedPercent may
+    pass 100. The window's length comes from windowDurationMins (weekly: 7 days when absent)."""
+    allowance = data.get("allowance") if isinstance(data.get("allowance"), dict) else {}
+    windows, raw = [], []
+    for key, slot, kind in (("window", "primary", "session"), ("weekly", "secondary", "weekly")):
+        value = allowance.get(key)
+        if not isinstance(value, dict):
+            continue
+        used, reset = _float(value.get("usedPercent")), timestamp(value.get("resetsAtMs"))
+        minutes = number(value.get("windowDurationMins"))
+        # Muse states no length for its weekly allowance; "weekly" is the length.
+        minutes = minutes if minutes is not None and minutes > 0 else WEEKLY_MINUTES if key == "weekly" else None
+        wid = f"muse:{key}"
+        raw.append({"key": wid, "used": used, "reset": reset})
+        windows.append(_window(wid, kind, _span_label(minutes, slot), _span_short(minutes, slot), None, minutes,
+                               used, reset))
+    reason = _text(data.get("reason")) or _text(allowance.get("reason"))
+    if reason:
+        # Muse names why it is holding back (usage_limited, budget_limited): only a full window is blocked.
+        for window in windows:
+            if window["used"] is not None and window["used"] >= 100:
+                window["blocked"] = reason
+    return {"checked": time.time() if now is None else now, "windows": _shown(windows), "raw_windows": raw,
+            "credits": [], "reset_credits": [], "tokens": None}
+
+
+def muse_plan(data):
+    """A short plan name from `muse usage --json`'s tier ("Muse Code Max Usage" → "Max"); "" when absent."""
+    allowance = data.get("allowance") if isinstance(data, dict) and isinstance(data.get("allowance"), dict) else {}
+    tier = _text(allowance.get("tier")) or ""
+    short = re.sub(r"^muse code\s+", "", tier, flags=re.IGNORECASE)
+    short = re.sub(r"\s+usage$", "", short, flags=re.IGNORECASE).strip()
+    return (short or tier)[:40]
+
+
 def reset_credits(resets):
     """Available Codex limit-reset credits grouped by expiry: ``[{"count","expires","title"}]``.
     Credits counted by ``availableCount`` but not listed become one row without an expiry."""

@@ -185,12 +185,14 @@ class Vault:
                 os.replace(staged, self._file(key))
             return _blob_digest(self._file(key).read_bytes())
 
-    def put_guarded(self, key, incoming, source, identity_of, freshness_of):
+    def put_guarded(self, key, incoming, source, identity_of, freshness_of, *, expected=None):
         """Freshness-guarded overwrite for rotating credentials (Codex, A9).
 
         `incoming` replaces the stored copy only when identity_of() gives the same identity and
         freshness_of() says it is at least as fresh; a tie goes to incoming only when `source` is
         "live" (read from the real credential file), since that copy is the one the app itself uses.
+        `expected`: the stored copy `incoming` was renewed from; while the vault still holds it,
+        incoming replaces it whatever freshness_of() says.
         The displaced copy is kept as `<key>.prev` for PREV_TTL. Returns "accepted", "kept"
         (the stored copy is fresher) or "conflict" (identity differs or is unknown); the caller
         records conflicts. The generation ring is never used here: an older refresh token is spent,
@@ -210,6 +212,10 @@ class Vault:
                     if identity_of(stored) != identity:
                         return "conflict"
                     if stored == json.loads(data):
+                        return "accepted"
+                    if expected is not None and stored == expected:
+                        atomic_write(self._file(key, ".prev"), current.read_bytes())
+                        atomic_write(current, self.protect(data))
                         return "accepted"
                     fresh, held = freshness_of(incoming), freshness_of(stored)
                     if held is not None and (fresh is None or fresh < held):

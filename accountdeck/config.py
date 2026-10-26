@@ -103,6 +103,8 @@ class Paths:
     temp_root: Path | None
     claude_family: str                 # Claude Desktop's bundle id (docs/mac/PLAN.md §1.2)
     codex_families: tuple[str, ...]    # Codex app bundle ids the process table attributes (none live yet)
+    muse_config: Path                  # ~/.config/muse: Muse Code's auth.json, settings and trust list
+    muse_exe: Path | None              # None live: found at run time (~/.local/bin/muse-bin-<version>)
 
     @property
     def codex_managed_configs(self) -> tuple[Path, Path]:
@@ -156,21 +158,24 @@ class Paths:
         return _mac_paths(_mac_home(), data_dir)
 
     @staticmethod
-    def synthetic(root: Path, *, codex_stub: bool = True) -> "Paths":
+    def synthetic(root: Path, *, codex_stub: bool = True, muse_stub: bool = True) -> "Paths":
         """This Mac's layout under `root`: creates `root` (never its parents) and the skeleton inside it,
         and registers `root` with procs as test-owned (PLAN §2.5 rule 4). `codex_stub` names
-        `root/bin/codex` as the Codex CLI (providers.fake writes a synthetic app-server there)."""
+        `root/bin/codex` as the Codex CLI (providers.fake writes a synthetic app-server there) and
+        `muse_stub` names `root/bin/muse` as Muse Code (providers.fake writes a synthetic one)."""
         root = Path(root).resolve()
         home = root / "home"
         paths = replace(_mac_paths(home, root / "data", applications=()), mode="synthetic",
-                        codex_exe=root / "bin" / "codex" if codex_stub else None, temp_root=root,
+                        codex_exe=root / "bin" / "codex" if codex_stub else None,
+                        muse_exe=root / "bin" / "muse" if muse_stub else None, temp_root=root,
                         claude_family=SYNTHETIC_CLAUDE_FAMILY, codex_families=SYNTHETIC_CODEX_FAMILIES)
         # Registered first: procs refuses a root outside the temp folder (or outside safe mode)
         # before anything is created there.
         _register_test_root(root)
         root.mkdir(exist_ok=True)
         for directory in (paths.data_dir, paths.claude_profile, paths.claude_main_log.parent,
-                          paths.claude_sessions, paths.claude_projects, paths.codex_home, root / "bin"):
+                          paths.claude_sessions, paths.claude_projects, paths.codex_home, paths.muse_config,
+                          root / "bin"):
             directory.mkdir(parents=True, exist_ok=True)
         return paths
 
@@ -213,7 +218,7 @@ def _mac_paths(home: Path, data_dir: Path | None = None, *, applications=None) -
         claude_sessions=home / ".claude" / "sessions", claude_projects=home / ".claude" / "projects",
         claude_user_config=home / ".claude.json", codex_home=home / ".codex", codex_exe=None,
         python_exe=Path(sys.executable), repo_root=REPO_ROOT, temp_root=None,
-        claude_family=family, codex_families=())
+        claude_family=family, codex_families=(), muse_config=home / ".config" / "muse", muse_exe=None)
 
 
 def mac_applications(home) -> tuple[Path, Path]:

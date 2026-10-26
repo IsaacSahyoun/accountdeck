@@ -17,7 +17,7 @@ the demo build against.
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import itertools
 import json
 from pathlib import Path
@@ -38,6 +38,7 @@ from .platform import facts_mac
 from .procs import ProcessSet, get_controller, unix_time
 from .providers import make_providers
 from .providers.claude_cli import ClaudeCLI
+from .providers.muse import Muse
 from .providers.status import ObservedStatus, StatuspageStatus, StatuspageSummary
 from .rules import REFILL_KEEP
 from .scheduler import HOT_RESET, RefreshScheduler, Target
@@ -60,6 +61,7 @@ HOT_USED, EXHAUSTED_USED = 95.0, 99.5
 DEAD_CREDENTIALS = frozenset({"reauth_required", "access_expired", "web_only"})   # the active account still shows these
 MANIFEST_ID = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 CONSUMER_KINDS = {"codex_tui": "tui", "codex_app_server_child": "app_server_child", "codex_desktop": "desktop"}
+MUSE_CONSUMER_KINDS = {"muse_session": "tui", "muse_host": "app_server_child"}    # a terminal session, `muse serve`
 SETUP_MESSAGE = ("Settings, local MCP definitions, skills, plugins and project files stay shared. "
                  "Hosted connectors may require sign-in on each account.")
 SETUP_NOTE = "Claude Chat local MCPs and Claude Code MCPs are separate configurations."
@@ -95,6 +97,7 @@ class Machine:
     self_protect: bool
     fingerprint: tuple
     taken: float                  # real monotonic time of the observation
+    muse: list = field(default_factory=list)     # Muse Code processes using the Muse login
 
     @staticmethod
     def empty():
@@ -136,6 +139,7 @@ class Engine:
         self.procs = procs or get_controller(paths, demo=mode == "demo")
         self.providers = dict(providers) if providers else make_providers(paths, procs=self.procs)
         self.providers.setdefault("claude_cli", ClaudeCLI(paths, clock=clock))
+        self.providers.setdefault("muse", Muse(paths, self.procs))
         self.observed = {name: ObservedStatus(clock=clock) for name in self.providers}
         self.status_sources = self._default_sources() if status_sources is None else dict(status_sources)
         self.status_pages, self._status_due, self._status_busy = {}, {}, set()
@@ -159,6 +163,7 @@ class Engine:
             self.cli.adopt_stashes()
             self.cli.restore_enrollment()
         self.recovery = self._scan_recovery()
+        self._sweep_muse()
         self.alert_engine = alerts.AlertEngine(started=clock())
         self._machine, self._slow, self._idle_state = None, None, {}
         self._read_once = set()
@@ -232,7 +237,17 @@ class Engine:
         self.bump()
 
     def roots(self):
-        return [self.paths.claude_profile, self.paths.codex_home, self.paths.claude_projects]
+        return [self.paths.claude_profile, self.paths.codex_home, self.paths.claude_projects, self.paths.muse_config]
+
+    def _sweep_muse(self):
+        """Once at start, before any read: private Muse folders a crash left behind are deleted, any sign-in in
+        them kept for review in the vault. Another AccountDeck 2 that owns the sign-ins may be using them."""
+        if not self.owns_login:
+            return
+        try:
+            self.providers["muse"].sweep(lambda key, raw: self.vault.quarantine(key, raw))
+        except Exception as exc:
+            diagnostics.log_exception("engine.muse_sweep_failed", exc)
 
     def _scan_recovery(self):
         try:
@@ -259,7 +274,7 @@ class Engine:
                     if name == "claude_cli":
                         identity = self.cli.mirror()
                         known = True
-                    elif name == "codex":
+                    elif name in ("codex", "muse"):
                         found = adapter.active_identity()
                         known, identity = found.status != "unknown", found.identity if found.status == "ok" else None
                     else:
@@ -585,6 +600,7 @@ class Engine:
                 report = activity.report(self.paths, self.procs, now=self.clock(), idle_hold_s=self.timings.idle_hold,
                                          state=self._idle_state, kinds=kinds)
                 consumers = self.procs.codex_consumers(rows=rows)
+                muse = self.procs.muse_consumers(rows=rows)
                 ancestors = {row.pid for row in self.procs.ancestors_of_self()}
             except DeckError as exc:
                 diagnostics.log("engine.observe_failed", lvl="warning", code=exc.code)
@@ -594,14 +610,14 @@ class Engine:
                 machine = Machine.empty()
             else:
                 mine = {row.pid for row in kinds["claude_desktop"] + kinds["claude_code"]}
-                shown = (kinds["claude_desktop"], kinds["claude_code"], consumers, kinds["codex_daemon"])
+                shown = (kinds["claude_desktop"], kinds["claude_code"], consumers, kinds["codex_daemon"], muse)
                 machine = Machine(
                     kinds, report, consumers, activity.read_registry(self.paths), {row.pid: row.name for row in rows},
                     bool(ancestors & mine),
                     (tuple(ProcessSet.of(group).signature() for group in shown),
                      tuple((s.pid, s.status, s.name) for s in report.sessions), report.foreign, report.registry_version,
                      bool(ancestors & mine)),
-                    self.real_monotonic())
+                    self.real_monotonic(), muse)
             self._machine = machine
         if cached is not None and cached.fingerprint != machine.fingerprint:
             self.bump()
@@ -740,6 +756,8 @@ class Engine:
             return {"desktop": bool(kinds["claude_desktop"]), "desktop_pids": len(kinds["claude_desktop"]),
                     "checked": now, "sessions": sessions, "busy": report.busy, "unknown": report.unknown,
                     "foreign_claude": report.foreign, "registry_version": report.registry_version}
+        if provider == "muse":
+            return {"consumers": muse_consumers(machine.muse, machine.names), "checked": now}
         consumers = [{"pid": row.pid, "kind": CONSUMER_KINDS[row.kind], "parent": machine.names.get(row.parent),
                       "started": unix_time(row.ctime)} for row in machine.consumers if row.kind in CONSUMER_KINDS]
         return {"consumers": consumers, "daemon": bool(kinds["codex_daemon"]), "desktop": bool(kinds["codex_desktop"]),
@@ -1108,6 +1126,12 @@ class Engine:
         self.store.close()
 
 
+
+
+def muse_consumers(rows, names):
+    """The contract consumers (§3.3) for Muse processes: a terminal session is "tui", `muse serve` "app_server_child"."""
+    return [{"pid": row.pid, "kind": MUSE_CONSUMER_KINDS[row.kind], "parent": names.get(row.parent),
+             "started": unix_time(row.ctime)} for row in rows if row.kind in MUSE_CONSUMER_KINDS]
 
 
 def banner(kind, title, message, *, actions=(), provider=None, link=None):

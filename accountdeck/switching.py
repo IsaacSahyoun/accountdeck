@@ -1,7 +1,7 @@
 """What every switch flow shares (PLAN §4.3, §5.2): the context a flow works in, the plan registry, the
 consent claim, job submission and the action router.
 
-A flow (switch_claude, switch_codex, switch_cli) builds a SwitchPlan the user confirms (`assemble`,
+A flow (switch_claude, switch_codex, switch_cli, switch_muse) builds a SwitchPlan the user confirms (`assemble`,
 registered under its plan id), then `claim` checks the confirmation against a freshly built plan and
 mints the ConsentToken bound to that plan's process set, and `submit` hands the job to the engine's
 operation runner. `dispatch` routes an action to the provider's flow.
@@ -45,6 +45,10 @@ class SwitchContext:
     @property
     def codex(self):
         return self.providers["codex"]
+
+    @property
+    def muse(self):
+        return self.providers["muse"]
 
     def ladder(self):
         return StopLadder(self.paths, self.procs, activity, self.timings, diagnostics)
@@ -208,7 +212,7 @@ class QuickOp(Operation):
 def dispatch(engine, name, body):
     """Hands a switch-family action to its provider's flow: the account's provider, the waiting sign-in's
     for finish/cancel-login, the interrupted transaction's for a recovery, else Claude Desktop."""
-    from . import switch_claude, switch_cli, switch_codex
+    from . import switch_claude, switch_cli, switch_codex, switch_muse
     account = body.get("id")
     row = engine.store.account(account) if isinstance(account, str) else None
     provider = body.get("provider") or (row["provider"] if row else None)
@@ -219,20 +223,22 @@ def dispatch(engine, name, body):
     provider = provider or "claude"
     if provider == "claude_cli":
         return switch_cli.dispatch(engine, name, body)
+    if provider == "muse":
+        return switch_muse.dispatch(engine, name, body)
     if provider not in ("claude", "codex"):
-        raise DeckError("Choose Claude or Codex.", "invalid")
+        raise DeckError("Choose Claude, Codex or Muse.", "invalid")
     if provider == "codex" or name == "stop-consumer":
         return switch_codex.dispatch(engine, name, body)
     return switch_claude.dispatch(engine, name, body)
 
 
 def _recovery_provider(engine):
-    """Whose interrupted transaction a recovery puts right first: a terminal one, then Codex; None when
-    only Claude Desktop's are pending (its Recover job also reports an unreadable record)."""
+    """Whose interrupted transaction a recovery puts right first: a terminal one, then Codex, then Muse; None
+    when only Claude Desktop's are pending (its Recover job also reports an unreadable record)."""
     found = set()
     for key in engine.recovery:
         try:
             found.add(engine.vault.get(key).get("provider"))
         except DeckError:
             continue
-    return next((provider for provider in ("claude_cli", "codex") if provider in found), None)
+    return next((provider for provider in ("claude_cli", "codex", "muse") if provider in found), None)

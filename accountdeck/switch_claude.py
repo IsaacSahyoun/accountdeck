@@ -1203,7 +1203,7 @@ class Recover(ClaudeJob):
         ctx = self.ctx
         self._prepare()
         pending = self._load_pending()
-        involves_claude = any(tx.doc.get("provider") != "codex" for tx in pending)
+        involves_claude = any(tx.doc.get("provider") not in ("codex", "muse") for tx in pending)
         if involves_claude:
             self._stop()
         else:
@@ -1242,6 +1242,11 @@ class Recover(ClaudeJob):
             if ctx.procs.codex_consumers() or ctx.procs.codex_daemon():
                 raise DeckError("Close your Codex sessions, then try again.", "busy")
             tx.rollback()
+            return False
+        if tx.doc.get("provider") == "muse":
+            from .switch_muse import reads_held, undo
+            with reads_held(ctx):
+                undo(ctx, tx)
             return False
         outgoing = tx.doc.get("outgoing_id")
         if not outgoing or ctx.store.account(outgoing) is None:

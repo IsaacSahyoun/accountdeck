@@ -331,7 +331,7 @@ def _terminals_line(totals) -> str | None:
 def _switch_menus(state, now, busy) -> tuple[list[MenuItem], dict[int, str]]:
     display = (state.get("settings") or {}).get("usage_display")
     items, targets = [], {}
-    for provider in ("claude", "codex", "claude_cli"):
+    for provider in ("claude", "codex", "claude_cli", "muse"):
         accounts = [a for a in state.get("accounts") or () if a.get("provider") == provider]
         if not accounts:
             continue
@@ -403,8 +403,9 @@ def _sessions_line(sessions) -> str:
 
 def switch_prompt(plan, note: str | None = None) -> Prompt:
     """The consent alert for a switch plan: the facts of the dashboard's modal and one button per choice.
-    Claude: Switch When Idle, Switch Now, Cancel. Codex: wait for its sessions to finish (or switch now when
-    none are open), Cancel; ending a Codex session stays in the dashboard, which asks about each one."""
+    Claude: Switch When Idle, Switch Now, Cancel. Codex and Muse: wait for their sessions to finish (or switch
+    now when none are open), Cancel; ending a Codex session stays in the dashboard, which asks about each one,
+    and a Muse session is never ended by AccountDeck."""
     provider, running = plan["provider"], plan.get("running") or {}
     name, target = PROVIDER_NAMES.get(provider, provider), plan["target"]["label"]
     current = (plan.get("current") or {}).get("label")
@@ -435,7 +436,8 @@ def switch_prompt(plan, note: str | None = None) -> Prompt:
         default = 1 if plan.get("default_button") == "now" else 0
         return Prompt(title, _sections(lead, running_now, usage, effects, notes), buttons, default)
     consumers = running.get("codex_consumers") or []
-    extra = ["To end a Codex session now, use the dashboard."] if consumers else []
+    extra = (["Close your Muse sessions; the switch waits for them."] if provider == "muse" else
+             ["To end a Codex session now, use the dashboard."]) if consumers else []
     buttons = ((("idle", "Switch When They Finish") if consumers else ("now", "Switch Now")), (None, "Cancel"))
     return Prompt(title, _sections(lead, running_now, usage, effects, notes, extra), buttons)
 

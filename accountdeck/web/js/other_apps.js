@@ -1,10 +1,17 @@
-/* Claude Desktop and Codex use the existing plan/consent flows. No login is changed by rendering. */
+/* Claude Desktop, Codex and Muse Code use the existing plan/consent flows. No login is changed by rendering. */
 (function () {
   'use strict';
   const AD = window.AD = window.AD || {};
   const el = (...args) => AD.dom.el(...args);
   const mask = (text) => AD.dom.maskEmail(text);
   let drawn = null;
+  const EMPTY = {
+    claude: 'Sign in to Claude Desktop first, then choose Save Current Account. Or use Add Account to sign in to another account.',
+    codex: 'Sign in to Codex first, then choose Save Current Account. Or use Add Account. Codex must use file storage for its login.',
+    muse: 'Use Add Account to sign in to a Muse account here. To save the account Muse uses now, Muse must keep its login '
+      + 'in a file: run env -u TBH_CREDENTIAL_BACKEND muse logout, add export TBH_CREDENTIAL_BACKEND=file to ~/.zshrc, '
+      + 'open a new terminal, run muse login, then choose Save Current Account.',
+  };
 
   function action(label, run, key, disabled) {
     return AD.dom.button(label, run, { small: true, disabled, attrs: { 'data-keep': key } });
@@ -51,9 +58,7 @@
           action('Add Account', () => AD.switch.openPurpose(provider, 'add'), `add-${provider}`, disabled))),
       accounts.length ? el('ol', { class: 'card rows', 'aria-label': `${title} accounts` },
         accounts.map((a) => accountRow(a, state, nowMs)))
-        : el('div', 'card empty-state', el('p', { class: 'empty-text', text: provider === 'codex'
-          ? 'Sign in to Codex first, then choose Save Current Account. Or use Add Account. Codex must use file storage for its login.'
-          : 'Sign in to Claude Desktop first, then choose Save Current Account. Or use Add Account to sign in to another account.' })));
+        : el('div', 'card empty-state', el('p', { class: 'empty-text', text: EMPTY[provider] })));
   }
 
   function render(state, nowMs) {
@@ -65,7 +70,8 @@
     drawn = sig;
     const next = el('div', 'stack',
       section('claude', 'Claude Desktop', 'Save Chat and Cowork work before switching. Desktop may close and reopen.', state, nowMs),
-      section('codex', 'Codex', 'Close Codex sessions before switching. Settings and history stay shared.', state, nowMs));
+      section('codex', 'Codex', 'Close Codex sessions before switching. Settings and history stay shared.', state, nowMs),
+      section('muse', 'Muse Code', 'Close Muse sessions before switching. Settings and history stay shared.', state, nowMs));
     if (host.firstElementChild) AD.dom.swap(host.firstElementChild, next);
     else host.append(next);
   }

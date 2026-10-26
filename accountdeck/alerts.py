@@ -18,7 +18,7 @@ SOON_USED = 80.0              # reset_soon: windows at least this full
 USE_IT_LEFT = 30.0            # use_it: weekly windows with at least this much left ...
 USE_IT_WITHIN = 6 * 3600      # ... that reset within this time
 KEEP = 8 * 86400              # latches of past resets and cycles are forgotten after this long
-PROVIDER_NAMES = {"claude": "Claude", "codex": "Codex", "claude_cli": "Claude Code (terminal)"}
+PROVIDER_NAMES = {"claude": "Claude", "codex": "Codex", "claude_cli": "Claude Code (terminal)", "muse": "Muse"}
 LEVELS = {"low": "warning", "limit_reached": "critical", "reset_confirmed": "good", "reset_soon": "info",
           "suggest_switch": "info", "credential_expired": "warning", "switch_result": "good", "use_it": "info"}
 # Every latch maps a key to the time it was set. low and limit are keyed "account|window" and last as
@@ -210,6 +210,9 @@ def switch_result(label, provider, verified, now):
     name = PROVIDER_NAMES.get(provider, "The app")
     if verified == "verified":
         return _alert("switch_result", None, None, f"Switched {name} to {label}.", f"{name} is signed in as {label}.", now)
+    if verified == "unconfirmed" and provider == "muse":
+        return _alert("switch_result", None, None, f"Switched {name} to {label}.",
+                      "Muse could not report usage to confirm the sign-in. The next usage check tries again.", now, "info")
     if verified == "unconfirmed":
         return _alert("switch_result", None, None, f"Switched {name} to {label}.",
                       f"{name} opened — still confirming the sign-in in the background.", now, "info")

@@ -3,10 +3,11 @@ unsaved signed-in account of §9.4.
 
 Every Claude capture is health-gated. A capture taken while Claude runs holds its tokens but not
 its cookie database; the account can be read at once and becomes switchable after its next
-complete capture (the next switch away from it, or a save while Claude is closed). Codex
+complete capture (the next switch away from it, or a save while Claude is closed). Codex and Muse
 captures of known accounts go through `Vault.put_guarded`, so an older refresh token never
 replaces a newer one. Usage reads never write a provider file, and the active account is read
-with the token its official app holds, which a read cannot rotate.
+with the token its official app holds, which a read cannot rotate. (Muse renews the active login
+itself, in its own file, as it would for any `muse` command.)
 """
 from __future__ import annotations
 
@@ -17,7 +18,8 @@ import time
 from . import diagnostics, intel
 from .contract import ERROR_CODES, PROVIDER_FAILURES, UNSAVED_IDS
 from .core import DeckError, FrozenAccountError, is_frozen
-from .providers import CredentialState, OutcomeLog
+from .providers import CredentialState, OutcomeLog, Reading
+from .providers import muse as muse_auth
 from .providers.codex import freshness, identity_key, refresh_due, token_state
 
 HEALTH_MESSAGES = {
@@ -31,19 +33,27 @@ HEALTH_MESSAGES = {
 READ_FAILED = "Could not refresh this account. Your last reading is kept."
 BUSY_ACCOUNT = "This account is being refreshed. Try again in a moment."
 FRESH_MARGIN = 180
+SPENT_KEPT = 20            # replaced Muse refresh tokens remembered per account (_put_muse)
 ACTIVE_TOUCH = 3600.0       # how often an active account's `last_active_at` is renewed
 # The flags a usage read owns. It merges only these into the stored flags, so a save or a rename
 # made while the read ran is never overwritten by the read's older copy.
 READ_FLAGS = ("checked", "outcomes", "error_since", "session_expires_at", "refresh_attempt", "refresh_failures")
 
 
+PROVIDER_NOUNS = {"claude": "Claude account", "codex": "Codex account", "muse": "Muse account"}
+# The identity and freshness of a rotating credential (Vault.put_guarded), per file-swapped provider.
+GUARDS = {"codex": (identity_key, freshness), "muse": (muse_auth.identity_key, muse_auth.unordered)}
+
+
 def default_label(email, provider):
     local = (email or "").partition("@")[0].strip()
-    return local or ("Claude account" if provider == "claude" else "Codex account")
+    return local or PROVIDER_NOUNS.get(provider, "Codex account")
 
 
 def restorable(provider, profile) -> bool:
     """Whether a saved profile can be switched to: Claude needs its cookie database too."""
+    if provider == "muse":
+        return muse_auth.is_file_login(profile)
     return provider == "codex" or bool((profile or {}).get("cookies"))
 
 
@@ -66,7 +76,7 @@ class AccountService:
         self.store, self.vault, self.providers, self.settings = store, vault, providers, settings
         self.clock, self.observed, self.levels = clock, observed or {}, levels
         self.lock_for, self.lock_wait, self.on_change = lock_for, lock_wait, on_change
-        self.unsaved = {"claude": None, "codex": None}
+        self.unsaved = {"claude": None, "codex": None, "muse": None}
         self._identities, self._series = {}, {}
         self._series_lock = threading.Lock()
 
@@ -113,18 +123,20 @@ class AccountService:
                     profile["cookies"] = held["cookies"]
             info = self.identity("claude", profile)
             profile["org"] = info["org"]
-        elif provider == "codex":
-            codex = self.providers["codex"]
-            profile = codex.current()
-            info = codex.identity(profile)
+        elif provider in ("codex", "muse"):
+            adapter = self.providers[provider]
+            profile = adapter.current()
+            info = adapter.identity(profile)
         else:
-            raise DeckError("Choose Claude or Codex.", "invalid")
+            raise DeckError("Choose Claude, Codex or Muse.", "invalid")
         return self.save(provider, profile, info, label=label, source="capture", owner=owner)
 
     def save(self, provider, profile, info, *, label=None, source="capture", owner="v2") -> str:
         """Stores a captured profile under its identity (a new account or the saved one). An account whose
         sign-in belongs to another computer is never saved over (FrozenAccountError, kept as an event)."""
         existing = self.store.find(provider, info["identity"])
+        if provider == "muse" and existing is not None and not info.get("plan"):
+            info = {**info, "plan": existing["plan"]}     # Muse names the plan only in its usage answer
         if is_frozen(existing):
             diagnostics.log("capture.refused", lvl="warning", provider=provider, reason=existing["owner"],
                             acct=diagnostics.account_ref(existing["id"]))
@@ -168,9 +180,12 @@ class AccountService:
             raise FrozenAccountError(existing)
         self.store.save_account(provider, info["identity"], existing["label"], info.get("email", ""),
                                 info.get("plan", ""), info.get("org", "") or existing["org"] or "")
-        if provider == "codex":
-            if self.vault.put_guarded(key, profile, "live", identity_key, freshness) == "conflict":
-                raise DeckError("The saved Codex sign-in belongs to another account. Nothing was changed.",
+        if provider in GUARDS:
+            stored = self._put_muse(key, profile, "live") if provider == "muse" else \
+                self.vault.put_guarded(key, profile, "live", *GUARDS[provider])
+            if stored == "conflict":
+                name = "Muse" if provider == "muse" else "Codex"
+                raise DeckError(f"The saved {name} sign-in belongs to another account. Nothing was changed.",
                                 "identity")
         else:
             digest = self.vault.put(key, profile)
@@ -183,7 +198,7 @@ class AccountService:
 
     def identity(self, provider, profile):
         """{identity, email, plan, org} of a profile, asked of the provider once per identity."""
-        ident = profile.get("identity") if provider == "claude" else identity_key(profile)
+        ident = profile.get("identity") if provider == "claude" else GUARDS[provider][0](profile)
         cached = self._identities.get((provider, ident))
         if cached is None:
             cached = self.providers[provider].identity(profile)
@@ -236,6 +251,9 @@ class AccountService:
             profile = self.vault.get(account_id)
             if account["provider"] == "claude":
                 reading, credential = self._read_claude(account, profile, flags, active=active, now=now)
+            elif account["provider"] == "muse":
+                reading, credential = self._read_muse(account, profile, flags, active=active, now=now,
+                                                      read_only=read_only)
             else:
                 reading, credential = self._read_codex(account, profile, flags, active=active, now=now,
                                                        read_only=read_only)
@@ -244,6 +262,9 @@ class AccountService:
             return error_code(exc)
         expires_in = flags.pop("expires_in", None)
         fields = {"credential_state": credential, "expires_at": None if expires_in is None else now + expires_in}
+        plan = reading.meta.get("plan")
+        if plan and account["provider"] == "muse" and plan != account["plan"]:
+            fields["plan"] = plan
         if reading.usage is not None:
             for refill in intel.detect_refill(account["last_good_usage"], reading.usage):
                 self.store.record_refill(account_id, refill["window"], reset_at=refill["reset_at"],
@@ -364,6 +385,84 @@ class AccountService:
             flags["expires_in"] = None if remaining is None else round(remaining)
         return reading, credential
 
+    def _read_muse(self, account, profile, flags, *, active, now, read_only=False):
+        """The active account is read in place (Muse renews its own file, and that newer copy goes back to the
+        vault); a saved one in a private folder, where a renewed sign-in goes back to the vault through
+        put_guarded. `read_only` (another AccountDeck 2 owns the sign-ins): saved copies go to Muse without their
+        refresh token and nothing is stored; the signed-in login is still read in place, like any `muse usage`
+        run, and Muse may renew it there."""
+        muse = self.providers["muse"]
+        key = account["id"]
+        live = muse.active_identity()
+        signed_in = live.status == "ok" and live.identity == account["identity"]
+        if active and not signed_in:
+            # Muse's file cannot be read right now. The saved copy may hold the refresh token Muse itself
+            # uses, so it is not renewed here; the next read tries again.
+            return Reading(usage=None, checked=now), "live"
+        active = signed_in
+        remaining = muse_auth.expires_in(profile, now)
+        if active:
+            reading = muse.usage(live=True, account=key)
+            if not read_only:
+                self.keep_live_muse(key, account["identity"])
+        elif read_only and remaining is not None and remaining < FRESH_MARGIN:
+            return Reading(usage=None, checked=now), "expired"     # only a renewal could read it
+        elif read_only:
+            reading = muse.usage(profile, read_only=True, account=key)
+            if reading.credential == "reauth_required":
+                # Muse wanted to renew, and this copy carries no refresh token: the sign-in itself may be fine
+                return Reading(usage=None, checked=now), "expired"
+        else:
+            reading = muse.usage(profile, persist=lambda auth: self._put_muse(key, auth, "probe", expected=profile),
+                                 quarantine=lambda raw: self.vault.quarantine(key, raw), account=key)
+            if reading.meta.get("rotated"):
+                try:
+                    profile = self.vault.get(key)
+                except DeckError:
+                    pass
+        self._record("muse", key, reading.outcomes, now)
+        remaining = muse_auth.expires_in(profile, now)
+        flags["expires_in"] = None if remaining is None or active else round(remaining)
+        if active:
+            return reading, "live"
+        if reading.credential:
+            return reading, reading.credential
+        # Muse renews an expired access token with the refresh token during the read, so only a refused
+        # sign-in (reauth_required, above) needs the user. A login with no expiry (1.4.13) never runs out.
+        fresh = reading.usage is not None or remaining is None or remaining > FRESH_MARGIN
+        return reading, "fresh" if fresh else "expired"
+
+    def keep_live_muse(self, key, identity):
+        """Stores the signed-in Muse login over saved account `key` when it is a complete file login of the same
+        account: Muse renews it in place, and the saved copy must not fall behind. Returns put_guarded's answer,
+        or None when there was nothing to store."""
+        muse = self.providers["muse"]
+        try:
+            doc = muse.live_document()
+        except DeckError:
+            return None
+        if not muse_auth.is_file_login(doc) or muse_auth.identity_key(doc) != identity:
+            return None
+        return self._put_muse(key, doc, "live")
+
+    def _put_muse(self, key, doc, source, expected=None):
+        """Vault.put_guarded for a Muse copy, plus the order expiry cannot give: a refresh token the vault has
+        replaced is never stored again (an older auth.json can reappear in Muse's folder: a restored backup,
+        synced dotfiles). Every caller holds account `key`'s lock."""
+        spent = (self.store.account(key) or {"flags": {}})["flags"].get("muse_spent", [])
+        if muse_auth.spent_mark(doc) in spent:
+            return "kept"
+        try:
+            held = muse_auth.spent_mark(self.vault.get(key))
+        except DeckError:
+            held = None
+        stored = self.vault.put_guarded(key, doc, source, *GUARDS["muse"], expected=expected)
+        if stored == "accepted" and held and held != muse_auth.spent_mark(doc):
+            flags = dict(self.store.account(key)["flags"])
+            flags["muse_spent"] = [held] + spent[:SPENT_KEPT - 1]
+            self.store.update(key, flags=flags)
+        return stored
+
     # ---- what the snapshot shows about a saved account ----
     def series(self, account, now):
         """({window: readings in its current reset epoch}, trend points) of a saved account, worked out
@@ -440,6 +539,22 @@ class AccountService:
                 except DeckError:
                     entry = None
                 row["expires_in"] = None if entry is None else round(entry.get("expiresAt", 0) / 1000 - now)
+            elif provider == "muse":
+                muse = self.providers["muse"]
+                live = muse.active_identity()
+                if live.status != "ok" or live.identity != row["identity"]:
+                    return "identity"
+                if row["label"] is None:
+                    doc = muse.live_document() or {}
+                    try:
+                        info = muse.identity(doc)
+                        row.update(label=default_label(info["email"], "muse"), email=info["email"] or None)
+                    except DeckError:
+                        pass
+                reading = muse.usage(live=True, account=UNSAVED_IDS["muse"])
+                if reading.meta.get("plan"):
+                    row["plan"] = reading.meta["plan"]
+                row["expires_in"] = None
             else:
                 codex = self.providers["codex"]
                 profile = codex.current()

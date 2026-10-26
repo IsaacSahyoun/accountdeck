@@ -26,8 +26,8 @@ HYSTERESIS_HOLD = 300.0       # ... and a new pick is held at least this long (P
 USE_SOON_CEILING = 95.0       # use-soon ranks accounts whose weekly window has at most this much left
 FRESH_ACTIVE, FRESH_INACTIVE = 600.0, 1800.0      # reading age a recommendation counts as fresh (PLAN §6.7)
 TREND_POINTS = 32
-STATUS_URLS = {"claude": "https://status.claude.com", "codex": "https://status.openai.com", "claude_cli": "https://status.claude.com"}
-PROVIDER_NAMES = {"claude": "Claude", "codex": "Codex", "claude_cli": "Claude Code (terminal)"}
+STATUS_URLS = {"claude": "https://status.claude.com", "codex": "https://status.openai.com", "claude_cli": "https://status.claude.com", "muse": None}    # Meta publishes no status page for Muse
+PROVIDER_NAMES = {"claude": "Claude", "codex": "Codex", "claude_cli": "Claude Code (terminal)", "muse": "Muse"}
 STATUS_SUMMARIES = {"ok": "All systems operational", "degraded": "Partially degraded service",
                     "outage": "Major outage", "unknown": "Status not checked yet"}
 _ERROR_CODES = frozenset(ERROR_CODES + PROVIDER_FAILURES)

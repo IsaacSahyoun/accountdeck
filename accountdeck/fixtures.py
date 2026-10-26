@@ -58,6 +58,7 @@ PLANS = {
     "quit": "Close Claude (purpose quit)",
     "add": "Add a Claude account (purpose add)",
     "codex-consumers": "Codex switch with running Codex consumers",
+    "muse-sessions": "Muse switch while a Muse session is open: wait for it to close",
 }
 DEFAULT_SETTINGS = {
     "cli_autoswitch": True, "cli_threshold": 95, "cli_order": "soonest_reset", "cli_manual_order": [], "cli_early_switch": True,
@@ -77,8 +78,11 @@ _SHAPES = {
     "seven_day_cowork": ("other", "Cowork weekly", "Cowork", None, 10080),
     "codex:primary": ("session", "5-hour", "5h", None, 300),
     "codex:secondary": ("weekly", "Weekly", "7d", None, 10080),
+    "muse:window": ("session", "5-hour", "5h", None, 300),
+    "muse:weekly": ("weekly", "Weekly", "7d", None, 10080),
 }
 _CODEX_IDS = {"five_hour": "codex:primary", "seven_day": "codex:secondary"}
+_MUSE_IDS = {"five_hour": "muse:window", "seven_day": "muse:weekly"}
 _CODENAMES = ("iguana_necktie", "nimbus_quill")
 _SAME = object()
 
@@ -98,6 +102,20 @@ def _codex(aid, label, windows=(), **spec):
     email = f"{label.lower().replace(' ', '.')}@example.test"
     return {"id": aid, "provider": "codex", "label": label, "email": email, "plan": "pro",
             "windows": [{**w, "id": _CODEX_IDS[w["id"]]} for w in windows], **spec}
+
+
+def _muse(aid, label, windows=(), **spec):
+    """A Muse Code account; scenarios name its windows five_hour/seven_day, usage.py ids them muse:window/weekly."""
+    email = f"{label.lower().replace(' ', '.')}@example.test"
+    return {"id": aid, "provider": "muse", "label": label, "email": email, "plan": "Max",
+            "windows": [{**w, "id": _MUSE_IDS[w["id"]]} for w in windows], **spec}
+
+
+def muse_accounts():
+    return [_muse("acc_m1", "Muse main", [_w("five_hour", 8, 6400), _w("seven_day", 81, 205000)], active=True,
+                  checked=-90, credential={"state": "live"}),
+            _muse("acc_m2", "Muse side", [_w("five_hour", 0), _w("seven_day", 12, 480000)], checked=-700,
+                  credential={"state": "fresh", "expires_in": 2400})]
 
 
 def terminal_accounts(scenario):
@@ -205,7 +223,8 @@ def _account(spec, now, pinned, tz, order):
 def _status(provider, now, level="ok", *, incident=None, since=None, source="statuspage", checked=-120):
     summary = {"ok": "All systems operational", "degraded": "Partially degraded service",
                "outage": "Major outage", "unknown": "Status not checked yet"}[level]
-    url = {"claude": "https://status.claude.com", "claude_cli": "https://status.claude.com", "codex": "https://status.openai.com"}[provider]
+    url = {"claude": "https://status.claude.com", "claude_cli": "https://status.claude.com", "codex": "https://status.openai.com",
+           "muse": None}[provider]
     return {"level": level, "summary": summary, "source": source, "checked": _at(now, checked),
             "since": _at(now, since), "url": url, "incident": incident}
 
@@ -222,6 +241,11 @@ def _claude_running(now, sessions=None, *, desktop=True, foreign=1):
 def _codex_running(now, consumers=True):
     rows = [{"pid": 9001, "kind": "tui", "started": now - 3600, "parent": "Terminal"}] if consumers else []
     return {"consumers": rows, "daemon": bool(consumers), "desktop": False, "checked": now - 5}
+
+
+def _muse_running(now, consumers=False):
+    rows = [{"pid": 9301, "kind": "tui", "started": now - 1800, "parent": "Terminal"}] if consumers else []
+    return {"consumers": rows, "checked": now - 5}
 
 
 def _banner(kind, title, message, actions=(), provider=None, link=None):
@@ -514,6 +538,8 @@ def _scenario(name, now):
         raise KeyError(name)
     if requested in ("typical", "terminal", "resets-soon", "first-run"):
         spec["accounts"] += terminal_accounts(requested)
+    if requested in ("typical", "terminal"):
+        spec["accounts"] += muse_accounts()
     return spec
 
 
@@ -590,6 +616,9 @@ def example_state(scenario, now=BASE_NOW):
                                 "kind": "threshold", "reason": "Alpha reached 95% of its 5-hour limit; switched terminals to Beta.",
                                 "undo_until": now + 480}} if scenario in ("terminal", "resets-soon") else None),
                            "enrollment": {"phase": "idle", "message": ""}, "readonly_reason": None},
+            "muse": {"status": status["muse"], "active": active["muse"],
+                     "running": spec.get("muse_running") or _muse_running(now), "switching": switching["muse"],
+                     "paused": settings["refresh_paused"] or switching["muse"]},
         },
         "accounts": accounts,
         "now_band": {"next_reset": rules.next_reset(accounts, strip, now), "best": best, "attention": rules.attention(accounts, now, tz)},
@@ -680,6 +709,17 @@ def example_plan(name, now=BASE_NOW):
                   "Restore Codex spare's sign-in", "Start Codex's background service again"],
             preserved=["Shared Codex settings, MCP servers and sessions"],
             account_bound=["ChatGPT-linked apps and connectors"], invisible=None, stop_tier="manual")
+    elif name == "muse-sessions":
+        target, main = accounts["acc_m2"], accounts["acc_m1"]
+        plan.update(
+            provider="muse", target=rules.plan_target(target), current=rules.plan_current(main), headroom=None,
+            running={"desktop": False, "sessions": [], "busy": 0, "unknown": 0, "foreign_claude": 0,
+                     "codex_consumers": [{"pid": 9301, "kind": "tui", "started": now - 1800, "parent": "Terminal"}]},
+            process_set=[[9301, 133812310000000000]], warnings=[],
+            will=["Wait for Muse sessions to close.", "Save the outgoing sign-in.",
+                  "Replace only Muse's auth.json and check the selected account."],
+            preserved=["Muse settings, trusted folders and session history"], account_bound=[], invisible=None,
+            stop_tier="not_running")
     plan["signature"] = _signature(plan["process_set"])
     return plan
 

@@ -5,9 +5,9 @@ returns the started `Engine`; `run.py --demo <scenario>` serves it. Everything t
 synthetic and inside `root`:
 
 - the machine is `Paths.synthetic(root)` with a Claude Desktop profile (macOS format, under a synthetic
-  "Claude Safe Storage" password) and a Codex home that `providers.fake` writes, and
+  "Claude Safe Storage" password), a Codex home and a Muse config folder that `providers.fake` writes, and
   `procs.FakeProcessController` (an in-memory Mac process table);
-- the providers are `FakeClaude` / `FakeCodex` / `DemoCLI` following scripts, so usage moves as the
+- the providers are `FakeClaude` / `FakeCodex` / `FakeMuse` / `DemoCLI` following scripts, so usage moves as the
   virtual clock runs: windows pass their reset, refill and start over, as they would for real accounts;
 - the clock is `DemoClock`: real time from a start (`--now`) on, so a demo shows the moment it was
   meant to; tests move it with `advance()`.
@@ -39,8 +39,9 @@ from .procs import FakeProcessController, filetime, is_test_owned_path
 from .providers.claude_cli import ClaudeCLI, object_file, profile as cli_profile
 from .providers.errors import ProviderError
 from .switch_cli import CLISwitch
-from .providers.fake import FakeClaude, FakeCodex, FakeStatusSource, Timeline, build_fake_home, test_cipher
-from .usage import claude_usage, codex_usage
+from .providers.fake import (FakeClaude, FakeCodex, FakeMuse, FakeStatusSource, Timeline, build_fake_home,
+                             test_cipher)
+from .usage import claude_usage, codex_usage, muse_usage
 
 __all__ = ["DemoClock", "DemoProcesses", "build_demo", "SCENARIOS"]
 
@@ -54,7 +55,8 @@ OUTAGE_S = 600.0                # the `outage` scenario's incident ends after th
 HISTORY_OFFSETS = (1800, 3600, 2 * 3600, 6 * 3600, 12 * 3600, 86400, 2 * 86400, 3 * 86400)
 DEFAULT_WINDOWS = {"claude": (("five_hour", 8.0, 10800.0), ("seven_day", 20.0, 400000.0)),
                    "claude_cli": (("five_hour", 8.0, 10800.0), ("seven_day", 20.0, 400000.0)),
-                   "codex": (("codex:primary", 10.0, 10000.0), ("codex:secondary", 15.0, 300000.0))}
+                   "codex": (("codex:primary", 10.0, 10000.0), ("codex:secondary", 15.0, 300000.0)),
+                   "muse": (("muse:window", 8.0, 10000.0), ("muse:weekly", 20.0, 300000.0))}
 CODEX_THREADS = ("Refactor the billing module", "Fix the flaky importer test", "Explain the release checklist")
 SESSION_KEYS = ("pid", "status", "kind", "entrypoint", "name", "cwd", "updatedAt", "statusUpdatedAt", "procStart", "version")
 
@@ -105,6 +107,15 @@ class DemoCodex(FakeCodex):
         if self.gate is not None:
             self.gate.wait()
         return super()._probe(work, identity, refresh)
+
+
+class DemoMuse(FakeMuse):
+    gate = None
+
+    def _run_usage(self, config_home, *, file_mode, isolated):
+        if self.gate is not None:
+            self.gate.wait()
+        return super()._run_usage(config_home, file_mode=file_mode, isolated=isolated)
 
 
 class DemoCLI(ClaudeCLI):
@@ -168,9 +179,9 @@ def _iso(when):
 
 
 def _minutes(key):
-    if key in ("five_hour", "codex:primary"):
+    if key in ("five_hour", "codex:primary", "muse:window"):
         return 300
-    return 10080 if key.startswith("seven_day") or key == "codex:secondary" else None
+    return 10080 if key.startswith("seven_day") or key in ("codex:secondary", "muse:weekly") else None
 
 
 def _windows(account, provider, base):
@@ -217,9 +228,29 @@ def _codex_payload(windows, account=None):
     return payload
 
 
+def _muse_payload(windows, account=None):
+    """What `muse usage --json` prints for these windows."""
+    plan = (account or {}).get("plan") or "Max"
+    allowance = {"tier": f"Muse Code {plan} Usage"}
+    by_key = {w["key"]: w for w in windows}
+    for key, name in (("muse:window", "window"), ("muse:weekly", "weekly")):
+        if key in by_key:
+            w = by_key[key]
+            # Like real `muse usage --json` (1.4.13): no window length.
+            allowance[name] = {"usedPercent": w["used"], "resetsAtMs": None if w["reset"] is None else int(w["reset"] * 1000)}
+    return {"allowance": allowance, "source": "mint"}
+
+
 def _payload(provider, windows, account=None):
+    if provider == "muse":
+        return _muse_payload(windows, account)
     return _codex_payload(windows, account) if provider == "codex" else _claude_payload(
         windows, () if account is None else account["credits"])
+
+
+def _usage(provider, payload, now):
+    parse = {"codex": codex_usage, "muse": muse_usage}.get(provider, claude_usage)
+    return parse(payload, now=now)
 
 
 def _rolling(provider, account, base, windows):
@@ -232,7 +263,7 @@ def _rolling(provider, account, base, windows):
             continue
         late = w["reset"] <= base
         offset = LATE_REFILL if late else w["reset"] - base + REFILL_LAG
-        if provider == "codex":
+        if provider in ("codex", "muse"):
             after = {"used": 0.0, "reset": max(w["reset"], base + offset) + minutes * 60}
         elif minutes == 300:
             after = {"used": 0.0, "reset": None}
@@ -373,7 +404,8 @@ class _Builder:
         self.paths = Paths.synthetic(Path(root))
         self.spec = fixtures.example_state(scenario, self.base)
         self.accounts = self.spec["accounts"]
-        self.ids = {a["id"]: self._uuid(a["id"]) for a in self.accounts}      # spec id -> the account's identity
+        # spec id -> the account's identity (a Muse account's is its email)
+        self.ids = {a["id"]: a["email"].casefold() if a["provider"] == "muse" else self._uuid(a["id"]) for a in self.accounts}
         self.keys = {}                                                         # spec id -> the saved account's id
 
     # -- identities --
@@ -386,29 +418,30 @@ class _Builder:
     def _active(self, provider):
         return next((a for a in self.accounts if a["provider"] == provider and a["active"]), None)
 
-    def _home(self, claude=None, codex=None):
+    def _home(self, claude=None, codex=None, muse=None):
         claude = claude or self._uuid("spare-claude")
         codex = codex or self._uuid("spare-codex")
         return build_fake_home(self.paths, claude_identity=claude, claude_org=self._org(claude), codex_identity=codex,
-                               now=self.base, codex_exp_offset=9 * 86400)
+                               now=self.base, codex_exp_offset=9 * 86400, muse_email=muse,
+                               muse_storage=None)
 
     # -- the world --
     def build(self):
         diagnostics.setup(self.paths)
         signed_in = {p: (self.ids[a["id"]] if (a := self._active(p)) else None) for p in fixtures.PROVIDERS}
         if any(signed_in.values()):
-            self._home(signed_in["claude"], signed_in["codex"])
+            self._home(signed_in["claude"], signed_in["codex"], signed_in["muse"])
         if self.scenario == "first-run":
             self._sign_out(signed_in)          # nothing is seeded, so sign out what the scenario has no account for
         self.gate = None if self.inline or self.scenario != "loading" else _Gate(self.clock, self.base + LOADING_S)
-        claude, codex, cli = self._providers()
+        claude, codex, cli, muse = self._providers()
         self.procs = self._machine()
         if self._active("claude_cli"):
             self._cli_live(self._active("claude_cli"))
         # `read-only`: another AccountDeck 2 holds the owner lock, so this one only shows usage.
         owner_lock = _UnheldLock() if self.scenario == "read-only" else None
         engine = Engine(self.paths, owner_lock=owner_lock,
-                        providers={"claude": claude, "codex": codex, "claude_cli": cli}, procs=self.procs,
+                        providers={"claude": claude, "codex": codex, "claude_cli": cli, "muse": muse}, procs=self.procs,
                         vault=Vault(self.paths.data_dir / "vault", protect=test_cipher),
                         status_sources=self._status_sources(), clock=self.clock, start=False, inline=self.inline,
                         mode="demo")
@@ -435,7 +468,7 @@ class _Builder:
 
     # -- providers and scripts --
     def _providers(self):
-        claude_scripts, codex_scripts, identities, cli_scripts = {}, {}, {}, {}
+        claude_scripts, codex_scripts, identities, cli_scripts, muse_scripts = {}, {}, {}, {}, {}
         for a in self.accounts:
             identity, provider = self.ids[a["id"]], a["provider"]
             windows = _windows(a, provider, self.base)
@@ -448,13 +481,14 @@ class _Builder:
                     script.sort(key=lambda entry: entry[0])
                 cli_scripts[a["id"]] = script
                 continue
-            (claude_scripts if provider == "claude" else codex_scripts)[identity] = script
+            {"claude": claude_scripts, "codex": codex_scripts, "muse": muse_scripts}[provider][identity] = script
             if provider == "claude":
                 identities[identity] = {"email": a["email"], "plan": a["plan"] or "max", "org": self._org(identity)}
         claude = DemoClaude(self.paths, scripts=claude_scripts, identities=identities, now=self.clock)
         codex = DemoCodex(self.paths, scripts=codex_scripts, now=self.clock)
-        claude.gate = codex.gate = self.gate
-        return claude, codex, DemoCLI(self.paths, cli_scripts, self.clock, self.ids)
+        muse = DemoMuse(self.paths, scripts=muse_scripts, now=self.clock)
+        claude.gate = codex.gate = muse.gate = self.gate
+        return claude, codex, DemoCLI(self.paths, cli_scripts, self.clock, self.ids), muse
 
     def _cli_profile(self, account):
         key = account["id"]
@@ -500,6 +534,12 @@ class _Builder:
             parent = procs.add_row(name, path=f"/System/Applications/Utilities/{name}.app/Contents/MacOS/{name}")
             row = procs.add_codex(kinds[c["kind"]], parent=parent.pid)
             procs.age(row.pid, c["started"])
+        kinds = {"tui": "muse_session", "app_server_child": "muse_host"}
+        for c in self.spec["providers"]["muse"]["running"]["consumers"]:
+            name = c["parent"] or "Terminal"
+            parent = procs.add_row(name, path=f"/System/Applications/Utilities/{name}.app/Contents/MacOS/{name}")
+            row = procs.add_muse(kinds[c["kind"]], parent=parent.pid)
+            procs.age(row.pid, c["started"])
         return procs
 
     # -- seeding the saved accounts --
@@ -514,13 +554,14 @@ class _Builder:
                 self.keys[a["id"]] = engine.cli.save(profile, source="demo")
                 continue
             if a["active"]:
-                self._home(signed_in["claude"], signed_in["codex"])
+                self._home(signed_in["claude"], signed_in["codex"], signed_in["muse"])
             else:
                 self._home(self.ids[a["id"]] if provider == "claude" else None,
-                           self.ids[a["id"]] if provider == "codex" else None)
+                           self.ids[a["id"]] if provider == "codex" else None,
+                           a["email"] if provider == "muse" else None)
             self.keys[a["id"]] = engine.accounts.capture(provider, label=a["label"], claude_running=False)
         if any(signed_in.values()):
-            self._home(signed_in["claude"], signed_in["codex"])
+            self._home(signed_in["claude"], signed_in["codex"], signed_in["muse"])
         self._sign_out(signed_in)
         if self._active("claude_cli"):
             self._cli_live(self._active("claude_cli"))
@@ -537,6 +578,8 @@ class _Builder:
                 (Path(self.paths.claude_profile) / "config.json").unlink(missing_ok=True)
             if signed_in["codex"] is None:
                 (Path(self.paths.codex_home) / "auth.json").unlink(missing_ok=True)
+            if signed_in["muse"] is None:
+                (Path(self.paths.muse_config) / "auth.json").unlink(missing_ok=True)
 
     def _state(self, engine, key, a):
         """Gives a saved account the reading, history, credential and error its scenario shows."""
@@ -548,7 +591,7 @@ class _Builder:
         flags = dict(store.account(key)["flags"])
         if at is not None:
             self._history(store, key, provider, a, windows, at)
-            usage = (codex_usage if provider == "codex" else claude_usage)(_payload(provider, windows, a), now=at)
+            usage = _usage(provider, _payload(provider, windows, a), at)
             store.observe(key, usage, at=at)
         credential = a["credential"]
         if a["checked"] is not None:
@@ -596,7 +639,7 @@ class _Builder:
                 if epoch <= when < at:
                     chosen.append({**w, "used": round(w["used"] * (when - epoch) / (at - epoch), 1)})
             if chosen:
-                usage = (codex_usage if provider == "codex" else claude_usage)(_payload(provider, chosen), now=when)
+                usage = _usage(provider, _payload(provider, chosen), when)
                 store.observe(key, usage, at=when)
 
     # -- settings, alerts, notices, events, the pending operation and the report --

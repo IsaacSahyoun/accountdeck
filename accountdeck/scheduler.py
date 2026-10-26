@@ -3,8 +3,8 @@ the per-identity request governor, staggered refresh-all and the refresh worker 
 
 The planning is pure (`base_interval`, `RefreshScheduler.next_time`, `RequestGovernor.delay`) and
 driven by the engine's tick with an injectable clock; only `RefreshScheduler.tick` starts work, on a
-pool of three `ad2-refresh` threads (or inline, for tests) with at most one Codex probe at a time
-and never two reads of one account at once.
+pool of three `ad2-refresh` threads (or inline, for tests) with at most one Codex probe and one Muse
+helper at a time, and never two reads of one account at once.
 """
 from __future__ import annotations
 
@@ -129,11 +129,11 @@ class RefreshScheduler:
         self.inline = inline
         self._plans: dict[str, _Plan] = {}
         self._lock = threading.RLock()
-        self._codex = threading.Lock()
+        self._helpers = {"codex": threading.Lock(), "muse": threading.Lock()}    # one helper process each
         self._pool = None if inline else ThreadPoolExecutor(workers, thread_name_prefix="ad2-refresh")
         self._paused = False
         self.locks = {}
-        self.provider_pause = {name: False for name in ("claude", "codex", "claude_cli")}
+        self.provider_pause = {name: False for name in ("claude", "codex", "claude_cli", "muse")}
 
     # ---- planning ----
     def next_time(self, target: Target, now: float) -> float:
@@ -231,12 +231,16 @@ class RefreshScheduler:
     def _read(self, target, clock):
         outcome = "network"
         try:
+            if self.provider_pause[target.provider]:   # its switch may hold the lock: never park a worker on it
+                outcome = "skipped"
+                return
             with self.account_lock(target.id):
                 if self.provider_pause[target.provider]:
                     outcome = "skipped"
-                elif target.provider == "codex":
-                    with self._codex:
-                        outcome = self.run(target.id)
+                elif target.provider in self._helpers:
+                    with self._helpers[target.provider]:
+                        # A switch may have paused this provider while the read waited for the lock.
+                        outcome = "skipped" if self.provider_pause[target.provider] else self.run(target.id)
                 else:
                     outcome = self.run(target.id)
         except Exception as exc:     # a read must never kill the scheduler
@@ -302,6 +306,11 @@ class RefreshScheduler:
     def forget(self, account_id) -> None:
         with self._lock:
             self._plans.pop(account_id, None)
+
+    def helper_lock(self, provider):
+        """The lock every read of `provider` ("codex", "muse") holds while its helper runs. A switch holds it
+        while it changes the provider's files, so no read that started earlier runs across the change."""
+        return self._helpers[provider]
 
     def account_lock(self, account_id):
         """The account's lock: a read holds it while it runs, and saving or removing the account waits for

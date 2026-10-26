@@ -34,6 +34,12 @@ NATIVE_MAGIC = frozenset({b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\x
 LAUNCHER_PATH = re.compile(r"""(?:\$\{HOME\}|\$HOME|~)?/[^\s"'`;|&<>()$]*/codex(?=["'\s;)]|$)""")
 VAULT_MESSAGE = "Could not restrict access to the local account vault."
 NOT_INSTALLED_MESSAGE = "Install Codex CLI and sign in once, then try again."
+# Muse Code's installer keeps a bash launcher at ~/.local/bin/muse that updates itself and `exec`s the
+# versioned binary beside it, ~/.local/bin/muse-bin-<version>; ~/.local/bin/.muse-version names the current one.
+MUSE_BIN_DIR = (".local", "bin")
+MUSE_VERSION_FILE = ".muse-version"
+MUSE_BINARY = re.compile(r"muse-bin-(\d+)\.(\d+)\.(\d+)-R(\d+)(?:\.(\d+))?")
+MUSE_NOT_INSTALLED = "Install Muse Code and sign in once, then try again."
 
 
 # ---- the data folder and helper work folders ----
@@ -123,6 +129,32 @@ def codex_exe(paths) -> Path:
             if found is not None:
                 return found
     raise DeckError(NOT_INSTALLED_MESSAGE, "not_installed")
+
+
+def muse_exe(paths) -> Path:
+    """The Muse Code binary. `paths.muse_exe` when it exists (synthetic paths); live, the binary
+    ~/.local/bin/.muse-version names, else the newest ~/.local/bin/muse-bin-<version>. The launcher
+    script is never returned: it checks for updates over the network before it starts Muse. Only a
+    native (Mach-O) binary is ever returned."""
+    if paths.muse_exe is not None and Path(paths.muse_exe).is_file():
+        return Path(paths.muse_exe)
+    if paths.mode == "live":
+        folder = Path(paths.home).joinpath(*MUSE_BIN_DIR)
+        try:
+            named = (folder / MUSE_VERSION_FILE).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            named = ""
+        candidates = [folder / f"muse-bin-{named}"] if MUSE_BINARY.fullmatch(f"muse-bin-{named}") else []
+        try:
+            found = [entry for entry in folder.iterdir() if MUSE_BINARY.fullmatch(entry.name)]
+        except OSError:
+            found = []
+        found.sort(key=lambda entry: tuple(int(part or 0) for part in MUSE_BINARY.fullmatch(entry.name).groups()),
+                   reverse=True)
+        for candidate in candidates + found:
+            if _is_native(candidate):
+                return candidate
+    raise DeckError(MUSE_NOT_INSTALLED, "not_installed")
 
 
 def _codex_binary(path: Path, home: Path) -> Path | None:

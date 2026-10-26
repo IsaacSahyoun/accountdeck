@@ -17,7 +17,7 @@ from .rules import ATTENTION_KINDS, DORMANT_DAYS  # noqa: F401  (enum and thresh
 
 # ---- frozen enums (PLAN §3) ----
 MODES = ("live", "demo")
-PROVIDERS = ("claude", "codex", "claude_cli")
+PROVIDERS = ("claude", "codex", "claude_cli", "muse")
 STATUS_LEVELS = ("ok", "degraded", "outage", "unknown")
 STATUS_SOURCES = ("statuspage", "observed", "none")
 ACCOUNT_STATES = ("ok", "limited", "stale", "needs_signin", "error", "unknown")
@@ -63,7 +63,7 @@ ACTIONS = ("refresh", "rename", "reorder", "switch-plan", "switch", "quit-claude
            "stop-consumer", "recover", "verify", "open-folder", "test-notification", "cli-exclude", "cli-undo",
            "demo-clock", "import-bundle-preview", "import-bundle", "import-bundle-dismiss")
 INTERNAL_SETTINGS = ("recommender_state", "alert_latches")  # = config's internal keys
-UNSAVED_IDS = {"claude": "unsaved-claude", "codex": "unsaved-codex"}
+UNSAVED_IDS = {"claude": "unsaved-claude", "codex": "unsaved-codex", "muse": "unsaved-muse"}
 # Claude switch step ids in order (PLAN §5.4).
 CLAUDE_SWITCH_STEPS = ("prepare", "wait", "stop", "settle", "capture", "restore", "sessions", "launch", "verify", "report")
 MOVE_IMPORT_OUTCOMES = ("new", "updated", "filled", "kept", "on_pc", "deferred", "failed")
@@ -636,6 +636,8 @@ def _check_providers(providers, accounts, r):
             _check_claude_running(entry["running"], f"{path}.running", r)
         elif p == "codex":
             _check_codex_running(entry["running"], f"{path}.running", r)
+        elif p == "muse":
+            _check_muse_running(entry["running"], f"{path}.running", r)
         else:
             _check_terminal(entry, path, accounts, r)
 
@@ -731,6 +733,13 @@ def _check_codex_running(running, path, r):
     r.num(running["checked"], f"{path}.checked")
 
 
+def _check_muse_running(running, path, r):
+    if not r.obj(running, ("consumers", "checked"), path):
+        return
+    _check_consumers(running["consumers"], f"{path}.consumers", r)
+    r.num(running["checked"], f"{path}.checked")
+
+
 def _check_now_band(band, state, accounts, complete, now, r):
     if not r.obj(band, ("next_reset", "best", "attention"), "now_band"):
         return
@@ -757,7 +766,7 @@ def _check_now_band(band, state, accounts, complete, now, r):
     best = band["best"]
     if r.obj(best, PROVIDERS, "now_band.best"):
         for extra in set(best) - set(PROVIDERS):
-            r.add(f"now_band.best.{extra}", "best is per provider (claude, codex)")
+            r.add(f"now_band.best.{extra}", "best is per provider (claude, codex, claude_cli, muse)")
         for p in PROVIDERS:
             _check_best(best[p], p, state, accounts, listed, r)
     if r.seq(band["attention"], "now_band.attention"):
