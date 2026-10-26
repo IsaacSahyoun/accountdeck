@@ -1,0 +1,46 @@
+AccountDeck 2 for Mac
+
+Use your own Claude and Codex accounts on your own Mac login.
+Requires Apple silicon (M1 or newer), macOS Sonoma 14 or newer, and internet access.
+Install Claude Code, Claude Desktop, or Codex first. You can use any of them on its own.
+
+1. Double-click the zip in Finder to unzip it.
+2. Open AccountDeck2-mac and double-click Install AccountDeck.command.
+3. Wait for “AccountDeck 2 is installed.” The dashboard and menu bar icon appear.
+   Allow the named login Keychain items when prompted to save your logins.
+
+If macOS blocks the shortcut:
+This download is unsigned and unnotarized. For a copy you trust, right-click the
+shortcut, choose Open, then Open again. On newer macOS, try opening it first,
+then use System Settings > Privacy & Security > Open Anyway.
+
+Still blocked? Open Terminal, type cd followed by a space, drag this unpacked
+folder into Terminal, then press Return. Run this one line:
+
+    bash install.sh
+
+Or remove this trusted package's quarantine flag, then open the shortcut again:
+
+    xattr -dr com.apple.quarantine .
+
+Do not use sudo. Do not disable Gatekeeper system-wide.
+
+First run:
+- Claude Code: your current login is saved once verified. Use Add Account for more.
+  Finish the sign-in in its new Terminal window, then close that window.
+- Claude Desktop / Codex: choose Save Current Account, or Add Account.
+  Codex needs file-based login storage. README.md explains how to set it.
+- Choose Switch beside a saved account. Review the plan before continuing.
+- Auto-switch applies only to Claude Code. It starts on at 95% used and needs
+  two accounts. Change it or turn it off in Settings > Auto-Switch.
+- Use AccountDeck to change accounts. Never use /login, /logout, or the client's
+  Log Out to switch saved accounts: these can revoke a saved sign-in.
+
+Uninstall:
+Quit AccountDeck 2 from its menu bar menu. Double-click Uninstall AccountDeck.command.
+It keeps your saved accounts and settings. See README.md to erase data too.
+
+Your data stays in ~/Library/Application Support/AccountDeck2.
+The vault is encrypted with a key in your login Keychain. Sign-in and usage
+checks contact the providers; AccountDeck has no cloud account or telemetry.
+Share the zip, never your data folder. See README.md for more help.
