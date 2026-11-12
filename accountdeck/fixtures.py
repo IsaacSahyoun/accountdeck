@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 import sys
 
-from . import rules
+from . import intel, rules
 from .cli_policy import evaluate
 from .contract import PROVIDERS, platform_block, validate_plan, validate_state
 from .rules import PRIMARY_KINDS, REFILL_KEEP, clock_text
@@ -588,7 +588,7 @@ def example_state(scenario, now=BASE_NOW):
     status = {p: spec.get("status", {}).get(p) or _status(p, now) for p in PROVIDERS}
     best = {}
     for provider in PROVIDERS:
-        best[provider], ranked = rules.recommend(provider, accounts, pinned, now, tz)
+        best[provider], ranked, _pick = intel.recommend(provider, accounts, settings, None, now, tz=tz)
         for rank, account in enumerate(ranked, 1):
             account["rank"], account["score"] = rank, round(rules.headroom(account, pinned) / 100, 2)
         if best[provider]["state"] in ("ok", "unknown") and best[provider]["account"] is not None:

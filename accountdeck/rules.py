@@ -343,56 +343,6 @@ def eligible(account, pinned):
             and all(w["left"] >= 3 for w in windows if is_gating(w, pinned)))
 
 
-def recommend(provider, accounts, pinned, now, tz):
-    """Per-provider best account (PLAN §6.7, without hysteresis): returns (best, ranked accounts)."""
-    mine = [a for a in accounts if a["provider"] == provider]
-    active = next((a for a in mine if a["active"]), None)
-    switchable = [a for a in mine if a["switchable"]]
-    best = {"account": None, "label": None, "headroom": None, "policy": "availability", "reason": None,
-            "confidence": "high", "suggest_switch": False, "current_is_best": False, "alternatives": [], "state": "none"}
-    if len(switchable) < 2:
-        return best, []
-    candidates = [a for a in switchable if eligible(a, pinned)]
-    if not candidates:
-        if any(a["last_good_at"] is None for a in switchable):
-            # Not every account has been read yet, so "no account has room" would be a guess.
-            return {**best, "state": "unknown", "confidence": "low", "reason": "Waiting for the first readings"}, []
-        return {**best, "state": "all_exhausted", "reason": exhausted_reason(switchable, pinned, now, tz)}, []
-
-    def age(a):
-        return math.inf if a["last_good_at"] is None else now - a["last_good_at"]
-
-    fresh = [a for a in candidates if age(a) <= (600 if a["active"] else 1800)]
-    pool = fresh or candidates
-    ranked = sorted(pool, key=lambda a: (-headroom(a, pinned), a["sort_order"]))
-    top = ranked[0]
-    room = headroom(top, pinned)
-    shown = pct_left(room)
-    best.update(account=top["id"], label=top["label"], headroom=room, state="ok",
-                current_is_best=top is active, alternatives=[a["id"] for a in ranked[1:] if a is not active][:3])
-    if active is not None and age(active) > 1800:
-        when = "not checked yet" if active["last_good_at"] is None else f"last checked {age_text(age(active))} ago"
-        best.update(state="unknown", confidence="low", reason=f"Usage {when}")
-        return best, ranked
-    if top is active:
-        best["reason"] = "You're on the best account"
-    elif pinned:
-        best["reason"] = f"Most {pinned} headroom ({shown}% left)"
-    elif len(pool) == 1:
-        best["reason"] = "Only account with headroom"
-    elif fresh:
-        best["reason"] = f"Most headroom ({shown}% left) and a fresh reading"
-    else:
-        best["reason"] = f"Most headroom ({shown}% left), based on a {age_text(age(top))} old reading"
-    if not fresh:
-        best["confidence"] = "low"
-    if active is not None and top is not active and age(active) <= 600:
-        binding = pick_binding(active["windows"], pinned)
-        held = binding["left"] if binding is not None else headroom(active, pinned)
-        best["suggest_switch"] = held is not None and held <= 20 and room - held >= 25
-    return best, ranked
-
-
 def exhausted_reason(accounts, pinned, now, tz):
     backs = []
     for account in accounts:
