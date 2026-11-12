@@ -307,7 +307,7 @@ def plan(engine, key, purpose="switch"):
         account_bound=[], invisible=None, stop_tier="not_running")
     planned.plan.update(confirmation_required=True, remember_available=False)
     if any(used is not None and used >= engine.prefs.get("cli_threshold") for _, used, _ in considered(target, engine.prefs.public())):
-        planned.plan["warnings"].append({"code": "rate_limited", "message": "This account is over your auto-switch threshold; auto-switch may fire again."})
+        planned.plan["warnings"].append({"code": "rate_limited", "message": "This account is over your auto-switch threshold. Auto-switch keeps your choice for 2 hours, unless the account runs out or needs sign-in."})
     return register(context(engine), planned)
 
 
