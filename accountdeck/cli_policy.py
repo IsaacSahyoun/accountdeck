@@ -1,4 +1,4 @@
-"""The terminal auto-switch policy the owner approved (§7). Pure: no I/O or clock reads.
+"""The terminal auto-switch policy the owner approved. Pure: no I/O or clock reads.
 
 `evaluate` decides, for the active terminal account, whether to switch now and to which account:
 - threshold: any considered window (5-hour, weekly, the pinned model's weekly) at or past `cli_threshold`,

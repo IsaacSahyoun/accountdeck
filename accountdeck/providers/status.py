@@ -1,4 +1,4 @@
-"""Outage awareness (§6.8, A2): provider status pages plus an outage inferred from our own failed reads."""
+"""Outage awareness: provider status pages plus an outage inferred from our own failed reads."""
 from __future__ import annotations
 
 from collections import deque
@@ -135,7 +135,7 @@ class StatuspageSummary(StatuspageStatus):
 
 
 class ObservedStatus:
-    """An outage inferred from our own reads (§6.8): within the last 10 minutes at least 2 distinct
+    """An outage inferred from our own reads: within the last 10 minutes at least 2 distinct
     accounts (all of them, when fewer are enrolled) failed with 5xx, 529, a timeout or a network
     error, and no account read successfully after the first of those failures."""
 

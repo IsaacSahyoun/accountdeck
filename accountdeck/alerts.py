@@ -1,4 +1,4 @@
-"""Alert engine (PLAN §6.10): turns successive states into alerts, once per episode.
+"""Alert engine: turns successive states into alerts, once per episode.
 
 `AlertEngine.evaluate(prev_state, state, latches, now)` is pure apart from the start/resume hold it
 keeps itself: the first observation after start only primes the latches (nothing is raised from

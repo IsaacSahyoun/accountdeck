@@ -1,4 +1,4 @@
-"""Synthetic providers and machine for tests and demo mode (§11.4).
+"""Synthetic providers and machine for tests and demo mode.
 
 Nothing here reads or writes a real profile or Keychain item: build_fake_home refuses any Paths that is
 not synthetic and every target outside its test root, the fake adapters never make a request, and
@@ -219,9 +219,9 @@ def build_fake_home(paths, *, claude_identity, claude_org, codex_identity, cooki
                     sessions=(), codex_exp_offset=9 * 86400, claude_exp_offset=8 * 3600, now=None,
                     password=SAFE_STORAGE_PASSWORD, meta_version=24, muse_email=None, muse_storage="file"):
     """Writes a complete synthetic Claude Desktop and Codex installation into a Paths.synthetic tree
-    (§11.4) and returns {"paths", "claude", "codex", "codex_exe", "sessions"}.
+    and returns {"paths", "claude", "codex", "codex_exe", "sessions"}.
 
-    Claude (macOS format, docs/mac/PLAN.md §1.6): config.json with the token caches as base64("v10" +
+    Claude (macOS format): config.json with the token caches as base64("v10" +
     AES-128-CBC) under PBKDF2(`password`), a Chromium cookie database in the profile folder at
     `meta_version` (unless `cookies` is false), a Code session with its transcript,
     claude_desktop_config.json with two MCP servers, registry rows for `sessions` (dicts with at least

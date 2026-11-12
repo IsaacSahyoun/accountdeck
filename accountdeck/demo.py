@@ -1,4 +1,4 @@
-"""Demo mode (PLAN §8.3, §11.4): a whole AccountDeck 2 on synthetic data.
+"""Demo mode: a whole AccountDeck 2 on synthetic data.
 
 `build_demo(root, scenario)` builds one of `fixtures.SCENARIOS` under `root` (a temporary folder) and
 returns the started `Engine`; `run.py --demo <scenario>` serves it. Everything the demo touches is
@@ -513,7 +513,7 @@ class _Builder:
 
     # -- the machine --
     def _machine(self):
-        # The quit request is SIGTERM, which Claude (Electron) answers with its own quit (PLAN §1.3).
+        # The quit request is SIGTERM, which Claude (Electron) answers with its own quit.
         procs = DemoProcesses(self.paths)
         running = self.spec["providers"]["claude"]["running"]
         if running["desktop"]:

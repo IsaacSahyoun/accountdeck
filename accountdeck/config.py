@@ -1,4 +1,4 @@
-"""Machine paths, environment flags, timings and the settings schema (PLAN §2.3-2.5, §3.6, §4.10).
+"""Machine paths, environment flags, timings and the settings schema.
 
 Besides the standard library this module imports only ``core.DeckError`` at import time (core
 imports nothing from the package but ``platform.locks``, and resolves ``SafetyViolation`` from here
@@ -25,7 +25,7 @@ V1_PORT = 53147
 SYNTHETIC_CLAUDE_FAMILY = "com.anthropic.claudefordesktop.test"
 SYNTHETIC_CODEX_FAMILIES = ("com.openai.codex.test",)
 OWNER_LOCK_NAME = "AccountDeck2-Owner.lock"
-# Claude Desktop's bundle id (docs/mac/PROVIDERS-MAC.md §1), used only when the installed app's
+# Claude Desktop's bundle id, used only when the installed app's
 # Info.plist cannot be read; the app's own CFBundleIdentifier wins.
 MAC_CLAUDE_BUNDLE_ID = "com.anthropic.claudefordesktop"
 MAC_APPLICATIONS = Path("/Applications")
@@ -35,13 +35,13 @@ LOG_LEVELS = ("debug", "info", "warning")
 
 
 class SafetyViolation(DeckError):
-    """Raised before any side effect when safe mode or the consent rules forbid an action (PLAN §4.1)."""
+    """Raised before any side effect when safe mode or the consent rules forbid an action."""
 
     def __init__(self, message="This action is not allowed in safe mode."):
         super().__init__(message, "safety")
 
 
-# ---- environment flags (PLAN §2.4); read on every call, never cached ----
+# ---- environment flags; read on every call, never cached ----
 
 def demo_mode() -> bool:
     return os.environ.get("ACCOUNTDECK_DEMO") == "1"
@@ -83,7 +83,7 @@ def child_env(remove=(), **extra) -> dict[str, str]:
     return env
 
 
-# ---- machine paths (PLAN §2.5, frozen contract) ----
+# ---- machine paths ----
 
 @dataclass(frozen=True)
 class Paths:
@@ -101,7 +101,7 @@ class Paths:
     python_exe: Path
     repo_root: Path
     temp_root: Path | None
-    claude_family: str                 # Claude Desktop's bundle id (docs/mac/PLAN.md §1.2)
+    claude_family: str                 # Claude Desktop's bundle id
     codex_families: tuple[str, ...]    # Codex app bundle ids the process table attributes (none live yet)
     muse_config: Path                  # ~/.config/muse: Muse Code's auth.json, settings and trust list
     muse_exe: Path | None              # None live: found at run time (~/.local/bin/muse-bin-<version>)
@@ -160,7 +160,7 @@ class Paths:
     @staticmethod
     def synthetic(root: Path, *, codex_stub: bool = True, muse_stub: bool = True) -> "Paths":
         """This Mac's layout under `root`: creates `root` (never its parents) and the skeleton inside it,
-        and registers `root` with procs as test-owned (PLAN §2.5 rule 4). `codex_stub` names
+        and registers `root` with procs as test-owned. `codex_stub` names
         `root/bin/codex` as the Codex CLI (providers.fake writes a synthetic app-server there) and
         `muse_stub` names `root/bin/muse` as Muse Code (providers.fake writes a synthetic one)."""
         root = Path(root).resolve()
@@ -189,7 +189,7 @@ class Paths:
 
 
 def owner_lock_path(paths: Paths) -> Path:
-    """The per-user owner lock (PLAN §9.1): beside, not inside, the default data folder, so a second
+    """The per-user owner lock: beside, not inside, the default data folder, so a second
     service on another data folder still cannot manage the same sign-ins."""
     if paths.mode == "synthetic":
         return paths.temp_root / OWNER_LOCK_NAME
@@ -199,16 +199,16 @@ def owner_lock_path(paths: Paths) -> Path:
 
 
 def _mac_home() -> Path:
-    """The user's home from the user database: launchd sets $HOME oddly (docs/mac/PLATFORM-MAC.md §7)."""
+    """The user's home from the user database: launchd sets $HOME oddly."""
     import pwd
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
 def _mac_paths(home: Path, data_dir: Path | None = None, *, applications=None) -> Paths:
-    """The macOS machine layout (docs/mac/PLAN.md §1.9; PROVIDERS-MAC.md §1) for `home`. Claude Desktop
+    """The macOS machine layout for `home`. Claude Desktop
     keeps one data folder and its family is its bundle id, read from the installed app in
     `applications`. Codex is found at run time (facts_mac.codex_exe), and Codex Desktop's identity is
-    still unknown (PROVIDERS-MAC.md §6.6), so no family names it."""
+    still unknown, so no family names it."""
     support = home / "Library" / "Application Support"
     folders = mac_applications(home) if applications is None else tuple(applications)
     family = next(filter(None, (_bundle_id(folder / "Claude.app") for folder in folders)), MAC_CLAUDE_BUNDLE_ID)
@@ -239,7 +239,7 @@ def _bundle_id(app: Path) -> str | None:
     return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,255}", value) else None
 
 
-bundle_id = _bundle_id   # read at runtime by platform.facts_mac (Claude's launch id, PLAN §1.4)
+bundle_id = _bundle_id   # read at runtime by platform.facts_mac (Claude's launch id)
 
 
 def _register_test_root(root: Path) -> None:
@@ -247,7 +247,7 @@ def _register_test_root(root: Path) -> None:
     procs.register_test_root(root)
 
 
-# ---- timings (PLAN §4.10); seconds unless noted; tests and demos pass overrides ----
+# ---- timings; seconds unless noted; tests and demos pass overrides ----
 
 @dataclass(frozen=True)
 class Timings:
@@ -272,7 +272,7 @@ class Timings:
     launch_retry: tuple[float, ...] = (2, 4, 8)
 
 
-# ---- settings (PLAN §3.6) ----
+# ---- settings ----
 
 @dataclass(frozen=True)
 class Setting:

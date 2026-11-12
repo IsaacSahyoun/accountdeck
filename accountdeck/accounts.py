@@ -1,5 +1,5 @@
-"""Saved accounts (PLAN §2.1 AccountService): saving the signed-in account, reading usage, and the
-unsaved signed-in account of §9.4.
+"""Saved accounts: saving the signed-in account, reading usage, and the signed-in account that is not
+saved yet.
 
 Every Claude capture is health-gated. A capture taken while Claude runs holds its tokens but not
 its cookie database; the account can be read at once and becomes switchable after its next
@@ -197,7 +197,7 @@ class AccountService:
             self.store.record_generation(key, digest, source=source, health="ok")
         flags = dict((self.store.account(key) or existing)["flags"])
         if provider == "claude":
-            flags.pop("outcomes", None)     # a new profile starts a new outcome log (A1)
+            flags.pop("outcomes", None)     # a new profile starts a new outcome log
         flags["restorable"] = restorable(provider, profile)
         self.store.update(key, flags=flags)
 
@@ -509,7 +509,7 @@ class AccountService:
             if lock is not None:
                 lock.release()
 
-    # ---- the unsaved signed-in account (§9.4) ----
+    # ---- the unsaved signed-in account ----
     def sense_unsaved(self, provider, identity):
         """Tracks the account signed in to `provider` when it is not saved (None clears it)."""
         if identity is None or self.store.find(provider, identity) is not None:

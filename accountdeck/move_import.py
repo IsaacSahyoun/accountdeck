@@ -1,4 +1,4 @@
-"""Importing the PC's accounts on the Mac: the receiving half of the move (docs/mac/PLAN.md §2.3-§2.6).
+"""Importing the PC's accounts on the Mac: the receiving half of the move.
 
 Actions (engine `_do_*`, contract.ACTIONS):
 - `import-bundle-preview` {path, passphrase}: opens the bundle and says, per account, what an import would
@@ -21,7 +21,7 @@ What each account becomes:
   (readable), check_action refuses account actions naming it, and its flags keep it out of switching and
   terminal auto-switch. A hand-over bundle fills it: the row gets its sign-in and becomes "v2".
 
-The confirmation code (§2.4) is move_bundle.code_for_imported over the accounts this run stored, so it
+The confirmation code is move_bundle.code_for_imported over the accounts this run stored, so it
 exists only when every account was stored (a deferred Desktop account and an "on_pc" row count). It is kept
 in the encrypted ledger record `move-import` and shown in the state until dismissed; it never goes into
 logs, events or error messages. Neither does any token, cookie or the passphrase.

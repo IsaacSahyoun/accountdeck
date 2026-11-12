@@ -1,4 +1,4 @@
-"""The usage and display rules of the state contract (PLAN §3.3, §6.2-6.7), shared by everything that
+"""The usage and display rules of the state contract, shared by everything that
 derives what the dashboard shows: the engine's intel, the alert engine, the state validator, the menu
 bar and the switch plans. `web/js/model.js` implements the same rules for the browser; keep the two in
 step. Pure: every function takes `now` (and a time zone for clock copy) and reads no clock or file.
@@ -17,7 +17,7 @@ STRIP_HORIZON = 86400
 STRIP_MIN_USED = 5.0
 BUCKET_LIMITS = (("minute", 900), ("hour", 3600), ("six_hours", 21600), ("day", 86400))
 RELATIVE_LIMIT = 21600        # countdown copy up to 6 h, clock copy after
-QUIET_ERRORS = frozenset({"blocked", "rate_limited", "outage"})   # keep the account's state (PLAN §3.3)
+QUIET_ERRORS = frozenset({"blocked", "rate_limited", "outage"})   # keep the account's state
 SEVERITY_RANK = {"watch": 1, "low": 2, "critical": 3, "out": 4}
 DORMANT_DAYS = 25
 PRESERVED = ["Local Code sessions and archives", "Local MCP servers and extensions (shared config)",
@@ -29,7 +29,7 @@ def _is_num(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-# ---- copy shared with model.js (PLAN §7.5) ----
+# ---- copy shared with model.js ----
 
 def countdown_text(secs):
     """Countdown copy: ceil minutes, seconds only under 5 min ("2d 4h", "1h 12m", "45m", "4m 59s", "20s", "now")."""
@@ -76,7 +76,7 @@ def pct_left(left):
     return 100 - js_round(100 - left)
 
 
-# ---- rules (PLAN §6.2–6.7) ----
+# ---- rules ----
 
 def band(left, blocked):
     if left is None:
@@ -119,7 +119,7 @@ def pace_stage(delta, ready):
 
 
 def pace(used, reset, minutes, at, samples):
-    """Pace at reading time (PLAN §6.5); None when hidden or not computable."""
+    """Pace at reading time; None when hidden or not computable."""
     if used is None or reset is None or not minutes or at is None:
         return None
     length = minutes * 60
@@ -269,7 +269,7 @@ def account_out(account):
 
 
 def strip(accounts, now):
-    """Resetting-soon rows (PLAN §3.3/§6.6): refilled first, then by reset."""
+    """Resetting-soon rows: refilled first, then by reset."""
     rows = []
     for account in accounts:
         out = account_out(account)

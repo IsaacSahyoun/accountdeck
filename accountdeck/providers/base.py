@@ -1,4 +1,4 @@
-"""Shared provider vocabulary: credential sets, endpoints, credential states and readings (PLAN §5.9-5.11)."""
+"""Shared provider vocabulary: credential sets, endpoints, credential states and readings."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,13 +24,13 @@ USER_AGENT = f"AccountDeck2/{__version__} (+local)"
 
 
 class CredentialState(str, Enum):
-    """How an account's usage can be read (§5.10); the value is what the state contract shows."""
+    """How an account's usage can be read; the value is what the state contract shows."""
     LIVE = "live"                        # active in the official app, which owns the token
     FRESH = "fresh"                      # saved token valid for more than 3 minutes
     EXPIRED = "expired"                  # saved token expired: last-good reading plus the optional cookie route
     WEB_ONLY = "web_only"                # no OAuth entry, but a web sign-in cookie
-    REAUTH_REQUIRED = "reauth_required"  # only through the A1 escalation (or a refused Codex refresh)
-    ACCESS_EXPIRED = "access_expired"    # Codex: the access token lapsed; the client renews it when it runs (§5.11)
+    REAUTH_REQUIRED = "reauth_required"  # only through errors.reauth_escalation (or a refused Codex refresh)
+    ACCESS_EXPIRED = "access_expired"    # Codex: the access token lapsed; the client renews it when it runs
     UNKNOWN = "unknown"
 
 

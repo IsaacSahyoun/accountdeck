@@ -1,9 +1,9 @@
-"""AccountDeck 2 engine (PLAN §2.2): the state snapshot, the tick loop and the action facade.
+"""AccountDeck 2 engine: the state snapshot, the tick loop and the action facade.
 
 `Engine` implements `server.EngineAPI` and is the one object the switch flows, the move import and
 the demo build against.
 
-- `snapshot()` builds the §3.3 state from the store, the provider adapters and one observation of
+- `snapshot()` builds the state from the store, the provider adapters and one observation of
   the machine, enriches it with `intel.enrich_state` and validates it with
   `contract.validate_state` (an assertion in demo and safe mode, one log line in live mode). The
   result is cached until `bump()` raises `rev`.
@@ -193,7 +193,7 @@ class Engine:
     # ---- what switch code and the server read ----
     @property
     def pending(self):
-        """The running operation (§3.5), or None; an operation waiting in `needs_reconfirm` is not running."""
+        """The running operation, or None; an operation waiting in `needs_reconfirm` is not running."""
         pending = self.runner.pending()
         return pending if pending is not None and pending["phase"] not in TERMINAL_PHASES else None
 
@@ -339,7 +339,7 @@ class Engine:
 
     # ---- reads ----
     def _pressure(self, usage, now):
-        """(hot, exhausted, resets) of a last good reading (§6.9)."""
+        """(hot, exhausted, resets) of a last good reading."""
         windows_ = [w for w in map(intel.normalize_window, (usage or {}).get("windows") or ())
                     if w is not None and w["kind"] in PRIMARY_KINDS]
         current = [w for w in windows_ if w["reset"] is None or w["reset"] > now]     # a passed reset says nothing yet
@@ -691,7 +691,7 @@ class Engine:
                "setup": slow["setup"], "sessions": slow["sessions"], "cwd": settings["cwd"],
                "events": self.store.events(), "last_manifest": self.store.setting("last_manifest"),
                "platform": contract.platform_block(self._notification_state())}
-        raw["move_import"] = move_import.state(self, rows)       # the PC-to-Mac import (docs/mac/PLAN.md §2.3)
+        raw["move_import"] = move_import.state(self, rows)       # the PC-to-Mac import
         state, picks = intel.enrich_state(raw, now=now, settings=settings,
                                           recommender_state=self.prefs.get("recommender_state"))
         self.prefs.set_internal("recommender_state", picks)
@@ -986,7 +986,7 @@ class Engine:
     def _do_dismiss_report(self, body):
         self.runner.dismiss_report()
 
-    # The Mac side of the move (docs/mac/PLAN.md §2.3-§2.5; accountdeck/move_import.py has the shapes).
+    # The Mac side of the move (accountdeck/move_import.py has the shapes).
     def _do_import_bundle_preview(self, body):
         if self.runner.busy:
             raise DeckError("Finish or cancel the current action first.", "busy")
@@ -1096,7 +1096,7 @@ class Engine:
 
 
 def muse_consumers(rows, names):
-    """The contract consumers (§3.3) for Muse processes: a terminal session is "tui", `muse serve` "app_server_child"."""
+    """The contract consumers for Muse processes: a terminal session is "tui", `muse serve` "app_server_child"."""
     return [{"pid": row.pid, "kind": MUSE_CONSUMER_KINDS[row.kind], "parent": names.get(row.parent),
              "started": unix_time(row.ctime)} for row in rows if row.kind in MUSE_CONSUMER_KINDS]
 
@@ -1135,5 +1135,5 @@ def shared_setup(paths, claude_base):
 
 
 def build_engine(paths, *, owner_lock):
-    """The live engine run.py serves (PLAN §8.1)."""
+    """The live engine run.py serves."""
     return Engine(paths, owner_lock=owner_lock)

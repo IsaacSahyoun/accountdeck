@@ -1,4 +1,4 @@
-"""Secret-free diagnostics: a rotating JSON-lines log and per-operation manifests (PLAN §10).
+"""Secret-free diagnostics: a rotating JSON-lines log and per-operation manifests.
 
 Every string that reaches the log or a manifest is redacted first: tokens, cookies,
 keys and emails are masked, UUIDs are shortened and long strings truncated.
@@ -71,7 +71,7 @@ def redact(value, key: str | None = None):
 
 
 class RedactingFilter(logging.Filter):
-    """Redacts the message and every field of a record before any handler formats it (PLAN §10.1)."""
+    """Redacts the message and every field of a record before any handler formats it."""
 
     def filter(self, record):
         try:
@@ -210,7 +210,7 @@ _OP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 class Manifest:
-    """The per-operation record behind "Explain last switch" (PLAN §10.2), stored as
+    """The per-operation record behind "Explain last switch", stored as
     logs/manifests/<op>.json. It holds names, counts and outcomes; every value is redacted
     like a log field, so a secret passed by mistake is masked rather than stored."""
 

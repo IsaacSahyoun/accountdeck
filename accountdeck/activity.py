@@ -1,4 +1,4 @@
-"""Which Claude Code sessions of Claude Desktop are working (PLAN §4.5).
+"""Which Claude Code sessions of Claude Desktop are working.
 
 The source is Claude Code's own sessions registry (`<pid>.json` rows in `paths.claude_sessions`),
 trusted only for a live Code-tab process whose creation time equals the row's `procStart` and whose

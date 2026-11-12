@@ -1,4 +1,4 @@
-"""Normalise provider usage payloads without guessing missing limits (PLAN §6.1).
+"""Normalise provider usage payloads without guessing missing limits.
 
 Unknown stays ``None`` (never 0), every numeric entry survives in ``raw_windows`` for the
 "Raw usage" view, and credits are reported, never consumed.

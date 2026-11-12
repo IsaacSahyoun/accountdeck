@@ -1,4 +1,4 @@
-"""When to read each account's usage (PLAN §6.9): the cadence table, reset-boundary reads, backoff,
+"""When to read each account's usage: the cadence table, reset-boundary reads, backoff,
 the per-identity request governor, staggered refresh-all and the refresh worker pool.
 
 The planning is pure (`base_interval`, `interval`, `RequestGovernor.delay`) and

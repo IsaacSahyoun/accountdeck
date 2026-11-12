@@ -1,4 +1,4 @@
-"""Usage intelligence (PLAN §6.2-6.8): contract windows and accounts from normalized readings,
+"""Usage intelligence: contract windows and accounts from normalized readings,
 refill detection, pace, trend, the recommender with hysteresis and the use-soon policy, outage
 classification and the Now band.
 
@@ -22,9 +22,9 @@ from .rules import PRIMARY_KINDS, REFILL_KEEP, age_text, countdown_text
 
 REFILL_DROP = 25.0            # a used figure this much lower at the next reading means the window refilled
 HYSTERESIS_POINTS = 10.0      # a challenger must beat the previous pick by this much headroom ...
-HYSTERESIS_HOLD = 300.0       # ... and a new pick is held at least this long (PLAN §6.7)
+HYSTERESIS_HOLD = 300.0       # ... and a new pick is held at least this long
 USE_SOON_CEILING = 95.0       # use-soon ranks accounts whose weekly window has at most this much left
-FRESH_ACTIVE, FRESH_INACTIVE = 600.0, 1800.0      # reading age a recommendation counts as fresh (PLAN §6.7)
+FRESH_ACTIVE, FRESH_INACTIVE = 600.0, 1800.0      # reading age a recommendation counts as fresh
 TREND_POINTS = 32
 STATUS_URLS = {"claude": "https://status.claude.com", "codex": "https://status.openai.com", "claude_cli": "https://status.claude.com", "muse": None}    # Meta publishes no status page for Muse
 PROVIDER_NAMES = {"claude": "Claude", "codex": "Codex", "claude_cli": "Claude Code (terminal)", "muse": "Muse"}
@@ -46,10 +46,10 @@ def _count(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
-# ---- the plan's rule functions (§6.2-6.6) ----
+# ---- the rule functions ----
 
 def severity(win, pacing=None):
-    """Severity band of a window (§6.2). It keys off `left` whatever `usage_display` shows: `unknown`
+    """Severity band of a window. It keys off `left` whatever `usage_display` shows: `unknown`
     without a percentage, `out` when blocked or at most 0.5 % is left, then critical / low / watch
     below 5 / 20 / 50 % left. A ready pace demotes `watch` to `plenty` when on pace (delta <= +2)
     and promotes `plenty` to `watch` when far ahead of an even pace (delta >= +15)."""
@@ -57,7 +57,7 @@ def severity(win, pacing=None):
 
 
 def window_state(win, refilled, stale, now):
-    """State of a window (§6.3) from its started / reset_state / severity fields: `not_started`,
+    """State of a window from its started / reset_state / severity fields: `not_started`,
     `resetting` (a reset passed and the reading predates it; the percentage is hidden) or
     `expected_refill` (the same, on a stale account), `out`, `refilled` (a refill confirmed in the
     last 60 min), `last_known` (stale account) or `live`."""
@@ -70,36 +70,36 @@ def age_tier(age, active):
 
 
 def pace(readings, win, at):
-    """Pace of one window at the time of its reading `at` (§6.5), or None while hidden, out, unknown or
+    """Pace of one window at the time of its reading `at`, or None while hidden, out, unknown or
     too early; `readings` are the window's stored readings, of which those of the current reset
     epoch are counted as `samples`."""
     return _pace_at(win, at, epoch_samples(readings, win.get("reset"), win.get("minutes")))
 
 
 def binding(windows, pinned=""):
-    """The window that limits an account (§6.4): among the session, weekly and model windows that are at
+    """The window that limits an account: among the session, weekly and model windows that are at
     least 50 % used, out or the pinned model, the one that is out for longest, else the lowest `left`."""
     return rules.pick_binding(windows, pinned)
 
 
 def headline(account, window, now, tz=None):
-    """{"kind", "text", "window"} of an account (§6.4); `window` is its binding window or None."""
+    """{"kind", "text", "window"} of an account; `window` is its binding window or None."""
     return rules.headline(account, window, now, tz)
 
 
 def resetting_soon(accounts, now):
-    """The Resetting-soon strip (§6.6): refilled windows first, then by reset, each with its chip and bucket."""
+    """The Resetting-soon strip: refilled windows first, then by reset, each with its chip and bucket."""
     return rules.strip(accounts, now)
 
 
 def now_band(accounts, best, now, tz=None, strip=None):
-    """{"next_reset", "best", "attention"} (§6.6). `best` is the per-provider recommendation from
+    """{"next_reset", "best", "attention"}. `best` is the per-provider recommendation from
     `recommend`; `strip` is `resetting_soon(accounts, now)` when the caller already has it."""
     strip = resetting_soon(accounts, now) if strip is None else strip
     return {"next_reset": rules.next_reset(accounts, strip, now), "best": best, "attention": rules.attention(accounts, now, tz)}
 
 
-# ---- windows (§6.1-6.3, §6.5) ----
+# ---- windows ----
 
 def normalize_window(raw):
     """A usage.py window cleaned for display, or None when it cannot be shown. Readings stored by older
@@ -142,7 +142,7 @@ def _pace_at(window, at, samples):
 
 
 def build_window(raw, *, now, at, stale, refilled=None, samples=0):
-    """One contract window (§3.3) from a normalized window read at `at`. The percentage is shown only
+    """One contract window from a normalized window read at `at`. The percentage is shown only
     for a started window whose reset has not passed since the reading."""
     reset_state = rules.reset_state(raw["reset"], now, at)
     used = None if not raw["started"] or reset_state == "passed" else raw["used"]
@@ -158,7 +158,7 @@ def build_window(raw, *, now, at, stale, refilled=None, samples=0):
 
 
 def detect_refill(prev, cur):
-    """Refills between two readings (§6.3): [{"window", "reset_at", "confirmed_at", "previous_used"}].
+    """Refills between two readings: [{"window", "reset_at", "confirmed_at", "previous_used"}].
 
     A window refilled when the previous reading's reset had passed by the time of the new reading
     and either the reset moved forward, the used figure dropped by at least 25 points, or the
@@ -214,7 +214,7 @@ def trend_window(usage):
     return next((w for w in primary if w["kind"] == "weekly"), primary[0] if primary else None)
 
 
-# ---- accounts (§3.3, §6.4) ----
+# ---- accounts ----
 
 def _credential(raw):
     raw = raw if isinstance(raw, dict) else {}
@@ -269,7 +269,7 @@ def _trend_points(acct, usage, at, now):
 
 
 def build_account(acct, *, now, pinned="", tz=None):
-    """A contract account (§3.3) from the engine's view of one account:
+    """A contract account from the engine's view of one account:
 
     id, provider, label, email, plan, active, switchable, saved, imported_from, owner, credential,
     checked, last_good_at, refreshing, error, paused_until, next_check, sort_order, usage (the last
@@ -325,7 +325,7 @@ def build_account(acct, *, now, pinned="", tz=None):
     return account
 
 
-# ---- recommender (§6.7) ----
+# ---- recommender ----
 
 def _weekly(account):
     return next((w for w in account["windows"] if w["kind"] == "weekly" and w["left"] is not None
@@ -355,7 +355,7 @@ def _keep_previous(ranked, favoured, prev, pinned, now):
 
 
 def recommend(provider, accounts, settings, prev_state, now, *, tz=None):
-    """(best, ranked accounts, pick) for one provider, never across providers (§6.7).
+    """(best, ranked accounts, pick) for one provider, never across providers.
 
     `settings` supplies `pinned_model` and `use_soon`; `prev_state` is the recommender_state
     mapping {provider: {"account", "since"}} that implements the hysteresis. A provider incident does
@@ -423,7 +423,7 @@ def recommend(provider, accounts, settings, prev_state, now, *, tz=None):
     return best, ranked, pick
 
 
-# ---- outage (§6.8) ----
+# ---- outage ----
 
 def classify_outage(provider, page, observed, *, now):
     """The contract status of one provider: level = max(status page, observed), with the source that
@@ -452,7 +452,7 @@ def classify_outage(provider, page, observed, *, now):
 # ---- the whole state ----
 
 def enrich_state(raw, *, now, settings, recommender_state=None, tz=None):
-    """The contract state from the engine's raw snapshot: `raw` carries every §3.3 key except that
+    """The contract state from the engine's raw snapshot: `raw` carries every key of the state except that
     `accounts` holds build_account() inputs and `now_band` / `resetting_soon` are absent. Returns
     (state, recommender_state); the caller persists the picks for the next call's hysteresis."""
     pinned = _text(settings.get("pinned_model")) or ""

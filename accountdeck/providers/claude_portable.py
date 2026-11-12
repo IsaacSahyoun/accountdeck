@@ -1,5 +1,4 @@
-"""Portable Claude Desktop profiles: the core of the PC-to-Mac move (docs/mac/PLAN.md §1.6, §2.1, §2.3;
-docs/mac/PROVIDERS-MAC.md §2 "Decrypt → re-encrypt recipe").
+"""Portable Claude Desktop profiles: the core of the PC-to-Mac move.
 
 A portable profile is the plain dict the PC build wrote from a saved profile: the token caches as their
 JSON text, every cookie as its plaintext value plus the row's other columns, the cookie database's schema

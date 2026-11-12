@@ -1,4 +1,4 @@
-"""Example /api/state payloads and SwitchPlans (PLAN §3.3-3.4): every scenario the dashboard renders,
+"""Example /api/state payloads and SwitchPlans: every scenario the dashboard renders,
 built from a few raw readings through the same rules (`accountdeck.rules`) the engine and the validator
 apply, so the fixtures, the validator and the browser model cannot drift apart. The demo seeds its
 synthetic accounts from these scenarios; the dashboard's tests render the written fixtures.
@@ -166,7 +166,7 @@ def _window(raw, now, at, stale):
 
 
 def _trend(raws, now, at):
-    """A few weekly readings from the current reset epoch (PLAN §3.3 trend)."""
+    """A few weekly readings from the current reset epoch (the account's `trend`)."""
     weekly = next((r for r in raws if _SHAPES[r["id"]][0] == "weekly" and r["used"] is not None
                    and r["reset"] is not None), None)
     if weekly is None or at is None:
@@ -699,7 +699,7 @@ def example_state(scenario, now=BASE_NOW):
     }
 
 
-# ---- SwitchPlan fixtures (PLAN §3.4) ----
+# ---- SwitchPlan fixtures ----
 
 def terminal_autoswitch(accounts, settings, now, history=None):
     rows = [a for a in accounts if a["provider"] == "claude_cli"]
