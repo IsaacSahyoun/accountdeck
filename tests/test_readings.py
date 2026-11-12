@@ -1,11 +1,18 @@
 """What AccountDeck measures and decides, on synthetic data: the terminal auto-switch rule as a decision table,
 and usage readings, refills and account upkeep for all four clients. Builder B's file (2026-11-12 refactor)."""
 import copy
+from pathlib import Path
+import threading
+import time
 import unittest
+import uuid
 
-from tests import support  # noqa: F401  (turns safe mode on before the app is imported)
+from tests import support
 
-from accountdeck import cli_policy
+from accountdeck import cli_policy, demo, fixtures, move_bundle, move_import
+from accountdeck.providers import errors
+from accountdeck.scheduler import RefreshScheduler, Target
+from accountdeck.usage import claude_usage
 
 NOW = 1_800_000_000.0
 HOUR, DAY = 3600, 86400
@@ -234,6 +241,241 @@ class AutoSwitchWordsTest(unittest.TestCase):
         self.assertEqual(set(cli_policy.evaluate([active], SETTINGS, {}, NOW)["next_up"][0]),
                          {"id", "label", "skip", "room", "weekly_reset"})
 
+
+# ---- readings, for all four clients ----
+CLIENTS = ("claude_cli", "claude", "codex", "muse")
+WINDOWS = {"claude_cli": ("five_hour", "seven_day"), "claude": ("five_hour", "seven_day"),
+           "codex": ("codex:primary", "codex:secondary"), "muse": ("muse:window", "muse:weekly")}
+
+
+def answer(engine, provider, windows):
+    """From now on `provider`'s synthetic adapter answers a usage read with these windows
+    ([{"key", "used", "reset"}]), in the provider's own format."""
+    payload = demo._payload(provider, windows)
+    adapter = engine.providers[provider]
+    if provider == "claude":
+        adapter._payload = lambda profile: copy.deepcopy(payload)
+    elif provider == "codex":
+        adapter._probe = lambda work, identity, refresh: (copy.deepcopy(payload), None)
+    elif provider == "muse":
+        adapter._run_usage = lambda config_home, *, file_mode, isolated: copy.deepcopy(payload)
+    else:
+        adapter.usage = lambda credentials: claude_usage(copy.deepcopy(payload), now=engine.clock())
+
+
+def signed_in(engine, provider):
+    return next(row for row in engine.store.accounts()
+                if row["provider"] == provider and row["identity"] == engine.active_identity[provider])
+
+
+def shown(engine, key):
+    return next(a for a in engine.snapshot()["accounts"] if a["id"] == key)
+
+
+def sign_out(engine, provider):
+    """What signing out of the client leaves: its login file is gone."""
+    paths = engine.paths
+    {"claude_cli": Path(paths.claude_cli_credentials), "claude": Path(paths.claude_profile) / "config.json",
+     "codex": Path(paths.codex_home) / "auth.json", "muse": Path(paths.muse_config) / "auth.json"}[provider].unlink()
+    engine.sense_active()
+
+
+class RefillTest(unittest.TestCase):
+    """A reading taken after a limit's reset time records the refill, whichever client the account belongs to."""
+
+    def refill_is_recorded(self, provider):
+        engine = support.demo_engine(self, "typical")
+        now, row = engine.clock(), signed_in(engine, provider)
+        session, weekly = WINDOWS[provider]
+        before = [{"key": session, "used": 92.0, "reset": now - 120}, {"key": weekly, "used": 40.0, "reset": now + 3 * DAY}]
+        after = [{"key": session, "used": 3.0, "reset": now + 5 * HOUR}, {"key": weekly, "used": 41.0, "reset": now + 3 * DAY}]
+        engine.store.observe(row["id"], demo._usage(provider, demo._payload(provider, before), now - 600), at=now - 600)
+        had = len(engine.store.refills(0))
+        answer(engine, provider, after)
+        self.assertEqual(engine._refresh(row["id"]), "ok")
+        new = engine.store.refills(0)[had:]
+        self.assertEqual([(r["account"], r["window"], r["previous_used"]) for r in new], [(row["id"], session, 92.0)])
+        window = next(w for w in shown(engine, row["id"])["windows"] if w["id"] == session)
+        self.assertEqual((window["state"], window["used"]), ("refilled", 3.0))
+        self.assertEqual(engine._refresh(row["id"]), "ok")       # the same refill is not recorded twice
+        self.assertEqual(len(engine.store.refills(0)), had + 1)
+
+    def test_claude_desktop(self):
+        self.refill_is_recorded("claude")
+
+    def test_codex(self):
+        self.refill_is_recorded("codex")
+
+    def test_muse(self):
+        self.refill_is_recorded("muse")
+
+
+class UpkeepTest(unittest.TestCase):
+    """Renaming and removing a saved account, for all four clients, signed in or not."""
+
+    def rename_then_remove(self, provider, *, signed_out):
+        engine = support.demo_engine(self, "typical")
+        rows = [a for a in engine.snapshot()["accounts"] if a["provider"] == provider and a["saved"]]
+        victim = next((a for a in rows if not a["active"]), rows[0])      # Codex has only the signed-in one
+        if signed_out:
+            sign_out(engine, provider)
+        engine.action("rename", {"id": victim["id"], "label": "Renamed"})
+        self.assertEqual(shown(engine, victim["id"])["label"], "Renamed")
+        engine.action("remove", {"id": victim["id"]})
+        self.assertTrue(engine.runner.wait(30))
+        report = engine.snapshot()["report"]
+        self.assertEqual((report["outcome"], report["error"]), ("success", None))
+        left = [a["id"] for a in engine.snapshot()["accounts"] if a["provider"] == provider and a["saved"]]
+        self.assertEqual(sorted(left), sorted(a["id"] for a in rows if a["id"] != victim["id"]))
+
+    def test_while_signed_in(self):
+        for provider in CLIENTS:
+            with self.subTest(provider=provider):
+                self.rename_then_remove(provider, signed_out=False)
+
+    def test_while_signed_out_of_the_other_three_clients(self):
+        for provider in ("claude", "codex", "muse"):
+            with self.subTest(provider=provider):
+                self.rename_then_remove(provider, signed_out=True)
+
+    def test_the_terminal_account_in_use_cannot_be_removed(self):
+        engine = support.demo_engine(self, "typical")
+        row = signed_in(engine, "claude_cli")
+        engine.action("remove", {"id": row["id"]})
+        self.assertTrue(engine.runner.wait(30))
+        self.assertEqual(engine.snapshot()["report"]["error"]["message"], "The account in use by your terminals cannot be removed.")
+        self.assertIsNotNone(engine.store.account(row["id"]))
+
+    def test_the_signed_in_account_is_marked_as_used_once_an_hour(self):
+        engine = support.demo_engine(self, "typical")
+        row = signed_in(engine, "codex")
+        first = row["flags"]["last_active_at"]
+        engine.clock.advance(600)
+        engine.sense_active()
+        self.assertEqual(signed_in(engine, "codex")["flags"]["last_active_at"], first)
+        engine.clock.advance(3600)
+        engine.sense_active()
+        self.assertGreater(signed_in(engine, "codex")["flags"]["last_active_at"], first + 3600)
+
+
+class SchedulerTest(unittest.TestCase):
+    def test_one_helper_read_per_client_at_a_time(self):
+        running, most, done, lock = [], [], [], threading.Lock()
+
+        def run(key):
+            with lock:
+                running.append(key)
+                most.append(len(running))
+            time.sleep(0.05)
+            with lock:
+                running.remove(key)
+                done.append(key)
+            return "ok"
+
+        scheduler = RefreshScheduler(run)
+        self.addCleanup(scheduler.shutdown)
+        targets = [Target(f"codex-{n}", "codex", f"id-{n}") for n in range(3)]
+        deadline = time.monotonic() + 10
+        while len(done) < 3 and time.monotonic() < deadline:
+            scheduler.tick(targets, 1000.0, lambda: 1000.0)
+            time.sleep(0.02)
+        self.assertEqual(sorted(done), ["codex-0", "codex-1", "codex-2"])
+        self.assertEqual(max(most), 1)
+
+
+class RetryAfterTest(unittest.TestCase):
+    def test_what_a_retry_after_header_asks_for(self):
+        seconds = errors.retry_after_seconds
+        self.assertEqual((seconds("120"), seconds(" 0 "), seconds(None), seconds("soon"), seconds("-5")),
+                         (120.0, 0.0, None, None, None))
+        self.assertEqual(seconds("Wed, 21 Oct 2015 07:28:00 GMT", now=1445412480.0 - 90), 90.0)
+        self.assertEqual((errors.rate_limit_wait(None), errors.rate_limit_wait(120.0)), (900, 1020.0))
+        self.assertEqual(errors.ProviderError("rate_limited").retry_after, 900)
+
+
+# ---- the PC move import ----
+PASSPHRASE = "synthetic passphrase for tests"
+SCRYPT_N = 2 ** 10
+
+
+def write_bundle(case, engine, settings):
+    """A main move bundle under the demo's own folder: one terminal account still signed in on the PC."""
+    payload = {"format": 1, "source_platform": "windows", "settings": settings, "accounts": [{
+        "id": "pc-1", "provider": "claude_cli", "identity": str(uuid.uuid4()), "label": "From the PC",
+        "email": "pc@example.test", "plan": "max", "org": "", "created": NOW, "live_on_pc": True, "refills": [],
+        "history": {"last_good_usage": None, "last_good_at": None, "readings": [], "snapshots": []}}]}
+    case.addCleanup(setattr, move_import, "MIN_SCRYPT_N", move_import.MIN_SCRYPT_N)
+    move_import.MIN_SCRYPT_N = SCRYPT_N
+    path = Path(engine.paths.temp_root) / "move.adeck"
+    path.write_bytes(move_bundle.seal(payload, PASSPHRASE, "main", scrypt_n=SCRYPT_N, min_scrypt_n=SCRYPT_N))
+    return {"path": str(path), "passphrase": PASSPHRASE}
+
+
+class MoveImportTest(unittest.TestCase):
+    def test_an_import_lists_the_pc_account_and_brings_its_settings(self):
+        engine = support.demo_engine(self, "typical")
+        engine.update_settings({"cli_autoswitch": False})
+        body = write_bundle(self, engine, {"cli_autoswitch": True, "cli_threshold": 90, "sort": "stable"})
+        before = len(engine.store.accounts())
+        preview = engine.action("import-bundle-preview", body)["preview"]
+        self.assertEqual((preview["kind"], preview["refused"], preview["counts"]["on_pc"]), ("main", False, 1))
+        self.assertEqual([(a["label"], a["action"]) for a in preview["accounts"]], [("From the PC", "on_pc")])
+        self.assertEqual(len(engine.store.accounts()), before, "a preview writes nothing")
+        self.assertEqual(engine.settings()["cli_autoswitch"], False)
+        result = engine.action("import-bundle", body)["result"]
+        self.assertTrue(result["complete"])
+        self.assertRegex(result["code"], r"^[A-Z2-7]{4}-[A-Z2-7]{4}$")
+        row = next(r for r in engine.store.accounts() if r["label"] == "From the PC")
+        self.assertEqual((row["provider"], row["owner"]), ("claude_cli", "on_pc"))
+        settings = engine.settings()
+        self.assertEqual((settings["cli_autoswitch"], settings["cli_threshold"]), (True, 90))
+
+
+# ---- the example states ----
+def picks(state):
+    """What one example state recommends per client: the pick, its state and reason, then the first ranked accounts."""
+    found = []
+    for provider, best in state["now_band"]["best"].items():
+        if best["state"] == "none":
+            continue
+        ranked = sorted((a for a in state["accounts"] if a["provider"] == provider and a["rank"]), key=lambda a: a["rank"])
+        found.append(f"{provider} {best['account']} {best['state']} {best['reason']} | " + " ".join(a["id"] for a in ranked[:4]))
+    return found
+
+
+# The answers at the starting commit (1c1787b).
+PICKS = {
+    'terminal': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
+    'typical': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
+    'resets-soon': ['claude acc_5 ok Most headroom (70% left) and a fresh reading | acc_5 acc_3 acc_4 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha'],
+    'refilled': ['claude acc_3 ok Most headroom (85% left) and a fresh reading | acc_3 acc_2 acc_1'],
+    'not-started': ['claude acc_3 ok Most headroom (90% left) and a fresh reading | acc_3 acc_1 acc_2'],
+    'codex-blocked': ['claude acc_2 ok Most headroom (80% left) and a fresh reading | acc_2 acc_1', 'codex None all_exhausted No account has room right now. Soonest back: Codex main in 2h — 4:13 PM | '],
+    'needs-signin': ['claude acc_4 ok Most headroom (88% left) and a fresh reading | acc_4 acc_1'],
+    'blocked-cloudflare': ['claude acc_4 ok Most headroom (90% left) and a fresh reading | acc_4 acc_1'],
+    'stale': ['claude acc_3 unknown Usage last checked 42m ago | acc_3 acc_4'],
+    'fable-binding': ['claude acc_2 ok Most Fable headroom (65% left) | acc_2 acc_3 acc_1'],
+    'resetting': ['claude acc_3 ok Only account with headroom | acc_3'],
+    'rate-limited': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3'],
+    'outage': ['claude acc_2 ok Most headroom (60% left) and a fresh reading | acc_2 acc_1'],
+    'switching': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
+    'stopping': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
+    'report': ["claude acc_4 ok You're on the best account | acc_4 acc_5 acc_3 acc_2"],
+    'needs-reconfirm': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
+    'empty': [],
+    'loading': ['claude None unknown Waiting for the first readings | '],
+    'fifty': ['claude acc_31 ok Most headroom (94% left) and a fresh reading | acc_31 acc_32 acc_1 acc_33', 'codex acc_48 ok Most headroom (89% left) and a fresh reading | acc_48 acc_42 acc_49 acc_43'],
+    'read-only': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
+    'demo-banner': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
+    'first-run': [],
+}
+
+
+class ExampleStatesTest(unittest.TestCase):
+    maxDiff = None
+
+    def test_what_each_example_state_recommends(self):
+        self.assertEqual({scenario: picks(fixtures.example_state(scenario)) for scenario in fixtures.SCENARIOS}, PICKS)
 
 if __name__ == "__main__":
     unittest.main()
