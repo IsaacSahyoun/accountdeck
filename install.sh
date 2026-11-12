@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs or upgrades AccountDeck 2 for this Mac user (Apple silicon; docs/mac/PLATFORM-MAC.md §4-6).
+# Installs or upgrades AccountDeck 2 for this Mac user (Apple silicon).
 #
 #     bash install.sh [--no-launch] [--start-at-login] [--prefix DIR] [--downloads DIR]
 #
@@ -54,7 +54,7 @@ usage() {
     sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# ---- pinned runtime (PLATFORM-MAC.md §6): Apple silicon only ----
+# ---- pinned runtime: Apple silicon only ----
 PY_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8%2B20261003-aarch64-apple-darwin-install_only.tar.gz
 PY_SHA=d15291f940cfecd2e54010d5e37d2e03aa192f076a65d26ab741372fff2dabfe
 CFFI_URL=https://files.pythonhosted.org/packages/b3/a9/9db617d05d7367c1ad0ab00b3aa6e6f9281edd689b4ee9ea0e5a84e89c97/cffi-2.1.1-cp314-cp314-macosx_11_0_arm64.whl
@@ -173,7 +173,7 @@ main() {
     case "$src/" in "$APPDIR/"*|"$RT/"*) die "run install.sh from the package folder, not from the installed copy." ;; esac
 
     mkdir -p "$SUPPORT" "$APPS"
-    chmod 700 "$SUPPORT"            # the data folder: private to you (PLATFORM-MAC.md §7)
+    chmod 700 "$SUPPORT"            # the data folder: private to you
     trap cleanup EXIT
     # Everything is built in a work folder of this run's own, so two installs started at once never write into
     # each other's files. An install that is killed leaves its folder behind; uninstall.sh removes those.
@@ -251,7 +251,7 @@ with open(target + ".tmp", "w", encoding="utf-8") as handle:
 ' "$APP/Contents/MacOS/$EXECUTABLE" "$AGENTS_DIR" "$LOGS" "$manage" "$APPDIR/install.json"
     mv "$APPDIR/install.json.tmp" "$APPDIR/install.json"
 
-    # ---- the app bundle (PLATFORM-MAC.md §5): built aside, swapped in only when it differs ----
+    # ---- the app bundle: built aside, swapped in only when it differs ----
     local app_version icns bundle_changed=0
     app_version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$APPDIR/accountdeck/__init__.py")
     [ -n "$app_version" ] || die "the app version was not found."

@@ -129,23 +129,18 @@ from GitHub and libraries from PyPI. The dashboard uses no CDNs.
 
 ## Development
 
-In a source checkout, see `AGENTS.md` for safety rules. Never develop against real logins or the live service.
-From the repository root, use the installed runtime:
+Never develop against real logins or the live service. From the repository root, use the installed runtime.
+The tests and the demo run on synthetic accounts only:
 
 ```sh
 PY="$HOME/Library/Application Support/AccountDeck2/runtime/python/bin/python3.14"
 ACCOUNTDECK_SAFE_MODE=1 "$PY" -E -s -m unittest discover -s tests -t .
 "$PY" -E -s run.py --demo first-run --port 0 --no-browser
+"$PY" -E -s tools/slop_scan.py
 ```
 
-Build and test the shareable package:
-
-```sh
-tools/build_mac_package.sh
-tools/mac_package_test.sh
-```
-
-The builder writes `dist/AccountDeck2-mac.zip`. It includes only distribution files, rejects
-personal data and unexpected files in the app tree, and preserves executable permissions.
-The package test installs and uninstalls under a temporary prefix in safe mode.
-`PY` can select another compatible development runtime. No live install is needed for package testing.
+The dashboard tests draw the page in a headless Chrome. They look for one in `$ACCOUNTDECK_TEST_CHROME`,
+in Playwright's download folder and in `/Applications`, and skip when there is none.
+`tools/slop_scan.py` lists code nothing uses. `PY` can select another compatible development runtime.
+To try `install.sh` or `uninstall.sh` without touching your real install, pass `--prefix DIR`:
+everything then goes below `DIR`, and `launchctl` and the Finder registration are skipped.

@@ -34,13 +34,9 @@
 
   // ---- Building blocks ----------------------------------------------------------------------------
 
-  function names(sessions) {
-    return sessions.map((s) => `“${s.name}” (${STRINGS.session[s.status] || STRINGS.session.unknown})`).join(', ');
-  }
-
   function sessionsText(sessions) {
     return fill(sessions.length === 1 ? STRINGS.modal.sessionsOne : STRINGS.modal.sessions,
-      { n: sessions.length, names: names(sessions) });
+      { n: sessions.length, names: AD.format.sessionNames(sessions) });
   }
 
   function section(title, content) {
@@ -238,7 +234,7 @@
     openProgress(last && last.pending);
   }
 
-  /** Desktop and Codex always review the plan. Only the existing terminal flow may skip review
+  /** Desktop, Codex and Muse always review the plan. Only the terminal flow may skip review
    * when the service says no confirmation is needed ("Ask before switching when Claude is idle" off). */
   async function open(accountId) {
     let result;
@@ -290,7 +286,7 @@
     const active = (pending.steps || []).find((s) => s.status === 'active');
     return el('div', 'progress',
       el('p', { class: 'progress-now', text: mask(active ? active.label : pending.message || '') }),
-      waiting.length ? el('p', { class: 'progress-waiting', text: fill(STRINGS.progress.waitingOn, { names: names(waiting) }) }) : null,
+      waiting.length ? el('p', { class: 'progress-waiting', text: fill(STRINGS.progress.waitingOn, { names: AD.format.sessionNames(waiting) }) }) : null,
       el('div', { class: 'progress-bar', 'aria-hidden': 'true' }),
       el('ol', 'steps', (pending.steps || []).map(stepItem)));
   }

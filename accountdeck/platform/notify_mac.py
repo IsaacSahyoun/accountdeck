@@ -1,4 +1,4 @@
-"""Desktop notifications: the menu bar item's `desktop` sink, through UNUserNotificationCenter (PLATFORM-MAC.md §3).
+"""Desktop notifications: the menu bar item's `desktop` sink, through UNUserNotificationCenter.
 
 When it is delivered is `notify.Notifier`'s policy; this module only shows a delivery and tracks whether
 macOS lets AccountDeck 2 notify. Banners carry AccountDeck 2's name and icon; the request identifier is the

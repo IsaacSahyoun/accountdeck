@@ -260,6 +260,11 @@
     return isNum(ts) ? ageText(nowMs / 1000 - ts) : '—';
   }
 
+  /** Open sessions as words: “name” (working), “other” (idle). */
+  function sessionNames(sessions) {
+    return sessions.map((s) => `“${s.name}” (${STRINGS.session[s.status] || STRINGS.session.unknown})`).join(', ');
+  }
+
   /** "Max" from "max": a plan name for display. */
   function capitalised(text) {
     return typeof text === 'string' && text ? text[0].toUpperCase() + text.slice(1) : null;
@@ -329,5 +334,5 @@
     return message;
   }
 
-  AD.format = { STRINGS, fill, ageText, ago, capitalised, setPlatform, feature, label, errorText, appWindow, notificationState };
+  AD.format = { STRINGS, fill, ageText, ago, sessionNames, capitalised, setPlatform, feature, label, errorText, appWindow, notificationState };
 })();

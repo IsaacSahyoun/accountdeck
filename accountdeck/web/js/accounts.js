@@ -1,6 +1,7 @@
-/* AccountDeck 2 — what the page knows about Claude Code (terminal) accounts, without any DOM:
- * which ones are listed, which is in use, which are blocked or frozen, sort orders, the limits a row
- * shows, the limit that binds, the Fable 5.1 board and auto-switch's next pick. */
+/* AccountDeck 2 — what the page knows about accounts, without any DOM. For every client: which ones
+ * are blocked, need sign-in or belong to another computer. For Claude Code (terminal) accounts also
+ * which are listed and in use, sort orders, the limits a row shows, the limit that binds, the Fable 5.1
+ * board and auto-switch's next pick. */
 (function () {
   'use strict';
   const AD = window.AD = window.AD || {};

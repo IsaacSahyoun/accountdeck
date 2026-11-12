@@ -1,4 +1,4 @@
-"""The menu bar item on screen (docs/mac/PLAN.md D8, §1.10): one NSStatusItem, driven by platform/menubar.py.
+"""The menu bar item on screen: one NSStatusItem, driven by platform/menubar.py.
 
 `AppKitStatusBar` is the StatusBar seam `menubar.MenuBar` talks to. Its setters queue their AppKit work on
 the main thread (`MacApp.call`) and return at once; `alert` waits for the answer. The item keeps its place
