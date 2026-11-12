@@ -15,12 +15,11 @@ import tempfile
 import time
 import urllib.parse
 
-from . import recovery, waiting
+from . import recovery
 from .contract import UNSAVED_IDS
-from .core import DeckError, FileTransaction, atomic_write, is_frozen, json_bytes
-from .diagnostics import Manifest
+from .core import DeckError, atomic_write, is_frozen, json_bytes
 from .engine import muse_consumers
-from .operations import Operation
+from .file_switch import FileSwitch
 from .platform import facts_mac
 from .procs import DEVNULL, PIPE, ProcessSet
 from .providers.muse import FILE_BACKEND, LoginOutput, Muse, cleared_env, identity_key, is_file_login
@@ -149,98 +148,46 @@ def login_file(ctx) -> recovery.FileLogin:
                               identity_of=identity_key)
 
 
-class MuseSwitch(Operation):
-    def __init__(self, ctx, claimed, target):
-        super().__init__("switch", provider="muse", account=target["id"], label=target["label"],
-                         consent=claimed.mode, token=claimed.token,
-                         steps=(("wait", "Waiting for Muse sessions"), ("save", "Saving the current sign-in"),
-                                ("restore", "Restoring the selected sign-in"), ("verify", "Checking the sign-in")))
-        self.ctx, self.claimed, self.target = ctx, claimed, target
+class MuseSwitch(FileSwitch):
+    client = "Muse"
 
-    def run(self):
-        ctx, engine = self.ctx, self.ctx.engine
-        manifest = Manifest.start(self.id, "switch", directory=Path(ctx.paths.data_dir) / "logs" / "manifests")
-        self.report["manifest"] = self.id
-        manifest.set("consent.mode", self.consent).set("consent.pair_count", len(self.token.pairs))
-        tx, outcome = None, "failed"
-        ctx.scheduler.pause("muse")
-        try:
-            with ExitStack() as stack:
-                try:
-                    for row in engine.store.accounts():
-                        if row["provider"] == "muse":
-                            lock = ctx.scheduler.account_lock(row["id"])
-                            if not lock.acquire(timeout=ctx.timings.lock_wait):
-                                raise DeckError("A Muse usage check is still running.", "busy")
-                            stack.callback(lock.release)
-                    self.target = engine.store.account(self.account)
-                    if self.target is None:
-                        raise DeckError("That account no longer exists.", "not_found")
-                    if is_frozen(self.target):
-                        raise DeckError("This account's sign-in belongs to another computer.", "read_only")
-                    with self.step("wait", phase="waiting_idle", message="Waiting for Muse sessions to close…"):
-                        waiting.for_sessions(self, "Muse", lambda: processes(ctx),
-                                             lambda: plan_muse_switch(ctx, self.account, ignore_op=self.id))
-                        engine.sense_active()
-                        if not engine.identity_known["muse"] or engine.active_identity["muse"] != self.claimed.entry["identity"]:
-                            raise DeckError("The outgoing sign-in changed. Review the switch again.", "identity")
-                        if engine.read_only:
-                            raise DeckError("Muse sign-ins are read-only.", "read_only")
-                        if time.time() >= self.token.expires:
-                            raise DeckError("The switch confirmation expired. Review it again.", "stale_plan")
-                        self.checkpoint()
-                        # A usage read that started before the pause may still be rewriting the live auth.json.
-                        self.set_phase("saving", "Waiting for a Muse usage check to finish…", cancellable=False)
-                        hold_reads(ctx, stack)
-                    with self.step("save", phase="saving", message="Saving the current Muse sign-in…", cancellable=False):
-                        ctx.muse.validate_switchable()
-                        live = ctx.muse.live_document()
-                        if engine.active_identity["muse"] is not None and is_file_login(live):
-                            ctx.accounts.capture("muse", owner="v2")
-                        elif live is not None:
-                            self.note(INCOMPLETE_NOTE, status="skipped")
-                    with self.step("restore", phase="restoring", message="Restoring the selected sign-in…", cancellable=False):
-                        if processes(ctx)[1].pairs:
-                            raise DeckError("Muse started again. Nothing was changed.", "busy")
-                        active = ctx.muse.active_identity()
-                        if active.status == "unknown" or active.identity != self.claimed.entry["identity"]:
-                            raise DeckError("The outgoing sign-in changed.", "identity")
-                        profile = ctx.vault.get(self.account)
-                        if identity_key(profile) != self.target["identity"]:
-                            raise DeckError("The saved sign-in identity changed.", "identity")
-                        if processes(ctx)[1].pairs or engine.read_only:
-                            raise DeckError("The process set changed before the swap. Review it again.", "busy")
-                        tx = FileTransaction(ctx.vault, engine.roots())
-                        tx.doc.update(provider="muse", purpose="switch", outgoing=self.claimed.entry["identity"],
-                                      target=self.target["identity"])
-                        ctx.muse.restore(profile, tx)
-                    with self.step("verify", phase="verifying", message="Checking the selected Muse account…", cancellable=False):
-                        if ctx.muse.active_identity().identity != self.target["identity"]:
-                            raise DeckError("Muse did not keep the selected sign-in.", "identity")
-                        reading = ctx.muse.usage(live=True, account=self.account)
-                        if getattr(reading.error, "kind", None) in ("identity", "refresh_rejected"):
-                            self.report.update(verified="failed", verify_reason="Meta rejected the selected sign-in.")
-                            raise DeckError("The selected Muse sign-in could not be verified. Sign in again with "
-                                            "Add Account.", "reauth_required")
-                        ctx.accounts.keep_live_muse(self.account, self.target["identity"])
-                        verified = "verified" if reading.error is None and reading.usage is not None else "unconfirmed"
-                        self.report.update(verified=verified, verified_at=ctx.clock() if verified == "verified" else None,
-                                           verify_reason=None if verified == "verified" else "Muse could not report usage "
-                                           "right now; the local sign-in matches.",
-                                           summary=f"Muse is ready as {self.label}." +
-                                           (" The outgoing account was saved." if self.claimed.plan["saves_outgoing"] else ""))
-                        if reading.usage is not None:
-                            ctx.store.observe(self.account, reading.usage, at=reading.checked or ctx.clock())
-                        tx.commit()
-                        manifest.set("verification.result", verified)
-                        outcome = "success"
-                except BaseException:
-                    # While Muse runs again the record stays open: Recover puts it right once Muse is closed.
-                    recovery.after_failure(tx, lambda tx: recovery.put_back(ctx, tx, login_file(ctx)))
-                    raise
-        finally:
-            ctx.scheduler.resume_provider("muse")
-            manifest.set("outcome", outcome).finish()
+    @property
+    def adapter(self):
+        return self.ctx.muse
+
+    def login_file(self):
+        return login_file(self.ctx)
+
+    def wait(self, stack):
+        ctx = self.ctx
+        self.sessions_closed(lambda: processes(ctx), lambda: plan_muse_switch(ctx, self.account, ignore_op=self.id))
+        # A usage read that started before the pause may still be rewriting the live auth.json.
+        self.set_phase("saving", "Waiting for a Muse usage check to finish…", cancellable=False)
+        hold_reads(ctx, stack)
+
+    def save(self):
+        ctx = self.ctx
+        ctx.muse.validate_switchable()
+        live = ctx.muse.live_document()
+        if ctx.engine.active_identity["muse"] is not None and is_file_login(live):
+            ctx.accounts.capture("muse", owner="v2")
+        elif live is not None:
+            self.note(INCOMPLETE_NOTE, status="skipped")
+
+    def verify(self, profile):
+        ctx = self.ctx
+        if ctx.muse.active_identity().identity != self.target["identity"]:
+            raise DeckError("Muse did not keep the selected sign-in.", "identity")
+        reading = ctx.muse.usage(live=True, account=self.account)
+        if getattr(reading.error, "kind", None) in ("identity", "refresh_rejected"):
+            self.report.update(verified="failed", verify_reason="Meta rejected the selected sign-in.")
+            raise DeckError("The selected Muse sign-in could not be verified. Sign in again with Add Account.",
+                            "reauth_required")
+        ctx.accounts.keep_live_muse(self.account, self.target["identity"])
+        verified = self.confirmed(reading, "Muse could not report usage right now; the local sign-in matches.")
+        if reading.usage is not None:
+            ctx.store.observe(self.account, reading.usage, at=reading.checked or ctx.clock())
+        return verified
 
 
 def recover_pending(ctx):
