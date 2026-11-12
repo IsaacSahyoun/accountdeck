@@ -1,4 +1,4 @@
-"""Claude Desktop's switch flows (PLAN §5): the plan, the stop ladder, capture, restore, relaunch and the
+"""Claude Desktop's switch flows: the plan, the stop ladder, capture, restore, relaunch and the
 hand-off to verification.
 
 Every job that stops Claude Desktop (switch, quit, capture, add, finish-login, cancel-login, recover) runs
@@ -89,7 +89,7 @@ def claude_login(engine):
     return login if isinstance(login, dict) and login.get("provider") == "claude" else None
 
 
-# ---- the plan (§5.2) ----
+# ---- the plan ----
 
 def plan_claude_switch(ctx, account_id=None, purpose="switch", *, ignore_op=None) -> dict:
     """The side-effect-free plan the user confirms, registered for the claim that follows."""
@@ -218,10 +218,10 @@ def _stop_tier(ctx, observed):
         return "manual"
     if not observed.desktop:
         return "not_running"
-    return "graceful" if graceful_first(ctx.paths, ctx.procs, observed.main) else "managed"
+    return "graceful" if graceful_first(observed.main) else "managed"
 
 
-# ---- opening Claude (§5.7; docs/mac/PLAN.md §1.4) ----
+# ---- opening Claude ----
 
 def launch_target(ctx):
     """Claude's bundle id, read from the installed Claude.app (what `open -b` opens); None when Claude is
@@ -332,7 +332,7 @@ def _undo_line(ctx):
     return f"Restore {previous['label']}'s sign-in" if previous else "Put the sign-in Claude had before back"
 
 
-# ---- preflight (§5.3) ----
+# ---- preflight ----
 
 @dataclass
 class Inspection:
@@ -403,7 +403,7 @@ def restore_profile(ctx, account_id, tx) -> dict:
     return found[1]
 
 
-# ---- the jobs (§5.4): what every job that stops Claude has in common ----
+# ---- the jobs: what every job that stops Claude has in common ----
 
 class _Stages:
     """Drives the wait, stop and settle steps from the stop ladder's progress calls. A ladder callback must
@@ -705,7 +705,7 @@ class ClaudeJob(Operation):
     # ---- S4 save the sign-in Claude holds ----
     def _save_current(self, *, required=False, label=None):
         """Saves the sign-in Claude is leaving, under the health gate. A signed-in account that is not saved yet is
-        saved as a new one, so a switch never loses a sign-in (§9.4). `required` (capture, finish-login): anything
+        saved as a new one, so a switch never loses a sign-in. `required` (capture, finish-login): anything
         but a healthy sign-in fails the job."""
         ctx, claude, manifest = self.ctx, self.ctx.claude, self.manifest
         required = required or self.confirmed.get("saves_outgoing", False)
@@ -938,7 +938,7 @@ class ClaudeJob(Operation):
 
 
 class ClaudeSwitch(ClaudeJob):
-    """The switch of PLAN §5.4: prepare, stop, save the outgoing sign-in, restore the target's, carry the session
+    """The switch: prepare, stop, save the outgoing sign-in, restore the target's, carry the session
     list over, reopen Claude and verify that it signed in as the target."""
 
     purpose = "switch"

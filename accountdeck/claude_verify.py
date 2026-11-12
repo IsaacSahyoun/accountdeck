@@ -1,4 +1,4 @@
-"""Whether Claude Desktop came back signed in as the account a job restored (PLAN §5.5), and the
+"""Whether Claude Desktop came back signed in as the account a job restored, and the
 secret-free facts the switch manifest and report read from Claude's folder (main.log lines, config.json
 key names, token-cache shape, MCP server names).
 

@@ -1,12 +1,12 @@
 """Generic passwords in a macOS keychain through /usr/bin/security, and the Mac vault cipher built on
-one of them (docs/mac/PLAN.md D4, §1.5; docs/mac/PLATFORM-MAC.md §8).
+one of them.
 
 Calls: `get`/`set`/`delete` for printable-text values (what another app's item holds, for example
 Claude Code's JSON), `get_bytes`/`set_bytes` for binary values (stored as unpadded base64url text, so
 `find-generic-password -w` output is never ambiguous) and `get_or_create_bytes` for a random key that
 two processes may create at once. `VaultCipher` is the `protect=` cipher `core.Vault` uses on macOS.
 
-Rules the implementation keeps (PLATFORM-MAC.md §8): `security` is the only process this module starts
+Rules the implementation keeps: `security` is the only process this module starts
 and the only program that ever writes an item (procs.run_security); a value that fits one `security -i`
 line reaches it on stdin, never argv; every call has a timeout, because an access dialog blocks
 `security`; `-A` is never used; the keychain search list and default keychain are never changed (only
@@ -22,7 +22,7 @@ way (`a.length<=U?...uh("security",["-i"],{input:a...}):...uh("security",["add-g
 n,"-s",C,"-X",i]...)` with `U=4032`), and its credentials item comes back from its own writes in the
 `apple-tool:` partition, so `security` writes that item too. Claude Code's login passes 4032 characters
 once its MCP servers' sign-ins are stored with it (about 15,000 on the owner's Mac). This is the one
-exception to "never in argv": any local user can read argv through the setuid `ps` (PLATFORM-MAC.md §7),
+exception to "never in argv": any local user can read argv through the setuid `ps`,
 but this Mac has one login user, whose processes read the item through `security` without a prompt
 anyway, Claude Code already puts this item in argv on each of its own long writes, and `security`'s
 `-w` prompt reads at most 128 characters (getpass).
@@ -230,7 +230,7 @@ def get_or_create_bytes(service: str, account: str, size: int = 32, *, keychain=
     raise KeychainError(MESSAGES["failed"], "failed")
 
 
-# ---- the Mac vault cipher (D4, §1.5) ----
+# ---- the Mac vault cipher ----
 
 VAULT_SERVICE = "AccountDeck2 vault"
 VAULT_KEY_SIZE = 32

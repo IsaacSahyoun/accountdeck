@@ -1,4 +1,4 @@
-"""Consent-bound Codex switching; only auth.json is exchanged (docs/mac/PLAN.md §1.8).
+"""Consent-bound Codex switching; only auth.json is exchanged.
 
 The consumers are what the process controller classifies (ChatGPT.app, the codex processes it bundles,
 Codex CLI terminals); Codex Desktop is never signalled, and the Codex CLI is the one

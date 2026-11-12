@@ -1,5 +1,4 @@
-"""Claude Desktop's Chromium/Electron credential encryption on macOS (docs/mac/PLAN.md D5, §1.6;
-docs/mac/PROVIDERS-MAC.md §2).
+"""Claude Desktop's Chromium/Electron credential encryption on macOS.
 
 Electron's safeStorage (the `oauth:tokenCache*` values in config.json) and Chromium's os_crypt (every cookie
 `encrypted_value`) share one key and one framing: the key is PBKDF2-HMAC-SHA1(password, b"saltysalt", 1003

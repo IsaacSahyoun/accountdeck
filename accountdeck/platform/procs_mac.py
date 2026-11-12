@@ -1,4 +1,4 @@
-"""The live process controller of this Mac (docs/mac/PLAN.md §1.2-1.4): part of procs, built on platform/libproc.
+"""The live process controller of this Mac: part of procs, built on platform/libproc.
 
 It holds AccountDeck's one signal call site (`_signal`) and starts the system tools it needs through procs'
 self-guarded spawn: /usr/bin/open (apps by bundle id, a Terminal.app window for a command, a folder in
@@ -327,7 +327,7 @@ class MacProcessController(ProcessController):
         return True
 
     def request_close(self, token: ConsentToken, target: ProcessInfo) -> None:
-        """T1a (PLAN §1.3): SIGTERM to the verified Claude Desktop main, which runs Electron's app.quit()."""
+        """T1a: SIGTERM to the verified Claude Desktop main, which runs Electron's app.quit()."""
         self._send("request_close", token, target, graceful=True)
 
     def terminate(self, token: ConsentToken, target: ProcessInfo) -> bool:
@@ -379,7 +379,7 @@ class MacProcessController(ProcessController):
         return None
 
     def launch_claude(self, bundle_id: str | None) -> int | None:
-        """Starts Claude Desktop by bundle id in the background: `open -g -b` (PLAN §1.4). The new app's
+        """Starts Claude Desktop by bundle id in the background: `open -g -b`. The new app's
         parent is launchd, so its pid is not known here (None); the verifier watches for it."""
         self._open_app(self._require_bundle_id(bundle_id or self.paths.claude_family), background=True)
         return None

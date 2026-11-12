@@ -1,11 +1,11 @@
-"""Codex adapter (§5.11, A8, A9): token state, read-only and refresh probes through a private
+"""Codex adapter: token state, read-only and refresh probes through a private
 app-server helper, the tri-state active identity, and auth.json swaps.
 
 The helper runs in a throw-away CODEX_HOME under the data folder and is spawned only through the
-process controller (§4.1). A read-only probe gets a blank refresh token, so it can never rotate the
+process controller. A read-only probe gets a blank refresh token, so it can never rotate the
 refresh token the official client holds; refresh mode is reserved for accounts AccountDeck 2 owns.
 
-Only the file store, ~/.codex/auth.json, is swapped (docs/mac/PLAN.md §1.8, §8). Config leaves
+Only the file store, ~/.codex/auth.json, is swapped. Config leaves
 `codex_exe` unset live, so the CLI is found at run time (facts_mac.codex_exe: PATH, the ~/.local/bin
 launcher resolved to its package binary, the package, then the CLI inside ChatGPT.app). A config.toml
 that keeps the sign-in in the Keychain ("keyring" or "auto") fails closed with a message saying how to
@@ -107,7 +107,7 @@ def backoff(failures, rng=random.random):
 
 
 def refresh_due(ts, *, owner, last_attempt, now, failures=0, rng=random.random):
-    """Whether AccountDeck 2 should renew a saved Codex sign-in now (A8): only accounts it owns,
+    """Whether AccountDeck 2 should renew a saved Codex sign-in now: only accounts it owns,
     only when the access token has ≤ 48 h left (or cannot be read and the last refresh is ≥ 5 days
     old), and never sooner than max(6 h, backoff) after the previous attempt."""
     if owner != "v2":
@@ -212,7 +212,7 @@ def classify_rpc_error(error):
 
 
 class RPC:
-    """One Codex app-server over stdio in `home`, spawned through `procs.spawn_helper` (§4.1).
+    """One Codex app-server over stdio in `home`, spawned through `procs.spawn_helper`.
 
     close() closes stdin and waits `grace` seconds for the helper to exit on its own (30 s in
     refresh mode, so a rotation in flight can finish writing auth.json; 3 s read-only) before it
@@ -337,7 +337,7 @@ class Codex:
 
     def executable(self):
         """The Codex CLI to run, or None when it is not installed: `paths.codex_exe` when configured
-        (synthetic paths), else the native binary facts_mac.codex_exe finds now (PLAN §1.8)."""
+        (synthetic paths), else the native binary facts_mac.codex_exe finds now."""
         found = self.paths.codex_exe
         if found is None:
             try:
@@ -434,7 +434,7 @@ class Codex:
             atomic_write(path / "auth.json", json_bytes(value))
 
     def usage(self, profile, *, mode="read_only", owner="v2", persist=None, quarantine=None, account=None):
-        """One probe of a saved auth.json through a private app-server (§5.11). Provider failures
+        """One probe of a saved auth.json through a private app-server. Provider failures
         come back in the Reading; local ones (not installed, a refused refresh, a rotation that
         could not be stored) raise DeckError.
 
@@ -508,7 +508,7 @@ class Codex:
             return rates, used
 
     def _failed(self, exc, refresh, tokens, profile, now):
-        """The Reading for a failed probe, applying the §5.11 rules for 401-class answers."""
+        """The Reading for a failed probe, with what a 401-class answer means for the saved sign-in."""
         auth_error = exc.kind in ("unauthorized", "needs_attention", "refresh_rejected")
         meta = {"mode": "refresh" if refresh else "read_only"}
         if not refresh and auth_error and (tokens.remaining is None or tokens.remaining < ACCESS_EXPIRY_MARGIN):
@@ -563,12 +563,12 @@ class Codex:
 
     @staticmethod
     def quarantine(path):
-        """The raw bytes of an unreadable credential file, for Vault.quarantine (A9)."""
+        """The raw bytes of an unreadable credential file, for Vault.quarantine."""
         return Path(path).read_bytes()
 
     def restore(self, profile, tx):
         """Writes a saved auth.json through `tx`. Waiting for consumers, the daemon and verification
-        are the engine's steps (§5.5); this refuses non-file stores and incomplete profiles."""
+        are the engine's steps; this refuses non-file stores and incomplete profiles."""
         self.validate_store()
         self.identity(profile)
         tx.write(self.codex_home / "auth.json", json_bytes(profile))

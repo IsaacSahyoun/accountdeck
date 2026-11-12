@@ -1,4 +1,4 @@
-"""User operations (§2.2, §3.5): switch, quit, add, capture, remove, recover and the move import run
+"""User operations: switch, quit, add, capture, remove, recover and the move import run
 one at a time on the `ad2-ops` thread and are observed as the PendingOperation and SwitchReport of
 /api/state."""
 from __future__ import annotations
@@ -26,7 +26,7 @@ DONE_SUMMARY = "Done."
 
 
 def _report_defaults():
-    """SwitchReport fields an Operation may fill through `report` (§3.5), with their values when it
+    """SwitchReport fields an Operation may fill through `report`, with their values when it
     does not. The runner sets op, kind, provider, account, label, finished, outcome and error."""
     return {"verified": None, "verified_at": None, "verify_reason": None, "stop_tier": None, "stop_ms": None,
             "helpers_self_exited": None, "stragglers": None, "summary": None, "carried": [],
@@ -75,7 +75,7 @@ class Operation:
     Fields placed in `report` (see _report_defaults) are merged into the SwitchReport; the summary
     defaults to the ending message ("Done." on success).
 
-    `token` holds the ConsentToken of this job (§4.3); it is never serialised."""
+    `token` holds the ConsentToken of this job; it is never serialised."""
 
     not_cancellable_message = "The switch is past the point of no return."
     # True for an operation that may run next to another client's operation while that one only waits for
@@ -167,7 +167,7 @@ class Operation:
 
     # ---- observation ----
     def snapshot(self):
-        """The PendingOperation of §3.5; `plan` is added while the phase is `needs_reconfirm`."""
+        """This operation as the snapshot's `pending` shows it; `plan` is added while the phase is `needs_reconfirm`."""
         with self.lock:
             pending = {"id": self.id, "kind": self.kind, "provider": self.provider, "account": self.account,
                        "label": self.label, "phase": self.phase, "message": self.message,

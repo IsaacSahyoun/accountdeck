@@ -1,9 +1,9 @@
-"""Quitting Claude Desktop for a job (PLAN §4.6): exactly one stop attempt, every signal within consent.
+"""Quitting Claude Desktop for a job: exactly one stop attempt, every signal within consent.
 
 T0   gate, no signals: re-snapshot; refuse unknown rows, 0 or > 40 desktop rows and self-stops; ask
      again ("reconfirm") when processes appeared that the user did not confirm; in "idle" mode wait
      until every Code session has been idle for `idle_hold` seconds.
-T1a  graceful (docs/mac/PLAN.md §1.3): SIGTERM to the verified Electron main, which runs app.quit(); if
+T1a  graceful: SIGTERM to the verified Electron main, which runs app.quit(); if
      Claude is still running `terminate_wait` s after its readyForQuit marker (or after `graceful_wait` s),
      the same job continues with T2.
 T2   managed: terminate the main process, give the helpers `helper_self_exit` s to exit on their own,
@@ -132,7 +132,7 @@ class StopLadder:
     def _stop(self, token, desktop, code, cancel, progress) -> StopResult:
         main = desktop_main(desktop)
         tier = "managed"
-        if graceful_first(self.paths, self.procs, main):
+        if graceful_first(main):
             if cancel.is_set():
                 return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
             progress("stop", CLOSE_DETAIL)
@@ -256,9 +256,9 @@ class StopLadder:
         return lines[:MAX_MARKERS]
 
 
-def graceful_first(paths, procs, main) -> bool:
-    """Whether the stop starts with T1a: whenever there is a main process to send SIGTERM to (PLAN §1.3).
-    (`paths` and `procs` are kept for switch_claude's stop-tier preview, which passes them.)"""
+def graceful_first(main) -> bool:
+    """Whether the stop starts with T1a: whenever there is a main process to send SIGTERM to. The plan's
+    stop-tier preview (switch_claude) asks the same question."""
     return main is not None
 
 

@@ -1,7 +1,7 @@
 """Read-only facts about this Mac's processes, asked of libSystem through ctypes (stdlib only, never `ps`).
 
 This module only reads; signalling and starting processes stay in procs.py and platform/procs_mac.py, which
-build on it (docs/mac/PLATFORM-MAC.md §1):
+build on it:
 
 - the pid list (`proc_listallpids`) and each executable's path (`proc_pidpath`, symlinks resolved);
 - parent, owner, status and start time in microseconds (`proc_pidinfo` PROC_PIDTBSDINFO). macOS gives the
@@ -179,7 +179,7 @@ def _bundle_id(plist: str) -> str:
 # ---- the libSystem binding ----
 
 class ExitWatch:
-    """kqueue EVFILT_PROC/NOTE_EXIT registrations (PLATFORM-MAC.md §1). Use as a context manager."""
+    """kqueue EVFILT_PROC/NOTE_EXIT registrations. Use as a context manager."""
 
     def __init__(self):
         self._queue = select.kqueue()

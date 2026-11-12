@@ -1,4 +1,4 @@
-"""Where Claude Code keeps its terminal login: the `CredStore` seam (docs/mac/PLAN.md D6, §1.7, §1.12).
+"""Where Claude Code keeps its terminal login: the `CredStore` seam.
 
 `KeychainCredStore` (the live Mac, and tests that name a test keychain) is Claude Code's login-keychain item,
 with `~/.claude/.credentials.json` as Claude Code's own plaintext fallback. `FileCredStore` is that file

@@ -1,4 +1,4 @@
-"""Claude Desktop adapter (§5.7-5.10, A1): profile capture and restore, health, credential tiers and usage reads.
+"""Claude Desktop adapter: profile capture and restore, health, credential tiers and usage reads.
 
 A profile is {"version": 1, "identity", "auth": {AUTH_KEYS}, "key": the crypto's key_ref()
 (chromium_crypto.MAC_KEY_REF), "cookies": base64 SQLite snapshot or None, "captured", "journal":
@@ -44,7 +44,7 @@ _FALLBACK_KINDS = ("token_refused", "token_expired", "scope_missing")
 
 @dataclass(frozen=True)
 class ProfileScope:
-    """What a Claude profile swap covers (§5.9); DEFAULT_SCOPE is v1's swap set (A14)."""
+    """What a Claude profile swap covers; DEFAULT_SCOPE is v1's swap set."""
     auth_keys: tuple[str, ...] = AUTH_KEYS
     cookie_files: tuple[str, ...] = COOKIE_FILES
     extra_files: tuple[str, ...] = ()        # relative paths swapped as opaque bytes
@@ -75,7 +75,7 @@ class Claude:
     # ---- reading the signed-in profile ----
 
     def journal_state(self, path=None):
-        """§5.8: {"present", "consistent", "body"}. The journal body (a dict) is trusted only when
+        """{"present", "consistent", "body"} of the journal. Its body (a dict) is trusted only when
         its digest matches the header and the header's base digest matches the current
         config.json, or config.json already holds that body. Anything else, including a header
         that does not parse, means config.json may predate Claude's last write."""
@@ -216,7 +216,7 @@ class Claude:
         return entry["token"]
 
     def credential_state(self, profile, *, active, now=None, outcomes=None, incident=False):
-        """(CredentialState, {"expires_in", "reason"}) of a profile (§5.10). `outcomes` is the
+        """(CredentialState, {"expires_in", "reason"}) of a profile. `outcomes` is the
         account's OutcomeLog; `expires_in` is the saved token's remaining lifetime in seconds."""
         now = self.clock() if now is None else now
         info = {"expires_in": None, "reason": None}
@@ -257,7 +257,7 @@ class Claude:
 
     def read_usage(self, profile, state, *, now=None, last_good=None, cookie_route=True, incident=False,
                    account=None):
-        """One usage read in the tiered order of §5.10. Provider failures come back in the Reading.
+        """One usage read, by the route the credential state allows. Provider failures come back in the Reading.
 
         live/fresh: the saved token on /api/oauth/usage, unless it has already expired.
         expired/web_only, an expired live token, or an OAuth refusal: the cookie route when
@@ -535,7 +535,7 @@ class Claude:
 
 
 def is_hollow(usage):
-    """An all-zero answer without any reset time (§5.10)."""
+    """An all-zero answer without any reset time."""
     return all(window.get("used") in (0, None) and window.get("reset") is None
                for window in (usage or {}).get("windows") or [])
 

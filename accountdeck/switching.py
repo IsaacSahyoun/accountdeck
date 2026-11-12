@@ -1,4 +1,4 @@
-"""What every switch flow shares (PLAN §4.3, §5.2): the context a flow works in, the plan registry, the
+"""What every switch flow shares: the context a flow works in, the plan registry, the
 consent claim, job submission and the action router.
 
 A flow (switch_claude, switch_codex, switch_cli, switch_muse) builds a SwitchPlan the user confirms (`assemble`,
@@ -91,7 +91,7 @@ def register(ctx, planned) -> dict:
 
 def assemble(ctx, *, provider, purpose, account, target, current, headroom, running, pairs, blockers, warnings,
              tip, will, preserved, account_bound, invisible, stop_tier, saves_outgoing=False) -> Planned:
-    """The SwitchPlan of §3.4 from what a flow found, and the registry entry a later claim checks it against."""
+    """The plan the user is shown, from what a flow found, and the registry entry a later claim checks it against."""
     process_set = ProcessSet(tuple(pairs))
     idle = running["busy"] == 0 and running["unknown"] == 0 and not running["codex_consumers"]
     plan = {"plan_id": "pl_" + secrets.token_hex(16), "expires": ctx.engine.clock() + ctx.timings.plan_ttl,
@@ -123,7 +123,7 @@ class Claim:
 
 def claim(ctx, purpose, body, *, build, account=None, provider="claude", families=None,
           optional=False) -> Claim:
-    """Checks the plan the user confirmed and mints the consent token for this job (PLAN §4.3).
+    """Checks the plan the user confirmed and mints the consent token for this job.
 
     A missing plan gives `confirm_required` with a fresh one; an expired or foreign plan `stale_plan`; a
     process set that changed since the plan `needs_reconfirm` with a fresh one; a blocker refuses with its
