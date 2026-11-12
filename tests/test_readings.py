@@ -12,7 +12,7 @@ from tests import support
 from accountdeck import cli_policy, demo, fixtures, move_bundle, move_import
 from accountdeck.providers import errors
 from accountdeck.scheduler import RefreshScheduler, Target
-from accountdeck.usage import claude_usage
+from accountdeck.usage import claude_usage, muse_usage
 
 NOW = 1_800_000_000.0
 HOUR, DAY = 3600, 86400
@@ -330,6 +330,33 @@ class RefillTest(unittest.TestCase):
 
     def test_muse(self):
         self.refill_is_recorded("muse")
+
+
+class MuseAnswerAgeTest(unittest.TestCase):
+    """Consider 8. Muse dates its own answer (asOfMs). A cached answer is as old as Muse says, not as new as
+    the read that fetched it."""
+
+    def test_the_reading_is_dated_by_muse(self):
+        def checked(as_of):
+            return muse_usage({"allowance": {"window": {"usedPercent": 8.0, "resetsAtMs": (NOW + HOUR) * 1000}},
+                               "asOfMs": as_of}, now=NOW)["checked"]
+
+        self.assertEqual(checked((NOW - 1200) * 1000), NOW - 1200)                # a cached answer, 20 min old
+        self.assertEqual([checked(value) for value in ((NOW + 60) * 1000, 0, -5, None, "soon", True)], [NOW] * 6)
+        self.assertEqual(muse_usage({"allowance": {}}, now=NOW)["checked"], NOW)   # Muse 1.4.13 sends no asOfMs
+
+    def test_a_cached_answer_is_stored_with_its_own_age(self):
+        engine = support.demo_engine(self, "typical")
+        row, now = signed_in(engine, "muse"), engine.clock()
+        payload = demo._payload("muse", [{"key": "muse:window", "used": 8.0, "reset": now + HOUR},
+                                         {"key": "muse:weekly", "used": 40.0, "reset": now + 3 * DAY}])
+        payload["asOfMs"] = int((now - 1200) * 1000)
+        engine.providers["muse"]._run_usage = lambda config_home, *, file_mode, isolated: copy.deepcopy(payload)
+        self.assertEqual(engine._refresh(row["id"]), "ok")
+        self.assertAlmostEqual(engine.store.account(row["id"])["last_good_at"], now - 1200, delta=1)
+        self.assertAlmostEqual(shown(engine, row["id"])["last_good_at"], now - 1200, delta=1)
+        self.assertEqual([r["used"] for r in engine.store.readings(row["id"], "muse:window")
+                          if abs(r["at"] - (now - 1200)) < 1], [8.0])
 
 
 class UpkeepTest(unittest.TestCase):

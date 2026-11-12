@@ -570,7 +570,7 @@ class AccountService:
             return error_code(exc)
         self._record(provider, UNSAVED_IDS[provider], reading.outcomes, now)
         if reading.usage is not None:
-            row.update(usage=reading.usage, last_good_at=reading.checked or now, error=None, last_outcome="2xx")
+            row.update(usage=reading.usage, last_good_at=reading.usage["checked"], error=None, last_outcome="2xx")
             return "ok"
         if reading.error is None:
             if reading.meta.get("hollow"):

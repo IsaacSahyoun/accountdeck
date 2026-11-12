@@ -174,7 +174,8 @@ def codex_usage(data, tokens=None, *, now=None):
 def muse_usage(data, *, now=None):
     """`muse usage --json` (schemaVersion 1): `allowance.window` is Muse's rolling 5-hour-class block and
     `allowance.weekly` its weekly one, each {usedPercent, resetsAtMs, windowDurationMins?}; usedPercent may
-    pass 100. The window's length comes from windowDurationMins (weekly: 7 days when absent)."""
+    pass 100. The window's length comes from windowDurationMins (weekly: 7 days when absent). Muse dates its
+    own answer in `asOfMs`: a cached answer is as old as Muse says, so the reading is dated then, not `now`."""
     allowance = data.get("allowance") if isinstance(data.get("allowance"), dict) else {}
     windows, raw = [], []
     for key, slot, kind in (("window", "primary", "session"), ("weekly", "secondary", "weekly")):
@@ -195,8 +196,10 @@ def muse_usage(data, *, now=None):
         for window in windows:
             if window["used"] is not None and window["used"] >= 100:
                 window["blocked"] = reason
-    return {"checked": time.time() if now is None else now, "windows": _shown(windows), "raw_windows": raw,
-            "credits": [], "reset_credits": [], "tokens": None}
+    now = time.time() if now is None else now
+    as_of = timestamp(data.get("asOfMs"))
+    return {"checked": as_of if as_of is not None and 0 < as_of < now else now, "windows": _shown(windows),
+            "raw_windows": raw, "credits": [], "reset_credits": [], "tokens": None}
 
 
 def muse_plan(data):
