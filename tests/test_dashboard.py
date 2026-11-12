@@ -420,13 +420,8 @@ class DashboardTestCase(unittest.TestCase):
     def setUpClass(cls):
         cls.browser = Browser(cls.addClassCleanup)
 
-    def serve(self, state):
-        server = support.serve(self, state)
-        server.socket.listen(128)      # the default waiting line of 5 drops page files at random (review Act on 5)
-        return server
-
     def show(self, state):
-        server = self.serve(state)
+        server = support.serve(self, state)
         self.browser.open(server)
         return server
 

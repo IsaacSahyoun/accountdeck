@@ -91,6 +91,9 @@ class EngineAPI(Protocol):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
+    # A browser opens one connection per file of the dashboard, many at once. Python's default waiting line
+    # of 5 drops some of them, and the page then stays half drawn. 128 is the most macOS allows by default.
+    request_queue_size = 128
 
     def __init__(self, address: tuple[str, int], engine: EngineAPI, token: str | None = None, *,
                  web_root: Path = WEB_ROOT):
