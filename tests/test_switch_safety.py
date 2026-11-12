@@ -15,6 +15,7 @@ import uuid
 from tests import support
 
 from accountdeck import cli_auto, switch_claude, switch_cli, switching
+from accountdeck.claude_verify import Verdict, Verifier
 from accountdeck.core import DeckError, FileTransaction, Vault, read_json, recover_transactions
 from accountdeck.operations import Operation, OperationRunner
 from accountdeck.providers import codex as codex_module, fake as fake_module
@@ -806,6 +807,64 @@ class DesktopSwitchTest(DeckCase):
         self.assertEqual(report["outcome"], "success", report)
         self.assertEqual(self.pending_records(), [])
         self.assert_consistent("claude", self.identity(self.outgoing["id"]))
+
+
+class DesktopBackgroundCheckTest(DeckCase):
+    """Consider 4: the check that keeps watching an unconfirmed Desktop switch only waits while another job
+    runs. It used to be dropped then, and with it the wrong-account verdict and the offer to recover."""
+
+    def setUp(self):
+        super().setUp()
+        self.engine.timings = dataclasses.replace(self.engine.timings, verify_soft_every=0.01, verify_soft_count=10 ** 6)
+        self.target = self.spare("claude")
+        unsure = Verdict("pending", "unconfirmed", "Claude opened, but the sign-in couldn't be confirmed yet.")
+        with mock.patch.object(Verifier, "run", return_value=unsure):   # Claude reopens and does not say who is signed in
+            report = self.act("claude", "switch", self.target["id"])
+        self.assertEqual((report["outcome"], report["verified"]), ("success", "unconfirmed"), report)
+        self.assertEqual(len(self.engine.background_verifiers), 1)
+        self.check = self.engine.background_verifiers[0]
+        self.wrong = Verdict("failed", "mismatch", "Claude opened a different account.")
+        self.other = Waiting("codex")
+        self.addCleanup(self.other.release.set)
+
+    def start_another_job(self):
+        self.engine.submit(self.other)
+        self.wait_for_phase("waiting_idle")
+
+    def finish_the_other_job(self):
+        self.other.release.set()
+        self.assertTrue(self.engine.runner.wait(10))
+
+    def tick(self):
+        self.engine._tick_verifiers(self.engine.clock() + 1)
+
+    def assert_recovery_is_offered(self):
+        self.assertEqual(self.engine.background_verifiers, [])
+        self.assertEqual(len(self.pending_records()), 1, "the switch could not be undone")
+        self.assertTrue(any("Recovery is available" in n["message"] for n in self.engine.snapshot()["notices"]))
+
+    def test_it_waits_while_a_job_of_another_client_runs_and_looks_again_after(self):
+        self.start_another_job()
+        with mock.patch.object(self.check.verifier, "check", return_value=self.wrong) as look:
+            self.tick()
+            look.assert_not_called()
+            self.assertEqual(self.engine.background_verifiers, [self.check], "the check was dropped")
+            self.finish_the_other_job()
+            self.tick()
+        self.assert_recovery_is_offered()
+
+    def test_a_wrong_account_seen_just_as_a_job_starts_is_looked_at_again_not_dropped(self):
+        def look():
+            if not self.engine.runner.busy and not self.other.release.is_set():
+                self.start_another_job()
+            return self.wrong
+        with mock.patch.object(self.check.verifier, "check", side_effect=look):
+            self.tick()
+            self.assertEqual(self.engine.background_verifiers, [self.check], "the check was dropped")
+            self.assertEqual(self.pending_records(), [])
+            self.finish_the_other_job()
+            self.tick()
+        self.assert_recovery_is_offered()
 
 
 class DesktopInterruptedSwitchTest(DeckCase):

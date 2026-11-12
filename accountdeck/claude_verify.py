@@ -303,10 +303,11 @@ class BackgroundVerifier:
         self.next = 0.0
 
     def tick(self, now) -> bool:
+        """At most one look; True once the check is over (a verdict, or the deadline). While another job runs
+        it only waits, because that job may be changing the files this check reads. A Claude job that
+        replaces the switch ends the check itself (switching.submit)."""
         engine = self.ctx.engine
-        if engine.runner.busy:            # another job is changing the files this verifier watches
-            return True
-        if now < self.next:
+        if engine.runner.busy or now < self.next:
             return False
         self.next = now + self.every
         verdict = self.verifier.check()
@@ -317,8 +318,9 @@ class BackgroundVerifier:
             engine.notice(f"Claude is signed in as {self.label}.", "good", sticky=False)
             return True
         if verdict.state == "failed":
-            if engine.runner.busy:
-                return True
+            if engine.runner.busy:        # a job started during the look: look again once it is done
+                self.next = 0.0
+                return False
             self._finish("failed", verdict)
             engine.runner.update_report(
                 self.op_id, verified="failed", verify_reason=verdict.message,
