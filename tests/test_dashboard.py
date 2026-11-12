@@ -743,5 +743,19 @@ class InstallerScriptsTest(unittest.TestCase):
                            "the Open at login file is removed before the wait for the app to quit")
 
 
+    def test_an_install_builds_everything_in_a_work_folder_of_its_own(self):
+        text = (ROOT / "install.sh").read_text()
+        self.assertIn('WORK=$(mktemp -d "$SUPPORT/.install-XXXXXX")', text)
+        staged = dict(re.findall(r'^\s*(APP_NEW|RT_NEW|BUNDLE_NEW)="([^"]*)"$', text, re.M))
+        self.assertEqual(staged, {"APP_NEW": "$WORK/app", "RT_NEW": "$WORK/runtime", "BUNDLE_NEW": "$WORK/bundle"})
+
+    def test_an_install_deletes_only_its_work_folder_and_the_copies_it_just_replaced(self):
+        """Nothing in install.sh deletes by pattern, so the vault, the data and a running copy are out of reach."""
+        text = (ROOT / "install.sh").read_text()
+        self.assertEqual(set(re.findall(r'\brm -r?f? ?("[^"]*"|\S+)', text)), {'"$WORK"', '"$RT.old"', '"$APPDIR.old"', '"$APP.old"'})
+        for pattern in ("-exec rm", "-delete", "xargs rm", "rm -rf $", "/*"):
+            self.assertNotIn(pattern, text)
+
+
 if __name__ == "__main__":
     unittest.main()
