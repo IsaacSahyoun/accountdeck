@@ -409,6 +409,54 @@ class UpkeepTest(unittest.TestCase):
         self.assertGreater(signed_in(engine, "codex")["flags"]["last_active_at"], first + 3600)
 
 
+class FlagsTest(unittest.TestCase):
+    """Noted 6. Marking the signed-in account as used rewrites its flags. A usage read writes flags too, from
+    another thread, under the account's lock."""
+
+    def setUp(self):
+        self.engine = support.demo_engine(self, "typical")
+        self.row = signed_in(self.engine, "codex")
+        self.later = self.engine.clock() + 2 * HOUR
+
+    def flags(self):
+        return self.engine.store.account(self.row["id"])["flags"]
+
+    def touch(self):
+        self.engine.accounts.touch_active("codex", self.row["identity"], self.later)
+
+    def test_a_flag_a_read_wrote_a_moment_ago_is_kept(self):
+        store, find = self.engine.store, self.engine.store.find
+
+        def find_then_a_read_finishes(provider, identity):
+            account = find(provider, identity)
+            store.update(account["id"], flags={**account["flags"], "refresh_failures": 3})
+            return account
+
+        store.find = find_then_a_read_finishes
+        self.touch()
+        self.assertEqual((self.flags().get("refresh_failures"), self.flags()["last_active_at"]), (3, self.later))
+
+    def test_it_waits_for_a_read_in_progress_without_blocking(self):
+        before, holding, done = self.flags()["last_active_at"], threading.Event(), threading.Event()
+
+        def a_read():
+            with self.engine.scheduler.account_lock(self.row["id"]):
+                holding.set()
+                done.wait(10)
+
+        thread = threading.Thread(target=a_read, daemon=True)
+        thread.start()
+        self.assertTrue(holding.wait(5))
+        started = time.monotonic()
+        self.touch()
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(self.flags()["last_active_at"], before)       # left for the next tick
+        done.set()
+        thread.join(5)
+        self.touch()
+        self.assertEqual(self.flags()["last_active_at"], self.later)
+
+
 class SchedulerTest(unittest.TestCase):
     def test_one_helper_read_per_client_at_a_time(self):
         running, most, done, lock = [], [], [], threading.Lock()

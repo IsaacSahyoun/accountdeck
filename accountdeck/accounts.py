@@ -65,6 +65,11 @@ def error_code(exc) -> str:
     return code if code in ERROR_CODES else "network"
 
 
+def _touch_due(account, now) -> bool:
+    last = account["flags"].get("last_active_at")
+    return last is None or now - last >= ACTIVE_TOUCH
+
+
 class AccountService:
     """`levels()` gives each provider's status level; `observed` the ObservedStatus per provider.
     `lock_for(account_id)` is the account's lock (the scheduler's): saving or removing an account
@@ -487,13 +492,22 @@ class AccountService:
 
     def touch_active(self, provider, identity, now):
         """Notes that a saved account is the signed-in one (`flags.last_active_at`, renewed hourly):
-        the dashboard's "unused for N days" hint reads it."""
+        the dashboard's "unused for N days" hint reads it. A read writes the account's flags under its
+        lock, so the flags are rewritten under that lock too, from the row as it is then. The tick never
+        waits for a read: when one holds the lock, the next tick tries again."""
         account = self.store.find(provider, identity)
-        if account is None or is_frozen(account):
+        if account is None or is_frozen(account) or not _touch_due(account, now):
             return
-        last = account["flags"].get("last_active_at")
-        if last is None or now - last >= ACTIVE_TOUCH:
-            self.store.update(account["id"], flags={**account["flags"], "last_active_at": now})
+        lock = self.lock_for(account["id"]) if self.lock_for is not None else None
+        if lock is not None and not lock.acquire(blocking=False):
+            return
+        try:
+            account = self.store.account(account["id"])
+            if account is not None and _touch_due(account, now):
+                self.store.update(account["id"], flags={**account["flags"], "last_active_at": now})
+        finally:
+            if lock is not None:
+                lock.release()
 
     # ---- the unsaved signed-in account (§9.4) ----
     def sense_unsaved(self, provider, identity):
