@@ -548,20 +548,26 @@ class TerminalRowsTest(DashboardTestCase):
 
 
 class OtherClientsRowsTest(DashboardTestCase):
-    def test_a_saved_account_offers_switch(self):
+    def test_the_row_button_follows_the_account(self):
         state = fixtures.example_state("typical", now=time.time())
         server = self.show(state)
+        words = {(a["provider"], a["label"]): self.browser.js(f"({row(a)}.querySelector('[data-primary]') || {{}}).textContent || null")
+                 for a in state["accounts"] if a["provider"] != "claude_cli"}
+        self.assertEqual(words, {(a["provider"], a["label"]): None if a["active"] else "Switch…"
+                                 for a in state["accounts"] if a["provider"] != "claude_cli"})
         for count, provider in enumerate(("claude", "muse"), 1):
             account = self.account(state, provider, active=False)
-            self.browser.click(button("Switch…", f"[...document.querySelectorAll('#other-accounts li.row')]"
-                                                 f".find((r) => r.querySelector('.row-name').textContent === {json.dumps(account['label'])})"))
+            self.browser.click(f"{row(account)}.querySelector('[data-primary]')")
             self.assertEqual(self.posted(server, count)[-1], ("switch-plan", {"id": account["id"]}))
         self.assertEqual(self.browser.problems, [])
 
-    def test_the_account_in_use_and_not_saved_offers_save(self):
+    def test_the_account_in_use_and_not_saved_offers_save_and_no_menu(self):
         state = fixtures.example_state("first-run", now=time.time())
         server = self.show(state)
-        self.browser.click(button("Save Current Account", "document.querySelector('#other-accounts li.row')"))
+        unsaved = self.account(state, "claude", saved=False)
+        self.assertEqual(self.browser.js(f"[...{row(unsaved)}.querySelectorAll('button')].map((b) => b.textContent)"),
+                         ["Save Current Account"])
+        self.browser.click(button("Save Current Account", row(unsaved)))
         self.assertEqual(self.posted(server), [("switch-plan", {"provider": "claude", "purpose": "capture"})])
 
     def test_an_account_that_needs_sign_in_offers_sign_in_again(self):
@@ -569,8 +575,7 @@ class OtherClientsRowsTest(DashboardTestCase):
         server = self.show(state)
         beta = self.account(state, "claude", label="Beta")
         self.assertEqual(beta["state"], "needs_signin")
-        self.browser.click(button("Sign In Again", "[...document.querySelectorAll('#other-accounts li.row')]"
-                                                   ".find((r) => r.querySelector('.row-name').textContent === 'Beta')"))
+        self.browser.click(button("Sign In Again", row(beta)))
         self.assertEqual(self.posted(server), [("switch-plan", {"provider": "claude", "purpose": "add"})])
 
     def test_each_client_section_offers_save_and_add_and_says_how_to_start_when_empty(self):
@@ -591,6 +596,133 @@ class OtherClientsRowsTest(DashboardTestCase):
         self.assertEqual(self.browser.js("[...document.querySelectorAll('#other-accounts button')].filter((b) => !b.disabled"
                                          " && b.getAttribute('aria-haspopup') !== 'menu').map((b) => b.textContent)"), [])
         self.assertEqual(self.browser.js("[...document.querySelectorAll('#accounts [data-primary]')].filter((b) => !b.disabled).length"), 0)
+
+
+CLIENTS = ("claude_cli", "claude", "codex", "muse")
+APPS = {"claude_cli": "Claude Code", "claude": "Claude Desktop", "codex": "Codex", "muse": "Muse Code"}
+METERS_SHOW = ("ready", "watch", "low", "critical")     # every other headline is words under the account's name
+
+
+class EveryClientRowsTest(DashboardTestCase):
+    """One row for all four clients: what a terminal row says and offers, the other clients' rows do too."""
+
+    def setUp(self):
+        self.state = fixtures.example_state("typical", now=time.time())
+
+    def picked(self, accounts, provider):
+        """One saved row of a client: the account in use for Codex and Muse, another one for the Claude clients."""
+        return next(a for a in accounts if a["provider"] == provider and a["active"] is (provider in ("codex", "muse")))
+
+    def rename(self, account, name):
+        self.browser.click(more(account))
+        self.browser.click(button("Rename…", MENU))
+        self.browser.wait(f"{SHEET}.open && document.activeElement.value === {json.dumps(account['label'])}",
+                          "the rename sheet with the old name selected")
+        self.browser.type(name)
+        self.browser.click(button("Rename", SHEET))
+
+    def remove(self, account):
+        self.browser.click(more(account))
+        self.browser.click(button("Remove…", MENU))
+        title = json.dumps(f"Remove “{account['label']}”?")
+        self.browser.wait(f"{SHEET}.open && document.getElementById('modal-title').textContent === {title}", "the question")
+        words = self.browser.js("document.getElementById('modal-body').textContent")
+        self.browser.click(button("Remove", SHEET))
+        return words
+
+    def test_more_then_rename_posts_the_new_name_for_a_row_of_each_client(self):
+        for provider in CLIENTS:
+            with self.subTest(provider=provider):
+                server = self.show(self.state)
+                account = self.picked(self.state["accounts"], provider)
+                self.rename(account, f"New {provider}")
+                self.assertEqual(self.posted(server), [("rename", {"id": account["id"], "label": f"New {provider}"})])
+                self.browser.wait(f"!{SHEET}.open", "the sheet closed")
+
+    def test_more_then_remove_asks_first_and_posts_for_a_row_of_each_client(self):
+        for provider in CLIENTS:
+            with self.subTest(provider=provider):
+                server = self.show(self.state)
+                account = self.picked(self.state["accounts"], provider)
+                self.assertIn(f"forgets this {APPS[provider]} login", self.remove(account))
+                self.assertEqual(self.posted(server), [("remove", {"id": account["id"]})])
+                self.browser.wait(f"!{SHEET}.open", "the sheet closed")
+
+    def test_the_app_renames_and_removes_the_row_that_was_clicked_for_each_client(self):
+        for provider in CLIENTS:
+            with self.subTest(provider=provider):
+                engine = support.demo_engine(self, "typical")
+                engine.sense_active()
+                self.browser.open(serve(self, engine))
+                account = self.picked(engine.snapshot()["accounts"], provider)
+                self.rename(account, "Renamed here")
+                self.browser.wait(f"{row(account)}.querySelector('.row-name').textContent === 'Renamed here'", "the new name")
+                self.assertEqual(engine.store.account(account["id"])["label"], "Renamed here")
+                self.remove(dict(account, label="Renamed here"))
+                self.browser.wait(f"!{row(account)}", "the row gone")
+                self.assertIsNone(engine.store.account(account["id"]))
+                self.assertEqual(self.browser.problems, [])
+
+    def test_only_the_terminal_account_in_use_cannot_be_removed(self):
+        self.show(self.state)
+        for provider in CLIENTS:
+            with self.subTest(provider=provider):
+                account = self.account(self.state, provider, active=True)
+                self.browser.click(more(account))
+                self.browser.wait(f"{MENU}.matches(':popover-open')", "the More menu")
+                self.assertEqual(self.browser.js(f"{button('Remove…', MENU)}.getAttribute('aria-disabled')"),
+                                 "true" if provider == "claude_cli" else None)
+                self.browser.press("Escape")
+                self.browser.wait(f"!{MENU}.matches(':popover-open')", "the menu closed")
+
+    def test_a_row_says_what_its_meters_cannot_for_every_client(self):
+        """An old reading, a sign-in that ended, an incident or no reading yet is words under the name."""
+        aged = fixtures.example_state("typical", now=time.time())
+        for provider in CLIENTS:
+            self.picked(aged["accounts"], provider).update(
+                age_tier="stale", stale=True, headline={"kind": "stale", "text": "Reading is 3h old", "window": None})
+        states = [aged] + [fixtures.example_state(name, now=time.time())
+                           for name in ("stale", "needs-signin", "outage", "loading", "codex-blocked", "rate-limited")]
+        seen = set()
+        for state in states:
+            self.show(state)
+            shown = self.browser.js("Object.fromEntries([...document.querySelectorAll('li.row[data-id]')].map((r) => "
+                                    "[r.dataset.id, (r.querySelector('.row-status') || {}).textContent || null]))")
+            for account in state["accounts"]:
+                kind, text = account["headline"]["kind"], account["headline"]["text"]
+                with self.subTest(provider=account["provider"], account=account["label"], kind=kind):
+                    self.assertEqual(shown[account["id"]], None if kind in METERS_SHOW else text)
+                seen.add((account["provider"], kind))
+        self.assertLessEqual({(provider, "stale") for provider in CLIENTS}, seen)
+        self.assertLessEqual({"signin", "out", "outage", "checking", "unknown"}, {kind for _, kind in seen})
+
+    def test_a_row_another_computer_owns_offers_only_remove_for_every_client(self):
+        for provider in CLIENTS:
+            with self.subTest(provider=provider):
+                state = fixtures.example_state("typical", now=time.time())
+                account = self.account(state, provider, active=False) if provider != "codex" else self.account(state, provider)
+                account.update(owner="on_pc", switchable=False, active=False)
+                server = self.show(state)
+                self.assertEqual(self.browser.js(f"[...{row(account)}.querySelectorAll('button')].map((b) => b.textContent)"),
+                                 ["Remove…"])
+                self.assertIn("Still on the PC", self.browser.js(f"{row(account)}.querySelector('.row-title').textContent"))
+                self.browser.click(button("Remove…", row(account)))
+                self.browser.wait(f"{SHEET}.open", "the question")
+                self.assertIn("removes the saved row", self.browser.js("document.getElementById('modal-body').textContent"))
+                self.browser.click(button("Remove", SHEET))
+                self.assertEqual(self.posted(server), [("remove", {"id": account["id"]})])
+
+    def test_arrow_keys_and_return_work_in_every_list(self):
+        server = self.show(self.state)
+        lists = "[...document.querySelectorAll('ol.rows')]"
+        self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1, 1])
+        desktop = [a for a in self.state["accounts"] if a["provider"] == "claude"]
+        self.browser.js(f"{row(desktop[0])}.focus()")
+        self.browser.press("ArrowDown")
+        self.assertEqual(self.browser.js("document.activeElement.dataset.id"), desktop[1]["id"])
+        self.browser.press("Enter")
+        self.assertEqual(self.posted(server), [("switch-plan", {"id": desktop[1]["id"]})])
+        self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1, 1])
 
 
 if __name__ == "__main__":

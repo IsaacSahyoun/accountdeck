@@ -76,26 +76,39 @@
       emptyTitle: 'No terminal accounts yet',
       emptyText: 'Your current Claude Code login is saved automatically when it can be verified. To start, install Claude Code and sign in, or choose Add Account. Use a private browser window to choose a different account.',
       unavailableTitle: "Claude Code accounts aren't available", unavailableText: 'This build has no Claude Code (terminal) support.',
-      colAccount: 'Account', switch: 'Switch', signIn: 'Sign In Again', more: 'More actions for {label}',
-      blockedSignin: 'Usage is unavailable until you sign in again.',
-      liveExpired: 'Usage updates after your next message in Claude Code.',
-      checked: 'Checked {age} ago', paused: 'Checks paused until {clock}',
+      colAccount: 'Account',
       tip: 'Switch accounts here, not with /login or /logout in Claude Code. Open terminals follow on their next message.',
       readOnlyOther: 'Another AccountDeck 2 is managing your sign-ins. Quit that copy to make changes here.',
       undo: 'Undo', undoLeft: 'Undo available for {countdown}', cancelAdd: 'Cancel',
-      menu: {
-        leaveOut: 'Leave Out of Auto-Switch', include: 'Let Auto-Switch Use It', rename: 'Rename…', remove: 'Remove…',
-        removeActive: 'Switch to another account before removing this one.',
-      },
       addSheet: {
         title: 'Add a Terminal Account',
         body: 'A Terminal window opens. Sign in there with the account you want to add, then close that window to finish.',
         hint: 'If the browser signs in to the wrong account, use a private window.', open: 'Open Terminal',
       },
+    },
+
+    // One account row, the same for every client.
+    row: {
+      switch: 'Switch', switchReview: 'Switch…', signIn: 'Sign In Again', save: 'Save Current Account',
+      more: 'More actions for {label}',
+      blockedSignin: 'Usage is unavailable until you sign in again.',
+      liveExpired: 'Usage updates after your next message in Claude Code.',
+      checked: 'Checked {age} ago', paused: 'Checks paused until {clock}',
+      setup: {
+        importing: 'Open Claude Desktop once on this Mac to finish importing this account.',
+        saving: 'Close Claude Desktop, then choose Save Current Account to finish saving this login.',
+        signIn: 'Use Add Account to sign in to this account again before switching.',
+      },
+      menu: {
+        leaveOut: 'Leave Out of Auto-Switch', include: 'Let Auto-Switch Use It', rename: 'Rename…', remove: 'Remove…',
+        removeActive: 'Switch to another account before removing this one.',
+      },
       rename: { title: 'Rename Account', label: 'Account name', save: 'Rename' },
       remove: {
         title: 'Remove “{label}”?', button: 'Remove',
-        body: "AccountDeck forgets this terminal login. The account itself isn't affected, and you can add it again later.",
+        body: "AccountDeck forgets this {app} login. The account itself isn't affected, and you can add it again later.",
+        inUse: '{app} stays signed in to it, and the account shows here as not saved.',
+        elsewhere: 'This removes the saved row and its history from AccountDeck on this Mac.',
       },
     },
 
