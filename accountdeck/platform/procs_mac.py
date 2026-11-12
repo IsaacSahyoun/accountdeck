@@ -585,17 +585,6 @@ class MacProcessController(ProcessController):
             process.wait()
             return False
 
-    def open_folder(self, path) -> None:
-        """Shows a folder in Finder. A bundle (Name.app and the like) would be launched, not shown: refused."""
-        self._require_test_path("open_folder", path)
-        folder = Path(path)
-        if not folder.is_dir():
-            raise DeckError("That folder no longer exists.", "not_found")
-        resolved = os.path.realpath(folder)
-        if not resolved.startswith("/") or any(part.lower().endswith(PACKAGE_SUFFIXES) for part in resolved.split("/")):
-            raise DeckError("That is not a folder AccountDeck opens.", "invalid")
-        self.spawn([OPEN_TOOL, resolved], stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL)
-
     def open_terminal(self, cwd, env) -> None:
         """A new Terminal.app window with the login shell in `cwd`, with `env` exported there."""
         self._require_test_path("open_terminal", cwd)

@@ -159,11 +159,6 @@ class DemoProcesses(FakeProcessController):
             self._table[pid] = replace(row, ctime=filetime(started))
             return self._table[pid]
 
-    def open_folder(self, path):
-        self.calls.append(("open_folder", str(path)))
-        if not is_test_owned_path(path):
-            raise SafetyViolation("Safe mode: the demo only opens its own folders.")
-
     def open_terminal(self, cwd, env):
         self.calls.append(("open_terminal", str(cwd)))
         if not is_test_owned_path(cwd):

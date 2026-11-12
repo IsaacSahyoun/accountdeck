@@ -375,7 +375,6 @@ _ACCOUNT_COLUMNS = (
 _SELECT_ACCOUNTS = "SELECT " + ", ".join(_ACCOUNT_COLUMNS) + " FROM accounts"
 _UPDATABLE = frozenset(_ACCOUNT_COLUMNS) - {"id", "provider", "identity", "created", "updated"}
 _JSON_COLUMNS = ("last_good_usage", "flags")
-_ALERT_ID = re.compile(r"al_(\d+)")
 
 
 def _statements(script):
@@ -627,22 +626,6 @@ class Store:
         return [{"id": f"al_{row['id']}", "kind": row["kind"], "level": row["level"], "account": row["account"],
                  "window": row["window_id"], "title": row["title"], "message": row["message"], "at": row["at"],
                  "snoozed_until": row["snoozed_until"], "dismissed": bool(row["dismissed"])} for row in rows]
-
-    def update_alert(self, alert_id, *, dismissed=None, snoozed_until=None):
-        """Dismiss or snooze an alert; False when the id is unknown."""
-        match = _ALERT_ID.fullmatch(alert_id) if isinstance(alert_id, str) else None
-        fields = {}
-        if dismissed is not None:
-            fields["dismissed"] = int(bool(dismissed))
-        if snoozed_until is not None:
-            fields["snoozed_until"] = snoozed_until
-        if not match or not fields:
-            return False
-        with self.lock:
-            cursor = self.db.execute("UPDATE alerts SET " + ", ".join(name + "=?" for name in fields) + " WHERE id=?",
-                                     (*fields.values(), int(match.group(1))))
-            self.db.commit()
-        return cursor.rowcount == 1
 
     # ---- settings and events ----
     def setting(self, key, default=None):

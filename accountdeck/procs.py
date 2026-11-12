@@ -677,9 +677,6 @@ class ProcessController(abc.ABC):
     def codex_daemon_start(self, codex_exe, home) -> bool: ...
 
     @abc.abstractmethod
-    def open_folder(self, path) -> None: ...
-
-    @abc.abstractmethod
     def open_terminal(self, cwd, env) -> None: ...
 
 class FakeProcessController(ProcessController):
@@ -1059,11 +1056,6 @@ class FakeProcessController(ProcessController):
             self.calls.append(("codex_daemon_start", str(codex_exe)))
             self.add_codex("codex_daemon")
             return True
-
-    def open_folder(self, path) -> None:
-        self.calls.append(("open_folder", str(path)))
-        if config.safe_mode():
-            raise _refusal("not_test_path", SAFE_MODE_MESSAGE)
 
     def open_terminal(self, cwd, env) -> None:
         self.calls.append(("open_terminal", str(cwd)))
