@@ -386,10 +386,26 @@ def _forbidden(value, path, r):
 
 
 def _check_account(a, path, now, pinned, r):
-    """Checks one account; returns True when it is well-formed enough for cross-checks."""
+    """Checks one account in three steps, each only when the one before found nothing: its fields, its
+    reading and windows, then the account as a whole. Returns True when it is well-formed enough for the
+    state's cross-checks."""
     if not r.obj(a, _ACCOUNT_KEYS, path):
         return False
     before = len(r.items)
+    _check_account_fields(a, path, now, r)
+    if not (r.seq(a["windows"], f"{path}.windows") and r.seq(a["other_windows"], f"{path}.other_windows")):
+        return False
+    if len(r.items) > before:
+        return False
+    _check_account_reading(a, path, now, r)
+    if len(r.items) > before:
+        return False
+    _check_account_whole(a, path, pinned, r)
+    return len(r.items) == before
+
+
+def _check_account_fields(a, path, now, r):
+    """Each field of an account has the right type and an allowed value."""
     _forbidden(a, path, r)
     r.text(a["id"], f"{path}.id")
     r.enum(a["provider"], PROVIDERS, f"{path}.provider")
@@ -446,10 +462,10 @@ def _check_account(a, path, now, pinned, r):
         r.text(a["error"]["message"], f"{path}.error.message")
         r.num(a["error"]["since"], f"{path}.error.since")
         r.flag(a["error"]["outage"], f"{path}.error.outage")
-    if not (r.seq(a["windows"], f"{path}.windows") and r.seq(a["other_windows"], f"{path}.other_windows")):
-        return False
-    if len(r.items) > before:
-        return False
+
+
+def _check_account_reading(a, path, now, r):
+    """The age the account claims matches its last reading, and each window is right for that reading."""
     if a["saved"] is False or a["id"] in UNSAVED_IDS.values():
         if a["id"] != UNSAVED_IDS[a["provider"]] or a["saved"] or not a["active"] or a["switchable"]:
             r.add(path, "only 'unsaved-claude' / 'unsaved-codex' may be unsaved, and they are active and not switchable")
@@ -465,8 +481,11 @@ def _check_account(a, path, now, pinned, r):
     for group, primary in (("windows", True), ("other_windows", False)):
         for index, w in enumerate(a[group]):
             _check_window(w, f"{path}.{group}[{index}]", now, at, stale, primary, r)
-    if len(r.items) > before:
-        return False
+
+
+def _check_account_whole(a, path, pinned, r):
+    """What the account says as a whole follows from its windows: their order, the one that limits it
+    (`binding`), its state, its headline and its rank."""
     windows, others = a["windows"], a["other_windows"]
     _check_order(windows, f"{path}.windows", r)
     _check_order(others, f"{path}.other_windows", r)
@@ -501,7 +520,6 @@ def _check_account(a, path, now, pinned, r):
         r.text(h["text"], f"{path}.headline.text")
     if a["recommended"] and a["rank"] != 1:
         r.add(f"{path}.rank", "the recommended account has rank 1")
-    return len(r.items) == before
 
 
 def _check_trend(trend, path, now, r):
