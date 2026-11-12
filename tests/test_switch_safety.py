@@ -441,6 +441,7 @@ class CodexSwitchTest(DeckCase):
     def test_one_press_of_recover_settles_a_switch_the_app_died_in(self):
         self.close_codex()
         before = read_json(self.auth)
+        self.engine.accounts.capture("codex", owner="v2")        # the switch's own "save the current sign-in" step
         tx = FileTransaction(self.vault, self.engine.roots())
         tx.doc.update(provider="codex", purpose="switch")
         self.engine.providers["codex"].restore(self.vault.get(self.side), tx)
@@ -450,6 +451,93 @@ class CodexSwitchTest(DeckCase):
         self.assertEqual(self.pending_records(), [])
         self.assertEqual(read_json(self.auth), before)
         self.assert_consistent("codex", self.identity(self.main["id"]))
+
+
+class CodexInterruptedSwitchTest(DeckCase):
+    """Act on 1 for Codex. A switch that stopped after it wrote auth.json is settled by one press of Recover,
+    whatever Codex did to its login in between."""
+
+    def setUp(self):
+        super().setUp()
+        self.side = self.add_codex_account()
+        self.main = self.active("codex")
+        self.auth = Path(self.paths.codex_home) / "auth.json"
+        self.close_codex()
+
+    def die_after_the_login_is_written(self):
+        self.engine.accounts.capture("codex", owner="v2")        # the switch's own "save the current sign-in" step
+        tx = FileTransaction(self.vault, self.engine.roots())
+        tx.doc.update(provider="codex", purpose="switch")
+        self.engine.providers["codex"].restore(self.vault.get(self.side), tx)
+        return tx
+
+    def codex_renews(self):
+        live = read_json(self.auth)
+        live["tokens"]["refresh_token"] += "-renewed"
+        self.auth.write_text(json.dumps(live, indent=2))
+        return live["tokens"]["refresh_token"]
+
+    def assert_settled(self, expected):
+        self.assertEqual(self.pending_records(), [], "a record still waits after one press of Recover")
+        self.assert_consistent("codex", self.identity(expected))
+        self.assertEqual(self.plan("codex", "capture")["blockers"], [])
+
+    def test_recover_after_codex_renewed_the_new_login(self):
+        self.die_after_the_login_is_written()
+        renewed = self.codex_renews()
+        self.pending_records()
+        report = self.act("codex", "recover")
+        self.assertEqual(report["outcome"], "success", report)
+        self.assert_settled(self.main["id"])
+        self.assertEqual(self.vault.get(self.side)["tokens"]["refresh_token"], renewed,
+                         "the renewed login is the only one that still works, so it is the one kept")
+
+    def test_recover_after_someone_signed_in_to_another_account(self):
+        self.die_after_the_login_is_written()
+        other = codex_login("codex-third@example.test", now=self.engine.clock(), refresh="synthetic-refresh-third")
+        self.auth.write_text(json.dumps(other))
+        self.pending_records()
+        report = self.act("codex", "recover")
+        self.assertEqual(report["outcome"], "success", report)
+        self.assert_settled(self.main["id"])
+        third = self.engine.store.find("codex", codex_module.identity_key(other))
+        self.assertIsNotNone(third, "the login that was signed in was not saved")
+        self.assertEqual(self.vault.get(third["id"])["tokens"]["refresh_token"], "synthetic-refresh-third")
+
+    def test_a_failed_check_after_codex_rewrote_its_login_leaves_nothing_to_recover(self):
+        codex = self.engine.providers["codex"]
+        real = codex.usage
+
+        def rejected(profile, **kwargs):
+            if codex_module.identity_key(profile) != self.identity(self.side):
+                return real(profile, **kwargs)
+            self.codex_renews()
+            return dataclasses.replace(real(profile, **kwargs), usage=None, error=codex_module.ProviderError("unauthorized"))
+        codex.usage = rejected
+        report = self.act("codex", "switch", self.side)
+        self.assertEqual(report["outcome"], "failed")
+        self.assert_settled(self.main["id"])
+
+    def test_recover_waits_for_codex_to_close(self):
+        self.die_after_the_login_is_written()
+        session = self.procs.add_codex("codex_tui")
+        self.pending_records()
+        self.assertEqual([b["code"] for b in self.plan("codex", "recover")["blockers"]], ["busy"])
+        self.procs.exit_process(session.pid)
+        self.assertEqual(self.act("codex", "recover")["outcome"], "success")
+        self.assert_settled(self.main["id"])
+
+    def test_a_record_that_cannot_be_applied_is_set_aside_by_one_press(self):
+        tx = self.die_after_the_login_is_written()
+        tx.doc["changes"][0]["before"] = "not base64"
+        tx.save()
+        self.engine.accounts.remove(self.main["id"])            # and the outgoing account is no longer saved
+        self.pending_records()
+        self.act("codex", "recover")
+        self.assertEqual(self.pending_records(), [])
+        self.assertTrue(self.vault.path("set-aside-" + tx.key).exists())
+        self.assertIn("could not undo an interrupted Codex switch", self.engine.snapshot()["notices"][-1]["message"])
+        self.assertEqual(self.plan("codex", "capture")["blockers"], [])
 
 
 class DesktopSwitchTest(DeckCase):
@@ -513,6 +601,44 @@ class MuseSwitchTest(DeckCase):
         self.assertEqual(report["outcome"], "success", report)
         self.assertEqual(self.pending_records(), [])
         self.assert_consistent("muse", self.identity(self.outgoing["id"]))
+
+
+class MuseInterruptedSwitchTest(DeckCase):
+    """Act on 1 for Muse, which already recovered this way; the cases the shared function adds."""
+
+    def setUp(self):
+        super().setUp()
+        self.outgoing, self.target = self.active("muse"), self.spare("muse")
+        self.auth = Path(self.paths.muse_config) / "auth.json"
+
+    def die_after_the_login_is_written(self):
+        tx = FileTransaction(self.vault, self.engine.roots())
+        tx.doc.update(provider="muse", purpose="switch", outgoing=self.identity(self.outgoing["id"]),
+                      target=self.identity(self.target["id"]))
+        self.engine.providers["muse"].restore(self.vault.get(self.target["id"]), tx)
+        self.pending_records()
+        return tx
+
+    def test_recover_when_muses_login_file_cannot_be_opened(self):
+        """Noted 7."""
+        self.die_after_the_login_is_written()
+        self.auth.chmod(0)
+        self.addCleanup(lambda: self.auth.exists() and self.auth.chmod(0o600))
+        report = self.act("muse", "recover")
+        self.assertEqual(report["outcome"], "success", report)
+        self.assertEqual(self.pending_records(), [])
+        self.assert_consistent("muse", self.identity(self.outgoing["id"]))
+
+    def test_a_record_that_cannot_be_applied_is_set_aside_by_one_press(self):
+        tx = self.die_after_the_login_is_written()
+        tx.doc["changes"][0]["before"] = "not base64"
+        tx.doc.pop("outgoing")
+        tx.save()
+        self.act("muse", "recover")
+        self.assertEqual(self.pending_records(), [])
+        self.assertTrue(self.vault.path("set-aside-" + tx.key).exists())
+        self.assertIn("could not undo an interrupted Muse switch", self.engine.snapshot()["notices"][-1]["message"])
+        self.assertEqual(self.plan("muse", "capture")["blockers"], [])
 
 
 class StoredCopiesTest(unittest.TestCase):

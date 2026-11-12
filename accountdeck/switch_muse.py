@@ -7,9 +7,7 @@ whatever Muse has signed in at that moment, then writes the outgoing account's n
 
 Add Account runs `muse login` in a private folder with TBH_CREDENTIAL_BACKEND=file, so the new sign-in lands
 in a file AccountDeck can save, and the signed-in account and Muse's Keychain item stay as they are."""
-import base64
 from contextlib import ExitStack, contextmanager
-import json
 from dataclasses import replace
 from pathlib import Path
 import secrets
@@ -17,7 +15,7 @@ import tempfile
 import time
 import urllib.parse
 
-from . import diagnostics
+from . import recovery
 from .contract import UNSAVED_IDS
 from .core import DeckError, FileTransaction, atomic_write, is_frozen, json_bytes
 from .diagnostics import Manifest
@@ -139,50 +137,16 @@ def reads_held(ctx):
         yield
 
 
-def undo(ctx, tx):
-    """Puts back the sign-in Muse had before the unfinished switch `tx`, without losing one. Whatever Muse has
-    signed in now (it may have renewed it) is saved first, or kept for review when it cannot be read; then the
-    outgoing account is written from the vault, which holds its newest copy (a usage read may have renewed it
-    since the switch began). Muse must not be running. Marks `tx` rolled back."""
+def login_file(ctx) -> recovery.FileLogin:
+    """Muse's auth.json as recovery.put_back sees it."""
     muse = ctx.muse
-    if processes(ctx)[1].pairs:
-        raise DeckError("Close your Muse sessions, then try again.", "busy")
-    if not tx.doc.get("changes") or tx.doc.get("purpose") == "recover":
-        # An undo that never finished is not replayed: the switch it was undoing stays pending until that undo
-        # commits, and undoing the switch writes the right sign-in whichever record comes first.
-        tx.doc["status"] = "rolled_back"
-        tx.save()
-        return
-    try:
-        live = muse.live_document()
-    except DeckError:
-        live = None
-        ctx.vault.quarantine("muse-recover", muse.auth_path.read_bytes())
-    if live is not None and is_file_login(live) and identity_key(live):
-        ctx.accounts.save("muse", live, muse.identity(live), source="recover")
-    before = tx.doc["changes"][0]["before"]
-    data = None if before is None else base64.b64decode(before)
-    outgoing = tx.doc.get("outgoing") or _identity_of(data)
-    row = ctx.store.find("muse", outgoing) if outgoing else None
-    if row is not None:
-        try:
-            data = json_bytes(ctx.vault.get(row["id"]))
-        except DeckError:       # an unreadable saved copy: the file Muse had before the switch is next best
-            diagnostics.log("muse.undo_vault_unreadable", "warning")
-    fix = FileTransaction(ctx.vault, ctx.engine.roots())
-    fix.doc.update(provider="muse", purpose="recover")
-    fix.write(muse.auth_path, data)
-    fix.commit()
-    tx.doc["status"] = "rolled_back"
-    tx.save()
-    diagnostics.log("muse.undone", outgoing_saved=row is not None, live_saved=bool(live and is_file_login(live)))
 
-
-def _identity_of(data):
-    try:
-        return identity_key(json.loads(data)) if data else None
-    except ValueError:
-        return None
+    def keep(doc):
+        if is_file_login(doc) and identity_key(doc):
+            ctx.accounts.save("muse", doc, muse.identity(doc), source="recover")
+    return recovery.FileLogin("muse", muse.auth_path, running=lambda: bool(processes(ctx)[1].pairs),
+                              busy="Close your Muse sessions, then try again.", live=muse.live_document, keep=keep,
+                              identity_of=identity_key)
 
 
 class MuseSwitch(Operation):
@@ -284,17 +248,8 @@ class MuseSwitch(Operation):
                         manifest.set("verification.result", verified)
                         outcome = "success"
                 except BaseException:
-                    if tx is not None and tx.doc["status"] != "complete":
-                        if processes(ctx)[1].pairs:
-                            tx.doc["status"] = "conflict"      # Muse runs again: Recover puts it right once it closes
-                            tx.save()
-                        else:
-                            try:
-                                undo(ctx, tx)
-                            except Exception as exc:
-                                diagnostics.log_exception("muse.undo_failed", exc)
-                                tx.doc["status"] = "conflict"
-                                tx.save()
+                    # While Muse runs again the record stays open: Recover puts it right once Muse is closed.
+                    recovery.after_failure(tx, lambda tx: recovery.put_back(ctx, tx, login_file(ctx)))
                     raise
         finally:
             ctx.scheduler.resume_provider("muse")
@@ -302,16 +257,14 @@ class MuseSwitch(Operation):
 
 
 def recover_pending(ctx):
-    """Undoes every unfinished Muse switch (the Recover action)."""
+    """Settles every unfinished Muse switch (the Recover action). No Muse usage read runs meanwhile: a read
+    rewrites the live auth.json."""
     engine = ctx.engine
     if engine.read_only:
         raise DeckError("Muse sign-ins are read-only.", "read_only")
+    client = login_file(ctx)
     with reads_held(ctx):
-        for key in list(engine.recovery):
-            tx = FileTransaction.load(ctx.vault, engine.roots(), key)
-            if tx.doc.get("provider") == "muse":
-                undo(ctx, tx)
-    return "The previous Muse sign-in was restored."
+        return recovery.summary(recovery.press(engine, "muse", lambda tx: recovery.put_back(ctx, tx, client)))
 
 
 def dispatch(engine, name, body):

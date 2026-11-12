@@ -10,8 +10,9 @@ import tempfile
 import time
 import uuid
 
+from . import recovery
 from .rules import plan_current, plan_target
-from .core import DeckError, FileTransaction, is_frozen
+from .core import DeckError, FileTransaction, is_frozen, read_json
 from .diagnostics import Manifest
 from .operations import Operation
 from .platform import facts_mac
@@ -82,6 +83,25 @@ def build_plan(ctx, account, purpose="switch", *, ignore_op=None):
                       invisible=None, stop_tier="not_running", saves_outgoing=saved)
     result.entry["identity"] = engine.active_identity["codex"]
     return result
+
+
+def login_file(ctx) -> recovery.FileLogin:
+    """Codex's auth.json as recovery.put_back sees it."""
+    path = ctx.codex.codex_home / "auth.json"
+
+    def live():
+        try:
+            return read_json(path)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            raise DeckError("Codex's auth.json could not be read.", "login_needed") from None
+
+    def keep(doc):
+        if identity_key(doc) is not None:
+            ctx.accounts.save("codex", doc, ctx.codex.identity(doc), source="recover", owner="v2")
+    return recovery.FileLogin("codex", path, running=lambda: bool(processes(ctx)[2].pairs),
+                              busy="Close Codex before recovering.", live=live, keep=keep, identity_of=identity_key)
 
 
 def plan_codex_switch(ctx, account=None, purpose="switch", *, ignore_op=None):
@@ -170,7 +190,8 @@ class CodexSwitch(Operation):
                     if processes(ctx)[2].pairs or engine.read_only:
                         raise DeckError("The process set changed before the swap. Review it again.", "busy")
                     tx = FileTransaction(ctx.vault, engine.roots())
-                    tx.doc.update(provider="codex", purpose="switch")
+                    tx.doc.update(provider="codex", purpose="switch", outgoing=self.claimed.entry["identity"],
+                                  target=self.target["identity"])
                     ctx.codex.restore(profile, tx)
                 with self.step("verify", phase="verifying", message="Checking the selected Codex account…"):
                     if ctx.codex.active_identity().identity != self.target["identity"]:
@@ -188,12 +209,8 @@ class CodexSwitch(Operation):
                     manifest.set("verification.result", verified)
                     outcome = "success"
         except BaseException:
-            if tx is not None and tx.doc["status"] != "complete":
-                if processes(ctx)[2].pairs:
-                    tx.doc["status"] = "conflict"
-                    tx.save()
-                else:
-                    tx.rollback()
+            # While Codex runs again the record stays open: Recover puts it right once Codex is closed.
+            recovery.after_failure(tx, lambda tx: recovery.put_back(ctx, tx, login_file(ctx)))
             raise
         finally:
             if stopped:
@@ -210,13 +227,10 @@ def dispatch(engine, name, body):
     if name == "recover":
         claimed = claim(ctx, "recover", body, provider="codex", build=build_plan)
         def recover():
-            if processes(ctx)[2].pairs or engine.read_only:
-                raise DeckError("Close Codex before recovering.", "busy")
-            for key in engine.recovery:
-                tx = FileTransaction.load(ctx.vault, engine.roots(), key)
-                if tx.doc.get("provider") == "codex":
-                    tx.rollback()
-            return "The previous Codex sign-in was restored."
+            if engine.read_only:
+                raise DeckError("Codex sign-ins are read-only.", "read_only")
+            client = login_file(ctx)
+            return recovery.summary(recovery.press(engine, "codex", lambda tx: recovery.put_back(ctx, tx, client)))
         return submit(ctx, claimed, QuickOp("recover", recover, provider="codex", message="Recovering Codex…",
                                            step=("recover", "Restoring the previous sign-in")))
     if name in ("add", "finish-login", "cancel-login"):
