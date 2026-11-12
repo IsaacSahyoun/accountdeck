@@ -1,4 +1,4 @@
-"""Provider failure classification (A1): one kind per failure, a stable error code, and the re-auth escalation."""
+"""Provider failure classification: one kind per failure, a stable error code, and the re-auth escalation."""
 from __future__ import annotations
 
 from collections import namedtuple
@@ -15,6 +15,7 @@ from .base import OAUTH_HOST
 
 RATE_LIMIT_MARGIN = 900       # added to every Retry-After, so "Retry-After: 0" (or none) waits 15 min
 BLOCKED_RETRY = 1800
+MAX_RETRY = 3600              # the longest pause one answer can ask for; the read after it asks the provider again
 ESCALATION_COUNT = 3
 ESCALATION_SPAN = 1800
 STALE_SESSION_CODES = (b"session_stale_relogin", b"elevated_auth")
@@ -48,7 +49,8 @@ _ERROR_TYPE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 class ProviderError(DeckError):
     """A classified provider failure. `kind` is a KINDS key, `http` the status (None without a
     response), `detail` a short sanitized hint (an error type or RPC code, never a body) and `meta`
-    the request diagnostics of http.request(). `retry_after` already includes the A1 margin."""
+    the request diagnostics of http.request(). `retry_after` already includes RATE_LIMIT_MARGIN and is at
+    most MAX_RETRY, whatever the provider asked for."""
 
     def __init__(self, kind, http=None, retry_after=None, detail=None, meta=None, *, message=None):
         if kind not in KINDS:
@@ -59,6 +61,8 @@ class ProviderError(DeckError):
             code, text = _NETWORK_BY_CLASS[meta["class"]]
         if retry_after is None:
             retry_after = {"rate_limited": RATE_LIMIT_MARGIN, "blocked": BLOCKED_RETRY}.get(kind)
+        else:
+            retry_after = min(retry_after, MAX_RETRY)
         super().__init__(message or text, code, retry_after)
         self.kind, self.http, self.detail, self.meta = kind, http, detail, meta
 
@@ -68,7 +72,7 @@ class ProviderError(DeckError):
 
 
 def classify_http(url, status, headers=None, body_head=b"", token_was_expired=False, incident=False):
-    """The A1 kind of one failed request. `status` None means no response (timeout, refused
+    """The kind (a KINDS key) of one failed request. `status` None means no response (timeout, refused
     connection); `body_head` is at most the first 2 KB of the body and is only inspected here."""
     if status is None or status == 529 or 500 <= status <= 599:
         return "outage" if incident else "network"
@@ -130,7 +134,7 @@ def retry_after_seconds(value, now=None):
 
 
 def rate_limit_wait(retry_after):
-    """The pause after a 429 (A1): the requested seconds plus a 15-minute margin."""
+    """The pause after a 429: the requested seconds plus a 15-minute margin."""
     return (retry_after or 0) + RATE_LIMIT_MARGIN
 
 
@@ -168,7 +172,7 @@ class OutcomeLog:
 
 
 def reauth_escalation(outcomes, now, *, incident=False):
-    """True when a saved Claude sign-in should become reauth_required (A1): at least 3 token_refused
+    """True when a saved Claude sign-in should become reauth_required: at least 3 token_refused
     outcomes since the last success, across both routes, spanning at least 30 minutes. A single 401
     never escalates, refusals recorded during an incident do not count, and nothing escalates while
     an incident is in progress."""

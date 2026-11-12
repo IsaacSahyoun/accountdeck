@@ -1,7 +1,7 @@
-"""When to read each account's usage (PLAN §6.9): the cadence table, reset-boundary reads, backoff,
+"""When to read each account's usage: the cadence table, reset-boundary reads, backoff,
 the per-identity request governor, staggered refresh-all and the refresh worker pool.
 
-The planning is pure (`base_interval`, `RefreshScheduler.next_time`, `RequestGovernor.delay`) and
+The planning is pure (`base_interval`, `interval`, `RequestGovernor.delay`) and
 driven by the engine's tick with an injectable clock; only `RefreshScheduler.tick` starts work, on a
 pool of three `ad2-refresh` threads (or inline, for tests) with at most one Codex probe and one Muse
 helper at a time, and never two reads of one account at once.
@@ -130,18 +130,13 @@ class RefreshScheduler:
         self._plans: dict[str, _Plan] = {}
         self._lock = threading.RLock()
         self._helpers = {"codex": threading.Lock(), "muse": threading.Lock()}    # one helper process each
+        self._helper_reads = set()           # the clients with a helper read started and not yet finished
         self._pool = None if inline else ThreadPoolExecutor(workers, thread_name_prefix="ad2-refresh")
         self._paused = False
         self.locks = {}
         self.provider_pause = {name: False for name in ("claude", "codex", "claude_cli", "muse")}
 
     # ---- planning ----
-    def next_time(self, target: Target, now: float) -> float:
-        """When `target` is due next, from its plan (a first sighting is due now)."""
-        with self._lock:
-            plan = self._plans.get(target.id)
-            return now if plan is None else plan.next
-
     def _schedule(self, target: Target, plan: _Plan, after: float) -> None:
         wait = interval(target, plan.failures) * (1 - JITTER + 2 * JITTER * self.rng())
         due = after + wait
@@ -206,14 +201,18 @@ class RefreshScheduler:
 
     # ---- running ----
     def tick(self, targets, now, clock) -> list[str]:
-        """Starts every due read; returns their account ids. `clock` dates each completion."""
+        """Starts every due read; returns their account ids. `clock` dates each completion. A Codex or Muse
+        read is not started while another read of the same client runs: it stays due for the next tick, so
+        it never holds a worker while it waits for the helper."""
         started = []
         for target in self.due(targets, now):
             with self._lock:
                 plan = self._plans[target.id]
-                if plan.running:
+                if plan.running or target.provider in self._helper_reads:
                     continue
                 plan.running = True
+                if target.provider in self._helpers:
+                    self._helper_reads.add(target.provider)
             if target.provider in ("claude", "claude_cli"):
                 self.governor.record(governor_key(target), now)
             started.append(target.id)
@@ -225,6 +224,7 @@ class RefreshScheduler:
             except RuntimeError:       # the pool shut down: never leave the plan marked running
                 with self._lock:
                     plan.running = False
+                    self._helper_reads.discard(target.provider)
                 started.pop()
         return started
 
@@ -253,6 +253,7 @@ class RefreshScheduler:
         with self._lock:
             plan = self._plans.setdefault(target.id, _Plan(next=now))
             plan.running, plan.last = False, now
+            self._helper_reads.discard(target.provider)
             if outcome == "ok":
                 plan.failures = 0
             elif outcome not in ("rate_limited", "skipped"):
@@ -330,10 +331,6 @@ class RefreshScheduler:
 
     def resume_provider(self, provider):
         self.provider_pause[provider] = False
-
-    @property
-    def paused(self) -> bool:
-        return self._paused
 
     def shutdown(self) -> None:
         if self._pool is not None:

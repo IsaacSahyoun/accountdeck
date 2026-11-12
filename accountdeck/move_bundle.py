@@ -1,4 +1,4 @@
-"""The PC-to-Mac transfer bundle (docs/mac/PLAN.md §2.1, §2.4, §2.5): a passphrase-encrypted file that
+"""The PC-to-Mac transfer bundle: a passphrase-encrypted file that
 carries accounts, their history and their decrypted credentials from the PC, plus the confirmation code
 the Mac shows once it has stored them all. This Mac build only reads bundles (`read_bundle`,
 `open_bundle`, `code_for_imported`); `seal` is the writer the PC build used, kept as the format's
@@ -52,7 +52,7 @@ __all__ = [
     "BundleError", "WrongPassphrase", "CorruptBundle", "UnsupportedVersion", "WrongKind",
     "BundleTooLarge", "InvalidPayload", "NotABundle",
     "BundleKeys", "BundleHeader",
-    "seal", "open_bundle", "peek_header", "validate_payload", "canonical_json",
+    "seal", "open_bundle", "validate_payload", "canonical_json",
     "confirm_code", "code_for_imported", "read_bundle",
 ]
 
@@ -60,10 +60,10 @@ MAGIC = b"ADMOVE"
 FORMAT_VERSION = 1                 # the container layout above
 PAYLOAD_FORMAT = 1                 # the payload schema in validate_payload
 FILE_SUFFIX = ".adeck"
-KINDS = ("main", "handover")       # §2.1 main export, §2.5 hand-over of the PC's live sign-ins
+KINDS = ("main", "handover")       # the main export, and the hand-over of the PC's live sign-ins
 
 SCRYPT_N = 2 ** 17                 # 128 MiB with r=8; about half a second
-SCRYPT_MIN_N = 2 ** 15             # the plan's floor; open_bundle refuses less unless told otherwise
+SCRYPT_MIN_N = 2 ** 15             # the floor; open_bundle refuses less unless told otherwise
 SCRYPT_MAX_N = 2 ** 18             # a crafted header cannot ask for more than 256 MiB
 SCRYPT_R = 8
 SCRYPT_P = 1
@@ -86,7 +86,7 @@ _CODE_LABEL = b"accountdeck-move-confirm"
 _MIN_PASSPHRASE = 12
 
 PROVIDERS = ("claude", "claude_cli", "codex")
-# `secret.type` per provider: the Claude Desktop portable profile (task A2), the Claude Code
+# `secret.type` per provider: the Claude Desktop portable profile, the Claude Code
 # terminal record and the Codex auth.json copy. The record itself (`secret.data`) is opaque here.
 SECRET_TYPES = {
     "claude": "claude-desktop-portable",
@@ -170,7 +170,7 @@ class BundleKeys:
 @dataclass(frozen=True)
 class BundleHeader:
     """The parsed header. `account_ids` (every account in the payload) and `keys` are filled in by
-    open_bundle; peek_header leaves them empty."""
+    open_bundle."""
     format_version: int
     bundle_id: str
     kind: str
@@ -184,10 +184,6 @@ class BundleHeader:
     account_ids: frozenset = frozenset()
     keys: BundleKeys | None = field(default=None, repr=False, compare=False)
 
-    def to_json(self):
-        """The public fields, for the UI and logs (no key material)."""
-        return {"format_version": self.format_version, "bundle_id": self.bundle_id, "kind": self.kind,
-                "created": self.created, "accounts": len(self.account_ids)}
 
 
 # ---- seal and open ----
@@ -228,12 +224,6 @@ def open_bundle(data, passphrase, *, expect_kind=None, min_scrypt_n=SCRYPT_MIN_N
     ids = frozenset(account["id"] for account in payload["accounts"])
     keys = BundleKeys(_hkdf(master, _INFO_CONFIRM, _KEY_LEN))
     return replace(header, account_ids=ids, keys=keys), payload
-
-
-def peek_header(data, *, min_scrypt_n=SCRYPT_MIN_N, max_bytes=MAX_BUNDLE_BYTES):
-    """The header without the passphrase (kind, created, bundle id) for a preview; nothing in it
-    is secret. Same checks as open_bundle up to decryption."""
-    return _parse(data, min_scrypt_n=min_scrypt_n, max_bytes=max_bytes)[0]
 
 
 def canonical_json(value):
@@ -514,7 +504,7 @@ def _safe_key(key):
     return key if isinstance(key, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,31}", key) else "<unnamed>"
 
 
-# ---- confirmation code (§2.4) ----
+# ---- confirmation code ----
 
 def confirm_code(confirm_key, bundle_id, account_ids):
     """8 base32 characters as XXXX-XXXX: HMAC-SHA256(confirm_key, label, bundle id, sorted ids),

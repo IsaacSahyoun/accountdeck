@@ -1,4 +1,4 @@
-"""Alert engine (PLAN §6.10): turns successive states into alerts, once per episode.
+"""Alert engine: turns successive states into alerts, once per episode.
 
 `AlertEngine.evaluate(prev_state, state, latches, now)` is pure apart from the start/resume hold it
 keeps itself: the first observation after start only primes the latches (nothing is raised from
@@ -160,8 +160,7 @@ class _Run:
                          message)
 
     def suggest(self, account, best):
-        """suggest_switch once per (active account, binding window cycle). Snoozing the alert only
-        hides it (Store.update_alert); the cycle latch keeps it from being raised again."""
+        """suggest_switch once per (active account, binding window cycle)."""
         if not best.get("suggest_switch") or not best.get("account"):
             return
         limiting = next((w for w in account["windows"] if w["binding"]), None)

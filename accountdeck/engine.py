@@ -1,9 +1,9 @@
-"""AccountDeck 2 engine (PLAN §2.2): the state snapshot, the tick loop and the action facade.
+"""AccountDeck 2 engine: the state snapshot, the tick loop and the action facade.
 
 `Engine` implements `server.EngineAPI` and is the one object the switch flows, the move import and
 the demo build against.
 
-- `snapshot()` builds the §3.3 state from the store, the provider adapters and one observation of
+- `snapshot()` builds the state from the store, the provider adapters and one observation of
   the machine, enriches it with `intel.enrich_state` and validates it with
   `contract.validate_state` (an assertion in demo and safe mode, one log line in live mode). The
   result is cached until `bump()` raises `rev`.
@@ -146,7 +146,7 @@ class Engine:
         self._status_threads = []
         self._counts = {}
         self.notices, self._notice_ids = [], itertools.count(1)
-        self.plans, self.login, self.holds = {}, None, set()
+        self.plans, self.login = {}, None
         self.active_identity = {name: None for name in self.providers}
         self.identity_known = {name: False for name in self.providers}
         self.background_verifiers = []
@@ -193,7 +193,7 @@ class Engine:
     # ---- what switch code and the server read ----
     @property
     def pending(self):
-        """The running operation (§3.5), or None; an operation waiting in `needs_reconfirm` is not running."""
+        """The running operation, or None; an operation waiting in `needs_reconfirm` is not running."""
         pending = self.runner.pending()
         return pending if pending is not None and pending["phase"] not in TERMINAL_PHASES else None
 
@@ -224,17 +224,6 @@ class Engine:
         result = {"op": self.runner.submit(op)}
         self.bump()
         return result
-
-    def hold_readings(self, reason):
-        """No usage reads start, and `ready` stays false, until every hold is released."""
-        with self.lock:
-            self.holds.add(reason)
-        self.bump()
-
-    def release_readings(self, reason):
-        with self.lock:
-            self.holds.discard(reason)
-        self.bump()
 
     def roots(self):
         return [self.paths.claude_profile, self.paths.codex_home, self.paths.claude_projects, self.paths.muse_config]
@@ -350,7 +339,7 @@ class Engine:
 
     # ---- reads ----
     def _pressure(self, usage, now):
-        """(hot, exhausted, resets) of a last good reading (§6.9)."""
+        """(hot, exhausted, resets) of a last good reading."""
         windows_ = [w for w in map(intel.normalize_window, (usage or {}).get("windows") or ())
                     if w is not None and w["kind"] in PRIMARY_KINDS]
         current = [w for w in windows_ if w["reset"] is None or w["reset"] > now]     # a passed reset says nothing yet
@@ -454,7 +443,7 @@ class Engine:
         rows = self.store.accounts()
         self._counts = self._count_accounts(rows)
         self.scheduler.set_paused(bool(self.prefs.get("refresh_paused")))
-        if not self.holds and self.scheduler.tick(self.targets(now, rows), now, self.clock):
+        if self.scheduler.tick(self.targets(now, rows), now, self.clock):
             self.bump()
 
     def _phase(self, name, fn, *args, event="engine.phase_failed", **kwargs):
@@ -683,7 +672,6 @@ class Engine:
         with self.lock:
             notices = [dict(n) for n in self.notices if n["sticky"] or now - n["at"] <= NOTICE_TTL]
             login = self._public_login()
-            holds = bool(self.holds)
         providers = {}
         for name in self.providers:
             providers[name] = {
@@ -696,14 +684,14 @@ class Engine:
         providers["claude_cli"].update(autoswitch=cli_auto.state(self), enrollment=copy.deepcopy(self.cli.phase),
                                         readonly_reason=self.cli.adapter.readonly_reason)
         raw = {"app": "accountdeck2", "version": __version__, "rev": rev, "mode": self.mode, "safe_mode": safe_mode(),
-               "ready": not holds and self._ready(rows, now), "read_only": self.read_only, "settings": settings,
+               "ready": self._ready(rows, now), "read_only": self.read_only, "settings": settings,
                "providers": providers, "accounts": accounts, "pending": pending, "report": runner["report"],
                "login": login, "recovery": {"pending": bool(self.recovery), "count": len(self.recovery)},
                "notices": notices, "alerts": self.store.alerts(), "banners": self._banners(status, machine, rows),
                "setup": slow["setup"], "sessions": slow["sessions"], "cwd": settings["cwd"],
                "events": self.store.events(), "last_manifest": self.store.setting("last_manifest"),
                "platform": contract.platform_block(self._notification_state())}
-        raw["move_import"] = move_import.state(self, rows)       # the PC-to-Mac import (docs/mac/PLAN.md §2.3)
+        raw["move_import"] = move_import.state(self, rows)       # the PC-to-Mac import
         state, picks = intel.enrich_state(raw, now=now, settings=settings,
                                           recommender_state=self.prefs.get("recommender_state"))
         self.prefs.set_internal("recommender_state", picks)
@@ -953,12 +941,6 @@ class Engine:
         else:
             self.accounts.rename(key, body.get("label"))
 
-    def _do_reorder(self, body):
-        ids = body.get("ids")
-        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-            raise DeckError("Provide an account order.", "invalid")
-        self.store.reorder(ids)
-
     def _do_remove(self, body):
         key = self._account_id(body)
         self._own_the_login()
@@ -980,8 +962,8 @@ class Engine:
                         self.bump()
                         return
                     with self.cli.gate(key):
-                        live = self.cli.adapter.current()
-                        if live["identity"] == account["identity"]:
+                        # Nobody signed in to Claude Code (None) means no saved account is in use.
+                        if self.cli.adapter.active_identity() == account["identity"]:
                             raise DeckError("The account in use by your terminals cannot be removed.", "invalid")
                         self.accounts.remove(key)
                 self.scheduler.forget(key)
@@ -1001,19 +983,10 @@ class Engine:
         with self.lock:
             self.notices = [n for n in self.notices if wanted is not None and n["id"] != wanted]
 
-    def _do_dismiss_alert(self, body):
-        self.store.update_alert(body.get("alert"), dismissed=True)
-
-    def _do_snooze_alert(self, body):
-        minutes = body.get("minutes")
-        if type(minutes) is not int or not 1 <= minutes <= 1440:
-            raise DeckError("Choose 1 to 1440 minutes.", "invalid")
-        self.store.update_alert(body.get("alert"), snoozed_until=self.clock() + minutes * 60)
-
     def _do_dismiss_report(self, body):
         self.runner.dismiss_report()
 
-    # The Mac side of the move (docs/mac/PLAN.md §2.3-§2.5; accountdeck/move_import.py has the shapes).
+    # The Mac side of the move (accountdeck/move_import.py has the shapes).
     def _do_import_bundle_preview(self, body):
         if self.runner.busy:
             raise DeckError("Finish or cancel the current action first.", "busy")
@@ -1025,12 +998,6 @@ class Engine:
 
     def _do_import_bundle_dismiss(self, body):
         move_import.dismiss(self, body.get("bundle_id"))
-
-    def _do_open_folder(self, body):
-        folders = {"data": self.paths.data_dir, "logs": self.paths.data_dir / "logs"}
-        if body.get("which") not in folders:
-            raise DeckError("Choose data or logs.", "invalid")
-        self.procs.open_folder(folders[body["which"]])
 
     def _do_test_notification(self, body):
         handle = self.tray_handle
@@ -1129,7 +1096,7 @@ class Engine:
 
 
 def muse_consumers(rows, names):
-    """The contract consumers (§3.3) for Muse processes: a terminal session is "tui", `muse serve` "app_server_child"."""
+    """The contract consumers for Muse processes: a terminal session is "tui", `muse serve` "app_server_child"."""
     return [{"pid": row.pid, "kind": MUSE_CONSUMER_KINDS[row.kind], "parent": names.get(row.parent),
              "started": unix_time(row.ctime)} for row in rows if row.kind in MUSE_CONSUMER_KINDS]
 
@@ -1168,5 +1135,5 @@ def shared_setup(paths, claude_base):
 
 
 def build_engine(paths, *, owner_lock):
-    """The live engine run.py serves (PLAN §8.1)."""
+    """The live engine run.py serves."""
     return Engine(paths, owner_lock=owner_lock)

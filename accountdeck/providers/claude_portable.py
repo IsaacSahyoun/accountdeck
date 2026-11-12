@@ -1,22 +1,18 @@
-"""Portable Claude Desktop profiles: the core of the PC-to-Mac move (docs/mac/PLAN.md §1.6, §2.1, §2.3;
-docs/mac/PROVIDERS-MAC.md §2 "Decrypt → re-encrypt recipe").
+"""Portable Claude Desktop profiles: the core of the PC-to-Mac move.
 
-`to_portable(profile, crypto)` opens a saved profile with the key it was written with and returns a
-plain dict: the token caches as their JSON text, every cookie as its plaintext value plus the row's other
-columns, the cookie database's schema and `meta` rows, and the profile's non-secret fields. The source
-machine's key ("key") is not carried. `from_portable(portable, crypto, target_meta_version)` seals it
-again with `crypto`'s current key and writes the cookie rows into a database of the target schema,
-returning a normal profile whose "key" is `crypto.key_ref()`.
+A portable profile is the plain dict the PC build wrote from a saved profile: the token caches as their
+JSON text, every cookie as its plaintext value plus the row's other columns, the cookie database's schema
+and `meta` rows, and the profile's non-secret fields. The source machine's key ("key") is not carried.
+This Mac build only reads one: `from_portable(portable, crypto, target_meta_version)` seals it again with
+`crypto`'s current key and writes the cookie rows into a database of the target schema, returning a normal
+profile whose "key" is `crypto.key_ref()`.
 
 Rules:
-- The 32-byte SHA-256(host_key) prefix inside a cookie's plaintext is checked and stripped when the
-  source database's `meta.version` >= 24, and added when the target's is >= 24 (Chromium's rule).
-- Dropped (§2.1): the `cf_clearance` cookie (bound to the PC's user agent and IP; Cloudflare issues a new
-  one) and device-bound profile files (`ant-device-registry.json`, `bridge-state.json`; the Mac registers
-  its own). Unknown top-level profile fields are not carried. `portable["dropped"]` names what was left
-  out (never a value).
-- A value that does not open, a cookie whose host hash does not match, an unknown format or a schema the
-  rows do not fit raises `PortableError`; nothing is skipped silently. A missing or refused macOS
+- The 32-byte SHA-256(host_key) prefix inside a cookie's plaintext is added when the target database's
+  `meta.version` is >= 24 (Chromium's rule). The PC build stripped it on export.
+- The PC build left out the `cf_clearance` cookie (bound to the PC's user agent and IP; Cloudflare issues a
+  new one) and device-bound profile files (the Mac registers its own).
+- An unknown format or a schema the rows do not fit raises `PortableError`; nothing is skipped silently. A missing or refused macOS
   Keychain key raises `chromium_crypto.ChromiumKeyNotReady` (defer and retry later).
 - Pure functions: no file, process or network access, and no logging. A portable dict holds plaintext
   credentials: keep it in memory or inside the encrypted move bundle only.
@@ -25,23 +21,17 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
-import json
 import re
 import sqlite3
 
 from ..core import DeckError
-from .chromium_crypto import ChromiumDecryptError
 from .claude import SQLITE_MAGIC, _checked_cookies, _snapshot
 
 PORTABLE_FORMAT = "accountdeck.claude-desktop.portable"
 PORTABLE_VERSION = 1
 TOKEN_CACHE_KEYS = ("oauth:tokenCache", "oauth:tokenCacheV2")
 HOST_PREFIX_VERSION = 24          # Chromium cookie DB meta.version from which values carry sha256(host_key)
-DROPPED_COOKIES = ("cf_clearance",)
-DEVICE_BOUND_FILES = ("ant-device-registry.json", "bridge-state.json")
 PROFILE_FIELDS = ("version", "identity", "captured", "journal", "cookie_heal", "org")   # carried as they are
-_CARRIED = set(PROFILE_FIELDS) | {"auth", "key", "cookies", "files"}
 _SECRET_COLUMNS = ("value", "encrypted_value")
 # The carried schema is re-run only as table and index definitions (sqlite3 runs one statement per call).
 _SCHEMA_SQL = re.compile(r"\s*CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s", re.IGNORECASE)
@@ -55,114 +45,10 @@ class PortableError(DeckError):
         super().__init__(message, code)
 
 
-# ---- export side ----
-
-def to_portable(profile: dict, crypto) -> dict:
-    """The plaintext, OS-independent form of a saved Claude Desktop profile (see the module docstring).
-    `crypto` is the ChromiumCrypto of the machine that wrote the profile."""
-    if not isinstance(profile, dict) or not isinstance(profile.get("auth"), dict):
-        raise PortableError("This saved Claude profile is damaged.")
-    key = crypto.key_for(profile.get("key") or "")
-    auth, caches = {}, {}
-    for name, value in profile["auth"].items():
-        if name in TOKEN_CACHE_KEYS and value not in (None, ""):
-            caches[name] = _open_token_cache(key, name, value)
-        else:
-            auth[name] = value
-    cookies, dropped_cookies = None, {}
-    if profile.get("cookies"):
-        cookies, dropped_cookies = _portable_cookies(profile["cookies"], key)
-    files, dropped_files = {}, []
-    for rel, data in (profile.get("files") or {}).items():
-        if not isinstance(rel, str) or not (data is None or isinstance(data, str)):
-            raise PortableError("A saved Claude profile file is damaged.")
-        if rel.replace("\\", "/").rsplit("/", 1)[-1] in DEVICE_BOUND_FILES:
-            dropped_files.append(rel)
-        else:
-            files[rel] = data
-    return {"format": PORTABLE_FORMAT, "version": PORTABLE_VERSION, "source_os": crypto.os,
-            "profile": {name: profile[name] for name in PROFILE_FIELDS if name in profile},
-            "auth": auth, "token_caches": caches, "cookies": cookies, "files": files,
-            "dropped": {"cookies": dropped_cookies, "files": sorted(dropped_files),
-                        "fields": sorted(str(name) for name in profile if name not in _CARRIED)}}
-
-
-def _open_token_cache(key, name, value) -> str:
-    try:
-        blob = base64.b64decode(value, validate=True) if isinstance(value, str) else b""
-    except ValueError:
-        blob = b""
-    if not blob.startswith(b"v10"):
-        raise PortableError(f"The saved {name} has an unknown format.", "unsupported")
-    try:
-        text = key.decrypt(blob).decode("utf-8")
-        parsed = json.loads(text)
-    except (ChromiumDecryptError, ValueError):
-        raise PortableError(f"The saved {name} does not open with this profile's key.") from None
-    if not isinstance(parsed, dict):
-        raise PortableError(f"The saved {name} does not open with this profile's key.")
-    return text
-
-
-def _portable_cookies(encoded, key):
-    db = _open_db(_decode_db(encoded, "The saved cookie database is damaged."))
-    try:
-        version = _meta_version(db, "The saved cookie database")
-        meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
-        if any(not isinstance(name, str) or not (value is None or isinstance(value, (int, str)))
-               for name, value in meta.items()):
-            raise PortableError("The saved cookie database's version table is not recognized.", "unsupported")
-        schema = [sql for (sql,) in db.execute(
-            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
-            "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, rowid")]
-        columns = _columns(db, "The saved cookie database")
-        rows, dropped = [], {}
-        names = ", ".join(_quote(name) for name in columns)
-        for record in db.execute(f"SELECT {names} FROM cookies ORDER BY rowid"):
-            row = dict(zip(columns, record, strict=True))
-            if row["name"] in DROPPED_COOKIES:
-                dropped[row["name"]] = dropped.get(row["name"], 0) + 1
-                continue
-            plaintext = _open_cookie(key, row, version)
-            fields = {name: row[name] for name in columns if name not in _SECRET_COLUMNS}
-            if any(not (value is None or isinstance(value, (int, float, str))) for value in fields.values()):
-                raise PortableError(f"Cookie {_label(row)} has a column type this version cannot carry.",
-                                    "unsupported")
-            rows.append({"fields": fields, "plaintext": base64.b64encode(plaintext).decode()})
-    except sqlite3.Error:
-        raise PortableError("The saved cookie database could not be read.") from None
-    finally:
-        db.close()
-    return {"meta_version": version, "meta": meta, "schema": schema, "rows": rows}, dropped
-
-
-def _open_cookie(key, row, version) -> bytes:
-    """Chromium's read: the decrypted encrypted_value when there is one (minus the verified host hash
-    from meta version 24), else the plaintext `value` column."""
-    encrypted = row["encrypted_value"]
-    if encrypted:
-        if not isinstance(encrypted, bytes) or encrypted[:3] not in key.prefixes:
-            raise PortableError(f"Cookie {_label(row)} has an unknown encryption format.", "unsupported")
-        try:
-            plaintext = key.decrypt(encrypted)
-        except ChromiumDecryptError:
-            raise PortableError(f"Cookie {_label(row)} does not open with this profile's key.") from None
-        if version >= HOST_PREFIX_VERSION:
-            digest = _host_hash(row["host_key"])
-            if len(plaintext) < len(digest) or not hmac.compare_digest(plaintext[:len(digest)], digest):
-                raise PortableError(f"Cookie {_label(row)} does not open with this profile's key.")
-            plaintext = plaintext[len(digest):]
-        return plaintext
-    value = row["value"]
-    if value is None:
-        return b""
-    return value if isinstance(value, bytes) else str(value).encode("utf-8")
-
-
 # ---- import side ----
 
 def from_portable(portable: dict, crypto, target_meta_version: int, *, template: bytes | None = None) -> dict:
-    """A saved profile for the machine `crypto` belongs to, built from `to_portable`'s output.
+    """A saved profile for the machine `crypto` belongs to, built from a portable profile.
 
     `target_meta_version` is the cookie database version Claude Desktop on the target uses. `template` is
     the bytes of a cookie database that Claude Desktop created there (see `cookie_template`): its schema

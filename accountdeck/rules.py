@@ -1,4 +1,4 @@
-"""The usage and display rules of the state contract (PLAN §3.3, §6.2-6.7), shared by everything that
+"""The usage and display rules of the state contract, shared by everything that
 derives what the dashboard shows: the engine's intel, the alert engine, the state validator, the menu
 bar and the switch plans. `web/js/model.js` implements the same rules for the browser; keep the two in
 step. Pure: every function takes `now` (and a time zone for clock copy) and reads no clock or file.
@@ -17,7 +17,7 @@ STRIP_HORIZON = 86400
 STRIP_MIN_USED = 5.0
 BUCKET_LIMITS = (("minute", 900), ("hour", 3600), ("six_hours", 21600), ("day", 86400))
 RELATIVE_LIMIT = 21600        # countdown copy up to 6 h, clock copy after
-QUIET_ERRORS = frozenset({"blocked", "rate_limited", "outage"})   # keep the account's state (PLAN §3.3)
+QUIET_ERRORS = frozenset({"blocked", "rate_limited", "outage"})   # keep the account's state
 SEVERITY_RANK = {"watch": 1, "low": 2, "critical": 3, "out": 4}
 DORMANT_DAYS = 25
 PRESERVED = ["Local Code sessions and archives", "Local MCP servers and extensions (shared config)",
@@ -29,7 +29,7 @@ def _is_num(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-# ---- copy shared with model.js (PLAN §7.5) ----
+# ---- copy shared with model.js ----
 
 def countdown_text(secs):
     """Countdown copy: ceil minutes, seconds only under 5 min ("2d 4h", "1h 12m", "45m", "4m 59s", "20s", "now")."""
@@ -76,7 +76,7 @@ def pct_left(left):
     return 100 - js_round(100 - left)
 
 
-# ---- rules (PLAN §6.2–6.7) ----
+# ---- rules ----
 
 def band(left, blocked):
     if left is None:
@@ -119,7 +119,7 @@ def pace_stage(delta, ready):
 
 
 def pace(used, reset, minutes, at, samples):
-    """Pace at reading time (PLAN §6.5); None when hidden or not computable."""
+    """Pace at reading time; None when hidden or not computable."""
     if used is None or reset is None or not minutes or at is None:
         return None
     length = minutes * 60
@@ -269,7 +269,7 @@ def account_out(account):
 
 
 def strip(accounts, now):
-    """Resetting-soon rows (PLAN §3.3/§6.6): refilled first, then by reset."""
+    """Resetting-soon rows: refilled first, then by reset."""
     rows = []
     for account in accounts:
         out = account_out(account)
@@ -341,56 +341,6 @@ def eligible(account, pinned):
             and not any(w["state"] in ("resetting", "expected_refill", "out") for w in windows)
             and headroom(account, pinned) is not None
             and all(w["left"] >= 3 for w in windows if is_gating(w, pinned)))
-
-
-def recommend(provider, accounts, pinned, now, tz):
-    """Per-provider best account (PLAN §6.7, without hysteresis): returns (best, ranked accounts)."""
-    mine = [a for a in accounts if a["provider"] == provider]
-    active = next((a for a in mine if a["active"]), None)
-    switchable = [a for a in mine if a["switchable"]]
-    best = {"account": None, "label": None, "headroom": None, "policy": "availability", "reason": None,
-            "confidence": "high", "suggest_switch": False, "current_is_best": False, "alternatives": [], "state": "none"}
-    if len(switchable) < 2:
-        return best, []
-    candidates = [a for a in switchable if eligible(a, pinned)]
-    if not candidates:
-        if any(a["last_good_at"] is None for a in switchable):
-            # Not every account has been read yet, so "no account has room" would be a guess.
-            return {**best, "state": "unknown", "confidence": "low", "reason": "Waiting for the first readings"}, []
-        return {**best, "state": "all_exhausted", "reason": exhausted_reason(switchable, pinned, now, tz)}, []
-
-    def age(a):
-        return math.inf if a["last_good_at"] is None else now - a["last_good_at"]
-
-    fresh = [a for a in candidates if age(a) <= (600 if a["active"] else 1800)]
-    pool = fresh or candidates
-    ranked = sorted(pool, key=lambda a: (-headroom(a, pinned), a["sort_order"]))
-    top = ranked[0]
-    room = headroom(top, pinned)
-    shown = pct_left(room)
-    best.update(account=top["id"], label=top["label"], headroom=room, state="ok",
-                current_is_best=top is active, alternatives=[a["id"] for a in ranked[1:] if a is not active][:3])
-    if active is not None and age(active) > 1800:
-        when = "not checked yet" if active["last_good_at"] is None else f"last checked {age_text(age(active))} ago"
-        best.update(state="unknown", confidence="low", reason=f"Usage {when}")
-        return best, ranked
-    if top is active:
-        best["reason"] = "You're on the best account"
-    elif pinned:
-        best["reason"] = f"Most {pinned} headroom ({shown}% left)"
-    elif len(pool) == 1:
-        best["reason"] = "Only account with headroom"
-    elif fresh:
-        best["reason"] = f"Most headroom ({shown}% left) and a fresh reading"
-    else:
-        best["reason"] = f"Most headroom ({shown}% left), based on a {age_text(age(top))} old reading"
-    if not fresh:
-        best["confidence"] = "low"
-    if active is not None and top is not active and age(active) <= 600:
-        binding = pick_binding(active["windows"], pinned)
-        held = binding["left"] if binding is not None else headroom(active, pinned)
-        best["suggest_switch"] = held is not None and held <= 20 and room - held >= 25
-    return best, ranked
 
 
 def exhausted_reason(accounts, pinned, now, tz):

@@ -1,7 +1,7 @@
 """Portable local Code entries only. Never rewrite conversation transcripts.
 
 The result counts added/updated/deleted/skipped entries and lists `stripped_fields`: the names (never
-values) of account-bound fields left behind by the entries written, for the switch manifest (§10.2)."""
+values) of account-bound fields left behind by the entries written, for the switch manifest."""
 from __future__ import annotations
 import json
 from pathlib import Path

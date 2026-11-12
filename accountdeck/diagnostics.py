@@ -1,4 +1,4 @@
-"""Secret-free diagnostics: a rotating JSON-lines log and per-operation manifests (PLAN §10).
+"""Secret-free diagnostics: a rotating JSON-lines log and per-operation manifests.
 
 Every string that reaches the log or a manifest is redacted first: tokens, cookies,
 keys and emails are masked, UUIDs are shortened and long strings truncated.
@@ -7,7 +7,6 @@ never labels, bodies or raw errors.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -72,7 +71,7 @@ def redact(value, key: str | None = None):
 
 
 class RedactingFilter(logging.Filter):
-    """Redacts the message and every field of a record before any handler formats it (PLAN §10.1)."""
+    """Redacts the message and every field of a record before any handler formats it."""
 
     def filter(self, record):
         try:
@@ -166,25 +165,8 @@ def frames(exc: BaseException, limit: int = FRAMES) -> list[str]:
     return found
 
 
-@contextlib.contextmanager
-def timer(ev: str, /, **fields):
-    """Logs `ev` with its duration as `ms`; fields added to the yielded dict are logged too.
-    An escaping exception is logged as a warning with its class name and re-raised."""
-    started = time.perf_counter()
-    try:
-        yield fields
-    except BaseException as exc:
-        _emit(ev, "warning", {**fields, "ms": _elapsed_ms(started), "error_type": type(exc).__name__})
-        raise
-    _emit(ev, "info", {**fields, "ms": _elapsed_ms(started)})
-
-
 def _emit(ev: str, lvl: str, fields: dict) -> None:
     _logger.log(LEVELS.get(lvl, logging.INFO), ev, extra={"fields": fields})
-
-
-def _elapsed_ms(started: float) -> int:
-    return round((time.perf_counter() - started) * 1000)
 
 
 def tail(n: int = 200) -> list[str]:
@@ -228,7 +210,7 @@ _OP_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 class Manifest:
-    """The per-operation record behind "Explain last switch" (PLAN §10.2), stored as
+    """The per-operation record behind "Explain last switch", stored as
     logs/manifests/<op>.json. It holds names, counts and outcomes; every value is redacted
     like a log field, so a secret passed by mistake is masked rather than stored."""
 

@@ -1,4 +1,4 @@
-"""Example /api/state payloads and SwitchPlans (PLAN §3.3-3.4): every scenario the dashboard renders,
+"""Example /api/state payloads and SwitchPlans: every scenario the dashboard renders,
 built from a few raw readings through the same rules (`accountdeck.rules`) the engine and the validator
 apply, so the fixtures, the validator and the browser model cannot drift apart. The demo seeds its
 synthetic accounts from these scenarios; the dashboard's tests render the written fixtures.
@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 import sys
 
-from . import rules
+from . import intel, rules
 from .cli_policy import evaluate
 from .contract import PROVIDERS, platform_block, validate_plan, validate_state
 from .rules import PRIMARY_KINDS, REFILL_KEEP, clock_text
@@ -166,7 +166,7 @@ def _window(raw, now, at, stale):
 
 
 def _trend(raws, now, at):
-    """A few weekly readings from the current reset epoch (PLAN §3.3 trend)."""
+    """A few weekly readings from the current reset epoch (the account's `trend`)."""
     weekly = next((r for r in raws if _SHAPES[r["id"]][0] == "weekly" and r["used"] is not None
                    and r["reset"] is not None), None)
     if weekly is None or at is None:
@@ -330,215 +330,282 @@ def _events(now):
             {"id": 87, "at": now - 900, "kind": "switch", "message": "Switched Claude to Alpha."}]
 
 
+def _scene_typical(spec, now):
+    spec["alerts"] = [{"id": "al_3", "kind": "reset_confirmed", "level": "good", "account": "acc_3", "window": "five_hour",
+                       "title": "Gamma's 5-hour limit refilled", "message": "Gamma is ready again.", "at": now - 800,
+                       "snoozed_until": None, "dismissed": False}]
+    spec["notices"] = [{"id": "n_12", "level": "info", "message": "Alpha is ready.", "at": now - 900, "sticky": False}]
+
+
+def _scene_resets_soon(spec, now):
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 100, 750)], active=True, checked=-90,
+                credential={"state": "live", "expires_in": 4000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 97, 2400), _w("seven_day", 55, 345600)], checked=-400),
+        _claude("acc_3", "Gamma", [_w("five_hour", 3, 7200), _w("seven_day", 45, 18000)], checked=-500),
+        _claude("acc_4", "Delta", [_w("five_hour", 10, 10800), _w("seven_day", 60, 72000)], checked=-300),
+        _claude("acc_5", "Epsilon", [_w("five_hour", 22, 14400), _w("seven_day", 30, 518400)], checked=-700),
+        _codex("acc_6", "Codex main", [_w("five_hour", 20, 1200), _w("seven_day", 50, 172800)], active=True,
+               checked=-60, credential={"state": "live", "expires_in": 518400}),
+    ]
+
+
+def _scene_refilled(spec, now):
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 2, 17400, refilled=(-600, -240, 100)), _w("seven_day", 30, 345600)],
+                active=True, checked=-240, credential={"state": "live", "expires_in": 6000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 10, 7200), _w("seven_day", 20, 259200)], checked=-500),
+        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 15, 432000)], checked=-700),
+        _codex("acc_6", "Codex main", [_w("five_hour", 5, 16000), _w("seven_day", 12, 500000)], active=True,
+               checked=-60, credential={"state": "live", "expires_in": 518400}),
+    ]
+    spec["alerts"] = [{"id": "al_9", "kind": "reset_confirmed", "level": "good", "account": "acc_1", "window": "five_hour",
+                       "title": "Alpha's 5-hour limit refilled", "message": "Alpha is ready again.", "at": now - 240,
+                       "snoozed_until": None, "dismissed": False}]
+
+
+def _scene_not_started(spec, now):
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 35, 259200)], active=True, checked=-100,
+                credential={"state": "live", "expires_in": 7000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 0), _w("seven_day", 48, 172800)], checked=-400),
+        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 10, 518400)], checked=-600),
+        _codex("acc_6", "Codex main", [_w("five_hour", 0), _w("seven_day", 20, 432000)], active=True, checked=-60,
+               credential={"state": "live", "expires_in": 518400}),
+    ]
+
+
+def _scene_codex_blocked(spec, now):
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 12, 12000), _w("seven_day", 30, 300000)], active=True, checked=-100,
+                credential={"state": "live", "expires_in": 7000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 0), _w("seven_day", 20, 400000)], checked=-500),
+        _codex("acc_6", "Codex main", [_w("five_hour", 100, 7200, blocked="not_allowed"), _w("seven_day", 64, 259200)],
+               active=True, checked=-60, credential={"state": "live", "expires_in": 518400},
+               credits=[{"label": "Codex credits", "balance": "0", "unlimited": False, "hasCredits": False},
+                        {"label": "Limit reset credits", "details": {"availableCount": 1}}],
+               reset_credits=[(1, 1728000, "Limit reset")]),
+        _codex("acc_7", "Codex spare", [_w("five_hour", 20, 3000, blocked="workspace_member_credits_depleted"),
+                                        _w("seven_day", 35, 200000, blocked="workspace_member_credits_depleted")],
+               checked=-700),
+    ]
+
+
+def _scene_needs_signin(spec, now):
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 25, 9000), _w("seven_day", 40, 300000)], active=True, checked=-90,
+                credential={"state": "live", "expires_in": 6000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 60, 3600), _w("seven_day", 75, 200000)], checked=-300, reading=-7200,
+                credential={"state": "reauth_required", "last_outcome": "4xx"},
+                error={"code": "reauth_required", "message": "Sign-in needs renewing.", "since": -2400}),
+        _claude("acc_3", "Gamma", [_w("five_hour", 15, 2000), _w("seven_day", 50, 250000)], checked=-10800,
+                credential={"state": "expired", "expires_in": -14400}),
+        _claude("acc_4", "Delta", [_w("five_hour", 5, 12000), _w("seven_day", 12, 400000)], checked=-400,
+                credential={"state": "web_only"}),
+        _codex("acc_6", "Codex main", [_w("five_hour", 10, 15000), _w("seven_day", 20, 300000)], active=True,
+               checked=-60, reading=-1500, credential={"state": "access_expired", "expires_in": -300, "last_outcome": "4xx"}),
+    ]
+
+
+def _scene_blocked_cloudflare(spec, now):
+    blocked = {"code": "blocked", "message": "Check refused by Cloudflare · sign-in not known to be bad"}
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 40, 6000), _w("seven_day", 55, 250000)], active=True, checked=-100,
+                credential={"state": "live", "expires_in": 6000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 20, 9000), _w("seven_day", 35, 300000)], checked=-60, reading=-1500,
+                credential={"state": "expired", "last_outcome": "4xx"}, error={**blocked, "since": -1500}),
+        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 61, 90000)], checked=-60, reading=-5400,
+                credential={"state": "expired", "last_outcome": "4xx"}, error={**blocked, "since": -5400}),
+        _claude("acc_4", "Delta", [_w("five_hour", 5, 15000), _w("seven_day", 10, 500000)], checked=-200),
+        _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
+               checked=-60, credential={"state": "live", "expires_in": 518400}),
+    ]
+
+
+def _scene_stale(spec, now):
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 45, 5000), _w("seven_day", 62, 200000)], active=True, checked=-2520,
+                credential={"state": "live", "expires_in": 3000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 30, 3000), _w("seven_day", 80, 150000)], checked=-10800,
+                credential={"state": "expired", "expires_in": -7200}),
+        _claude("acc_3", "Gamma", [_w("five_hour", 10, 10000), _w("seven_day", 20, 400000)], checked=-300),
+        _claude("acc_4", "Delta", [_w("five_hour", 0), _w("seven_day", 33, 300000)], checked=-900),
+        _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
+               checked=-60, credential={"state": "live", "expires_in": 518400}),
+    ]
+
+
+def _scene_fable_binding(spec, now):
+    spec["settings"] = {"pinned_model": "Fable"}
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 20, 9000), _w("seven_day", 40, 170000),
+                                   _w("seven_day_fable", 92, 170000)], active=True, checked=-100,
+                credential={"state": "live", "expires_in": 6000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 10, 12000), _w("seven_day", 30, 300000),
+                                  _w("seven_day_fable", 35, 300000)], checked=-400),
+        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 50, 100000),
+                                   _w("seven_day_fable", 70, 100000)], checked=-600),
+        _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
+               checked=-60, credential={"state": "live", "expires_in": 518400}),
+    ]
+
+
+def _scene_resetting(spec, now):
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 100, -120), _w("seven_day", 55, 259000)], active=True, checked=-200,
+                credential={"state": "live", "expires_in": 5000}),
+        _claude("acc_2", "Beta", [_w("five_hour", 80, -1800), _w("seven_day", 30, 400000)], checked=-7200,
+                credential={"state": "expired", "expires_in": -3600}),
+        _claude("acc_3", "Gamma", [_w("five_hour", 15, 8000), _w("seven_day", 25, 350000)], checked=-400),
+        _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
+               checked=-60, credential={"state": "live", "expires_in": 518400}),
+    ]
+
+
+def _scene_rate_limited(spec, now):
+    paused = 1920
+    spec["accounts"][1] = _claude("acc_2", "Beta", [_w("five_hour", 35, 7000), _w("seven_day", 45, 300000)],
+                                  checked=-60, reading=-900, paused_until=paused,
+                                  credential={"state": "expired", "expires_in": -3600, "last_outcome": "429"},
+                                  error={"code": "rate_limited", "since": -60,
+                                         "message": f"Usage checks paused until {clock_text(now + paused, now, _UTC)}"})
+    spec["accounts"][1]["active"] = False
+
+
+def _scene_outage(spec, now):
+    paused = {"code": "outage", "message": "Reading paused · provider incident", "since": -1500, "outage": True}
+    spec["status"] = {"claude": _status("claude", now, "outage", since=-1800, checked=-60, incident={
+        "title": "Elevated errors on claude.ai", "impact": "major", "status": "investigating", "started": now - 1800})}
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 70, 200000)], checked=-60, reading=-1500,
+                error=paused),
+        _claude("acc_2", "Beta", [_w("five_hour", 30, 8000), _w("seven_day", 40, 300000)], checked=-60, reading=-1500,
+                error=paused),
+        _claude("acc_4", "Delta", [_w("five_hour", 8, 10000), _w("seven_day", 12, 400000)], active=True, checked=-60,
+                reading=-1500, credential={"state": "live", "expires_in": 2000}, error=paused),
+        _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
+               checked=-60, credential={"state": "live", "expires_in": 518400}),
+    ]
+    spec["report"] = _report(now, "Claude is reporting an incident, so the sign-in could not be confirmed yet. Still checking.")
+    spec["banners"] = [_banner("outage", "Claude is having an incident",
+                               "Elevated errors on claude.ai. Your last good readings are kept. Switching still works; "
+                               "verification may take longer.", provider="claude", link="https://status.claude.com")]
+    spec["last_manifest"] = "op_7"
+
+
+def _scene_switching(spec, now):
+    spec["pending"] = _pending(now, "waiting_idle", "Waiting for Claude to finish…", True,
+                               {"prepare": ("done", "", -40, -38), "wait": ("active", "1 session is working", -38, None)},
+                               waiting_on=[{"pid": 4464, "name": "Refactor billing", "status": "busy"}])
+
+
+def _scene_stopping(spec, now):
+    spec["pending"] = _pending(now, "stopping", "Closing Claude…", False,
+                               {"prepare": ("done", "", -40, -38), "wait": ("done", "All sessions idle for 20 s", -38, -8),
+                                "stop": ("active", "Managed stop · main process", -8, None)})
+    spec["claude_running"] = _claude_running(now, [{"pid": 4464, "name": "Refactor billing", "status": "idle",
+                                                    "since": now - 30, "cwd_short": "billing"},
+                                                   {"pid": 784, "name": "Docs pass", "status": "idle",
+                                                    "since": now - 100, "cwd_short": "docs"}])
+
+
+def _scene_report(spec, now):
+    spec["accounts"] = _typical_accounts(active="acc_4")
+    spec["report"] = _report(now, "Delta's saved token has expired; Claude will renew it. Still checking.")
+    spec["last_manifest"] = "op_7"
+
+
+def _scene_needs_reconfirm(spec, now):
+    plan = example_plan("busy", now)
+    plan["running"]["sessions"].append({"pid": 5120, "name": "New session", "status": "busy", "since": now - 15})
+    plan["running"]["busy"] += 1
+    plan["process_set"].append([5120, 133812345690000000])
+    plan["signature"] = _signature(plan["process_set"])
+    plan["warnings"][0] = {"code": "busy", "message": '2 Code sessions are working: "Refactor billing", "New session".'}
+    spec["pending"] = _pending(now, "needs_reconfirm", "Claude's sessions changed — please confirm again", True,
+                               {"prepare": ("done", "", -40, -38),
+                                "wait": ("warning", "A new Code session started", -38, -15)}, plan=plan)
+
+
+def _scene_empty(spec, now):
+    spec.update(accounts=[], events=[], claude_running=_claude_running(now, [], desktop=False, foreign=0),
+                codex_running=_codex_running(now, consumers=False))
+
+
+def _scene_loading(spec, now):
+    spec.update(ready=False, events=[], status={p: _status(p, now, "unknown", source="none", checked=None) for p in PROVIDERS})
+    spec["accounts"] = [
+        _claude("acc_1", "Alpha", active=True, checked=None, refreshing=True,
+                credential={"state": "unknown", "last_outcome": None}),
+        _claude("acc_2", "Beta", checked=None, credential={"state": "unknown", "last_outcome": None}),
+        _codex("acc_6", "Codex main", active=True, checked=None, refreshing=True,
+               credential={"state": "unknown", "last_outcome": None}),
+    ]
+
+
+def _scene_fifty(spec, now):
+    spec["settings"] = {"density": "rows"}
+    spec["accounts"] = _fifty_accounts()
+    spec["events"] = [{"id": 412, "at": now - 30, "kind": "refresh", "message": "Refreshed 50 accounts."}]
+
+
+def _scene_read_only(spec, now):
+    spec["read_only"] = True
+    spec["banners"] = [_banner("read_only", "Another AccountDeck 2 is managing your sign-ins",
+                               "Quit that copy to make changes here. This one only shows usage.")]
+
+
+def _scene_demo_banner(spec, now):
+    spec.update(mode="demo", safe_mode=True)
+    spec["banners"] = [_banner("demo", "Demo mode", "Demo mode — synthetic accounts; no real apps are touched."),
+                       _banner("safe_mode", "Safe mode", "Safe mode is on: AccountDeck 2 will not touch real apps or files.")]
+
+
+def _scene_first_run(spec, now):
+    spec["accounts"] = [
+        _claude("unsaved-claude", "gamma", [_w("five_hour", 18, 12600), _w("seven_day", 46, 280000)], active=True,
+                switchable=False, saved=False, checked=-20, email="gamma@example.test",
+                credential={"state": "live", "expires_in": 6800})]
+    spec["notices"] = [{"id": "n_1", "level": "good", "message": "Saved your current terminal login as alpha@example.test.",
+                        "at": now - 30, "sticky": True}]
+    spec["events"] = []
+
+
+# What each scenario changes in the typical state ("terminal" is "typical" with other terminal accounts).
+_SCENES = {
+    "typical": _scene_typical,
+    "resets-soon": _scene_resets_soon,
+    "refilled": _scene_refilled,
+    "not-started": _scene_not_started,
+    "codex-blocked": _scene_codex_blocked,
+    "needs-signin": _scene_needs_signin,
+    "blocked-cloudflare": _scene_blocked_cloudflare,
+    "stale": _scene_stale,
+    "fable-binding": _scene_fable_binding,
+    "resetting": _scene_resetting,
+    "rate-limited": _scene_rate_limited,
+    "outage": _scene_outage,
+    "switching": _scene_switching,
+    "stopping": _scene_stopping,
+    "report": _scene_report,
+    "needs-reconfirm": _scene_needs_reconfirm,
+    "empty": _scene_empty,
+    "loading": _scene_loading,
+    "fifty": _scene_fifty,
+    "read-only": _scene_read_only,
+    "demo-banner": _scene_demo_banner,
+    "first-run": _scene_first_run,
+}
+
+
 def _scenario(name, now):
-    requested = name
-    if name == "terminal":
-        name = "typical"
-    tz = _UTC
+    """The raw pieces of one example state: the typical accounts and events as its scenario changes them, plus
+    the terminal and Muse accounts where the scenario shows them."""
     spec = {"accounts": _typical_accounts(), "events": _events(now)}
-    if name == "typical":
-        spec["alerts"] = [{"id": "al_3", "kind": "reset_confirmed", "level": "good", "account": "acc_3", "window": "five_hour",
-                           "title": "Gamma's 5-hour limit refilled", "message": "Gamma is ready again.", "at": now - 800,
-                           "snoozed_until": None, "dismissed": False}]
-        spec["notices"] = [{"id": "n_12", "level": "info", "message": "Alpha is ready.", "at": now - 900, "sticky": False}]
-    elif name == "resets-soon":
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 100, 750)], active=True, checked=-90,
-                    credential={"state": "live", "expires_in": 4000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 97, 2400), _w("seven_day", 55, 345600)], checked=-400),
-            _claude("acc_3", "Gamma", [_w("five_hour", 3, 7200), _w("seven_day", 45, 18000)], checked=-500),
-            _claude("acc_4", "Delta", [_w("five_hour", 10, 10800), _w("seven_day", 60, 72000)], checked=-300),
-            _claude("acc_5", "Epsilon", [_w("five_hour", 22, 14400), _w("seven_day", 30, 518400)], checked=-700),
-            _codex("acc_6", "Codex main", [_w("five_hour", 20, 1200), _w("seven_day", 50, 172800)], active=True,
-                   checked=-60, credential={"state": "live", "expires_in": 518400}),
-        ]
-    elif name == "refilled":
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 2, 17400, refilled=(-600, -240, 100)), _w("seven_day", 30, 345600)],
-                    active=True, checked=-240, credential={"state": "live", "expires_in": 6000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 10, 7200), _w("seven_day", 20, 259200)], checked=-500),
-            _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 15, 432000)], checked=-700),
-            _codex("acc_6", "Codex main", [_w("five_hour", 5, 16000), _w("seven_day", 12, 500000)], active=True,
-                   checked=-60, credential={"state": "live", "expires_in": 518400}),
-        ]
-        spec["alerts"] = [{"id": "al_9", "kind": "reset_confirmed", "level": "good", "account": "acc_1", "window": "five_hour",
-                           "title": "Alpha's 5-hour limit refilled", "message": "Alpha is ready again.", "at": now - 240,
-                           "snoozed_until": None, "dismissed": False}]
-    elif name == "not-started":
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 35, 259200)], active=True, checked=-100,
-                    credential={"state": "live", "expires_in": 7000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 0), _w("seven_day", 48, 172800)], checked=-400),
-            _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 10, 518400)], checked=-600),
-            _codex("acc_6", "Codex main", [_w("five_hour", 0), _w("seven_day", 20, 432000)], active=True, checked=-60,
-                   credential={"state": "live", "expires_in": 518400}),
-        ]
-    elif name == "codex-blocked":
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 12, 12000), _w("seven_day", 30, 300000)], active=True, checked=-100,
-                    credential={"state": "live", "expires_in": 7000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 0), _w("seven_day", 20, 400000)], checked=-500),
-            _codex("acc_6", "Codex main", [_w("five_hour", 100, 7200, blocked="not_allowed"), _w("seven_day", 64, 259200)],
-                   active=True, checked=-60, credential={"state": "live", "expires_in": 518400},
-                   credits=[{"label": "Codex credits", "balance": "0", "unlimited": False, "hasCredits": False},
-                            {"label": "Limit reset credits", "details": {"availableCount": 1}}],
-                   reset_credits=[(1, 1728000, "Limit reset")]),
-            _codex("acc_7", "Codex spare", [_w("five_hour", 20, 3000, blocked="workspace_member_credits_depleted"),
-                                            _w("seven_day", 35, 200000, blocked="workspace_member_credits_depleted")],
-                   checked=-700),
-        ]
-    elif name == "needs-signin":
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 25, 9000), _w("seven_day", 40, 300000)], active=True, checked=-90,
-                    credential={"state": "live", "expires_in": 6000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 60, 3600), _w("seven_day", 75, 200000)], checked=-300, reading=-7200,
-                    credential={"state": "reauth_required", "last_outcome": "4xx"},
-                    error={"code": "reauth_required", "message": "Sign-in needs renewing.", "since": -2400}),
-            _claude("acc_3", "Gamma", [_w("five_hour", 15, 2000), _w("seven_day", 50, 250000)], checked=-10800,
-                    credential={"state": "expired", "expires_in": -14400}),
-            _claude("acc_4", "Delta", [_w("five_hour", 5, 12000), _w("seven_day", 12, 400000)], checked=-400,
-                    credential={"state": "web_only"}),
-            _codex("acc_6", "Codex main", [_w("five_hour", 10, 15000), _w("seven_day", 20, 300000)], active=True,
-                   checked=-60, reading=-1500, credential={"state": "access_expired", "expires_in": -300, "last_outcome": "4xx"}),
-        ]
-    elif name == "blocked-cloudflare":
-        blocked = {"code": "blocked", "message": "Check refused by Cloudflare · sign-in not known to be bad"}
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 40, 6000), _w("seven_day", 55, 250000)], active=True, checked=-100,
-                    credential={"state": "live", "expires_in": 6000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 20, 9000), _w("seven_day", 35, 300000)], checked=-60, reading=-1500,
-                    credential={"state": "expired", "last_outcome": "4xx"}, error={**blocked, "since": -1500}),
-            _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 61, 90000)], checked=-60, reading=-5400,
-                    credential={"state": "expired", "last_outcome": "4xx"}, error={**blocked, "since": -5400}),
-            _claude("acc_4", "Delta", [_w("five_hour", 5, 15000), _w("seven_day", 10, 500000)], checked=-200),
-            _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
-                   checked=-60, credential={"state": "live", "expires_in": 518400}),
-        ]
-    elif name == "stale":
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 45, 5000), _w("seven_day", 62, 200000)], active=True, checked=-2520,
-                    credential={"state": "live", "expires_in": 3000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 30, 3000), _w("seven_day", 80, 150000)], checked=-10800,
-                    credential={"state": "expired", "expires_in": -7200}),
-            _claude("acc_3", "Gamma", [_w("five_hour", 10, 10000), _w("seven_day", 20, 400000)], checked=-300),
-            _claude("acc_4", "Delta", [_w("five_hour", 0), _w("seven_day", 33, 300000)], checked=-900),
-            _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
-                   checked=-60, credential={"state": "live", "expires_in": 518400}),
-        ]
-    elif name == "fable-binding":
-        spec["settings"] = {"pinned_model": "Fable"}
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 20, 9000), _w("seven_day", 40, 170000),
-                                       _w("seven_day_fable", 92, 170000)], active=True, checked=-100,
-                    credential={"state": "live", "expires_in": 6000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 10, 12000), _w("seven_day", 30, 300000),
-                                      _w("seven_day_fable", 35, 300000)], checked=-400),
-            _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 50, 100000),
-                                       _w("seven_day_fable", 70, 100000)], checked=-600),
-            _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
-                   checked=-60, credential={"state": "live", "expires_in": 518400}),
-        ]
-    elif name == "resetting":
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 100, -120), _w("seven_day", 55, 259000)], active=True, checked=-200,
-                    credential={"state": "live", "expires_in": 5000}),
-            _claude("acc_2", "Beta", [_w("five_hour", 80, -1800), _w("seven_day", 30, 400000)], checked=-7200,
-                    credential={"state": "expired", "expires_in": -3600}),
-            _claude("acc_3", "Gamma", [_w("five_hour", 15, 8000), _w("seven_day", 25, 350000)], checked=-400),
-            _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
-                   checked=-60, credential={"state": "live", "expires_in": 518400}),
-        ]
-    elif name == "rate-limited":
-        paused = 1920
-        spec["accounts"][1] = _claude("acc_2", "Beta", [_w("five_hour", 35, 7000), _w("seven_day", 45, 300000)],
-                                      checked=-60, reading=-900, paused_until=paused,
-                                      credential={"state": "expired", "expires_in": -3600, "last_outcome": "429"},
-                                      error={"code": "rate_limited", "since": -60,
-                                             "message": f"Usage checks paused until {clock_text(now + paused, now, tz)}"})
-        spec["accounts"][1]["active"] = False
-    elif name == "outage":
-        paused = {"code": "outage", "message": "Reading paused · provider incident", "since": -1500, "outage": True}
-        spec["status"] = {"claude": _status("claude", now, "outage", since=-1800, checked=-60, incident={
-            "title": "Elevated errors on claude.ai", "impact": "major", "status": "investigating", "started": now - 1800})}
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 70, 200000)], checked=-60, reading=-1500,
-                    error=paused),
-            _claude("acc_2", "Beta", [_w("five_hour", 30, 8000), _w("seven_day", 40, 300000)], checked=-60, reading=-1500,
-                    error=paused),
-            _claude("acc_4", "Delta", [_w("five_hour", 8, 10000), _w("seven_day", 12, 400000)], active=True, checked=-60,
-                    reading=-1500, credential={"state": "live", "expires_in": 2000}, error=paused),
-            _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
-                   checked=-60, credential={"state": "live", "expires_in": 518400}),
-        ]
-        spec["report"] = _report(now, "Claude is reporting an incident, so the sign-in could not be confirmed yet. Still checking.")
-        spec["banners"] = [_banner("outage", "Claude is having an incident",
-                                   "Elevated errors on claude.ai. Your last good readings are kept. Switching still works; "
-                                   "verification may take longer.", provider="claude", link="https://status.claude.com")]
-        spec["last_manifest"] = "op_7"
-    elif name == "switching":
-        spec["pending"] = _pending(now, "waiting_idle", "Waiting for Claude to finish…", True,
-                                   {"prepare": ("done", "", -40, -38), "wait": ("active", "1 session is working", -38, None)},
-                                   waiting_on=[{"pid": 4464, "name": "Refactor billing", "status": "busy"}])
-    elif name == "stopping":
-        spec["pending"] = _pending(now, "stopping", "Closing Claude…", False,
-                                   {"prepare": ("done", "", -40, -38), "wait": ("done", "All sessions idle for 20 s", -38, -8),
-                                    "stop": ("active", "Managed stop · main process", -8, None)})
-        spec["accounts"] = _typical_accounts()
-        spec["claude_running"] = _claude_running(now, [{"pid": 4464, "name": "Refactor billing", "status": "idle",
-                                                        "since": now - 30, "cwd_short": "billing"},
-                                                       {"pid": 784, "name": "Docs pass", "status": "idle",
-                                                        "since": now - 100, "cwd_short": "docs"}])
-    elif name == "report":
-        spec["accounts"] = _typical_accounts(active="acc_4")
-        spec["report"] = _report(now, "Delta's saved token has expired; Claude will renew it. Still checking.")
-        spec["last_manifest"] = "op_7"
-    elif name == "needs-reconfirm":
-        plan = example_plan("busy", now)
-        plan["running"]["sessions"].append({"pid": 5120, "name": "New session", "status": "busy", "since": now - 15})
-        plan["running"]["busy"] += 1
-        plan["process_set"].append([5120, 133812345690000000])
-        plan["signature"] = _signature(plan["process_set"])
-        plan["warnings"][0] = {"code": "busy", "message": '2 Code sessions are working: "Refactor billing", "New session".'}
-        spec["pending"] = _pending(now, "needs_reconfirm", "Claude's sessions changed — please confirm again", True,
-                                   {"prepare": ("done", "", -40, -38),
-                                    "wait": ("warning", "A new Code session started", -38, -15)}, plan=plan)
-    elif name == "empty":
-        spec.update(accounts=[], events=[], claude_running=_claude_running(now, [], desktop=False, foreign=0),
-                    codex_running=_codex_running(now, consumers=False))
-    elif name == "loading":
-        spec.update(ready=False, events=[], status={p: _status(p, now, "unknown", source="none", checked=None) for p in PROVIDERS})
-        spec["accounts"] = [
-            _claude("acc_1", "Alpha", active=True, checked=None, refreshing=True,
-                    credential={"state": "unknown", "last_outcome": None}),
-            _claude("acc_2", "Beta", checked=None, credential={"state": "unknown", "last_outcome": None}),
-            _codex("acc_6", "Codex main", active=True, checked=None, refreshing=True,
-                   credential={"state": "unknown", "last_outcome": None}),
-        ]
-    elif name == "fifty":
-        spec["settings"] = {"density": "rows"}
-        spec["accounts"] = _fifty_accounts()
-        spec["events"] = [{"id": 412, "at": now - 30, "kind": "refresh", "message": "Refreshed 50 accounts."}]
-    elif name == "read-only":
-        spec["read_only"] = True
-        spec["banners"] = [_banner("read_only", "Another AccountDeck 2 is managing your sign-ins",
-                                   "Quit that copy to make changes here. This one only shows usage.")]
-    elif name == "demo-banner":
-        spec.update(mode="demo", safe_mode=True)
-        spec["banners"] = [_banner("demo", "Demo mode", "Demo mode — synthetic accounts; no real apps are touched."),
-                           _banner("safe_mode", "Safe mode", "Safe mode is on: AccountDeck 2 will not touch real apps or files.")]
-    elif name == "first-run":
-        spec["accounts"] = [
-            _claude("unsaved-claude", "gamma", [_w("five_hour", 18, 12600), _w("seven_day", 46, 280000)], active=True,
-                    switchable=False, saved=False, checked=-20, email="gamma@example.test",
-                    credential={"state": "live", "expires_in": 6800})]
-        spec["notices"] = [{"id": "n_1", "level": "good", "message": "Saved your current terminal login as alpha@example.test.",
-                            "at": now - 30, "sticky": True}]
-        spec["events"] = []
-    else:
-        raise KeyError(name)
-    if requested in ("typical", "terminal", "resets-soon", "first-run"):
-        spec["accounts"] += terminal_accounts(requested)
-    if requested in ("typical", "terminal"):
+    _SCENES["typical" if name == "terminal" else name](spec, now)
+    if name in ("typical", "terminal", "resets-soon", "first-run"):
+        spec["accounts"] += terminal_accounts(name)
+    if name in ("typical", "terminal"):
         spec["accounts"] += muse_accounts()
     return spec
 
@@ -588,7 +655,7 @@ def example_state(scenario, now=BASE_NOW):
     status = {p: spec.get("status", {}).get(p) or _status(p, now) for p in PROVIDERS}
     best = {}
     for provider in PROVIDERS:
-        best[provider], ranked = rules.recommend(provider, accounts, pinned, now, tz)
+        best[provider], ranked, _pick = intel.recommend(provider, accounts, settings, None, now, tz=tz)
         for rank, account in enumerate(ranked, 1):
             account["rank"], account["score"] = rank, round(rules.headroom(account, pinned) / 100, 2)
         if best[provider]["state"] in ("ok", "unknown") and best[provider]["account"] is not None:
@@ -632,7 +699,7 @@ def example_state(scenario, now=BASE_NOW):
     }
 
 
-# ---- SwitchPlan fixtures (PLAN §3.4) ----
+# ---- SwitchPlan fixtures ----
 
 def terminal_autoswitch(accounts, settings, now, history=None):
     rows = [a for a in accounts if a["provider"] == "claude_cli"]

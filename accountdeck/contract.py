@@ -1,4 +1,4 @@
-"""The /api/state contract (PLAN §3.3-3.7) as code: its enums and the validator the engine runs on every
+"""The /api/state contract as code: its enums and the validator the engine runs on every
 state it builds (an assertion in safe mode and the demo, one log line in live mode).
 
 The rules the validator checks against (`accountdeck.rules`) are the ones the engine's intel applies, so a
@@ -15,14 +15,14 @@ from .rules import (HIDDEN_STATES, PRIMARY_KINDS, REFILL_KEEP, STRIP_MIN_USED, a
                     countdown_text, js_round as _round, phrase as _phrase)
 from .rules import ATTENTION_KINDS, DORMANT_DAYS  # noqa: F401  (enum and threshold the dashboard shares)
 
-# ---- frozen enums (PLAN §3) ----
+# ---- frozen enums ----
 MODES = ("live", "demo")
 PROVIDERS = ("claude", "codex", "claude_cli", "muse")
 STATUS_LEVELS = ("ok", "degraded", "outage", "unknown")
 STATUS_SOURCES = ("statuspage", "observed", "none")
 ACCOUNT_STATES = ("ok", "limited", "stale", "needs_signin", "error", "unknown")
 HEADLINE_KINDS = ("ready", "watch", "low", "critical", "out", "signin", "stale", "checking", "unknown", "outage")
-# access_expired: Codex access token lapsed while the client runs (PLAN §5.11); not an error.
+# access_expired: Codex access token lapsed while the client runs; not an error.
 CREDENTIAL_STATES = ("live", "fresh", "expired", "web_only", "reauth_required", "access_expired", "unknown")
 AGE_TIERS = ("fresh", "aging", "stale")
 OWNERS = ("v2", "v2-pending", "v1", "moved", "on_pc")      # core.OWNERS; only "v2" and "on_pc" occur on a Mac
@@ -58,13 +58,13 @@ ERROR_CODES = ("invalid", "not_found", "busy", "login_needed", "reauth_required"
                "network", "rate_limited", "timeout", "vault", "recovery", "not_installed", "system", "codex",
                "safety", "cancelled", "confirm_required", "needs_reconfirm", "stale_plan", "outage", "read_only")
 PROVIDER_FAILURES = ("token_refused", "blocked", "scope_missing", "web_session_stale", "rate_limited", "outage", "network")
-ACTIONS = ("refresh", "rename", "reorder", "switch-plan", "switch", "quit-claude", "cancel", "dismiss", "dismiss-alert",
-           "snooze-alert", "dismiss-report", "capture", "add", "finish-login", "cancel-login", "remove", "open",
-           "stop-consumer", "recover", "verify", "open-folder", "test-notification", "cli-exclude", "cli-undo",
-           "demo-clock", "import-bundle-preview", "import-bundle", "import-bundle-dismiss")
+ACTIONS = ("refresh", "rename", "switch-plan", "switch", "quit-claude", "cancel", "dismiss", "dismiss-report",
+           "capture", "add", "finish-login", "cancel-login", "remove", "open", "stop-consumer", "recover", "verify",
+           "test-notification", "cli-exclude", "cli-undo", "demo-clock", "import-bundle-preview", "import-bundle",
+           "import-bundle-dismiss")
 INTERNAL_SETTINGS = ("recommender_state", "alert_latches")  # = config's internal keys
 UNSAVED_IDS = {"claude": "unsaved-claude", "codex": "unsaved-codex", "muse": "unsaved-muse"}
-# Claude switch step ids in order (PLAN §5.4).
+# Claude switch step ids in order.
 CLAUDE_SWITCH_STEPS = ("prepare", "wait", "stop", "settle", "capture", "restore", "sessions", "launch", "verify", "report")
 MOVE_IMPORT_OUTCOMES = ("new", "updated", "filled", "kept", "on_pc", "deferred", "failed")
 
@@ -80,14 +80,14 @@ _SETTING_RULES = {
     "notifications": ("bool",), "tray": ("bool",), "start_on_login": ("bool",), "cwd": ("text",),
     "log_level": ("choice", ("debug", "info", "warning")), "refresh_paused": ("bool",),
 }
-# Keys that would leak identities or secrets to the browser (PLAN §3.3: uuids never leave the server).
+# Keys that would leak identities or secrets to the browser (uuids never leave the server).
 FORBIDDEN_KEYS = frozenset({"identity", "org", "org_uuid", "organization_uuid", "account_uuid", "uuid", "token",
                             "access_token", "refresh_token", "id_token", "cookie", "cookies", "sessionkey",
                             "session_key", "password", "secret", "accesstoken", "refreshtoken", "claudeaioauth",
                             "trusteddevicetoken", "oauthaccount", "credentials"})
 
 
-# ---- the platform block (docs/mac/PLAN.md D9) ----
+# ---- the platform block ----
 # The words the dashboard uses for this Mac's places. Kept as a block of the state so the page's copy
 # comes from one place; the feature flags say what the Mac offers.
 PLATFORM_FEATURES = ("tray", "menu_bar", "taskbar_widget", "aumid", "start_on_login")
@@ -224,7 +224,7 @@ def validate_state(payload):
 
 
 def validate_plan(plan):
-    """Every contract violation in a SwitchPlan (PLAN §3.4) as "path: problem" strings."""
+    """Every contract violation in a SwitchPlan as "path: problem" strings."""
     report = _Report()
     try:
         _check_plan(plan, "plan", report)
@@ -272,7 +272,7 @@ def _check_state(state, r):
     r.text(state["cwd"], "cwd", empty=True)
     r.text(state["last_manifest"], "last_manifest", nullable=True)
     _check_platform(state["platform"], r)
-    if "move_import" in state:      # optional: the Mac side of the move (docs/mac/PLAN.md §2.3)
+    if "move_import" in state:      # optional: the Mac side of the move
         _check_move_import(state["move_import"], r)
 
 
@@ -386,10 +386,26 @@ def _forbidden(value, path, r):
 
 
 def _check_account(a, path, now, pinned, r):
-    """Checks one account; returns True when it is well-formed enough for cross-checks."""
+    """Checks one account in three steps, each only when the one before found nothing: its fields, its
+    reading and windows, then the account as a whole. Returns True when it is well-formed enough for the
+    state's cross-checks."""
     if not r.obj(a, _ACCOUNT_KEYS, path):
         return False
     before = len(r.items)
+    _check_account_fields(a, path, now, r)
+    if not (r.seq(a["windows"], f"{path}.windows") and r.seq(a["other_windows"], f"{path}.other_windows")):
+        return False
+    if len(r.items) > before:
+        return False
+    _check_account_reading(a, path, now, r)
+    if len(r.items) > before:
+        return False
+    _check_account_whole(a, path, pinned, r)
+    return len(r.items) == before
+
+
+def _check_account_fields(a, path, now, r):
+    """Each field of an account has the right type and an allowed value."""
     _forbidden(a, path, r)
     r.text(a["id"], f"{path}.id")
     r.enum(a["provider"], PROVIDERS, f"{path}.provider")
@@ -446,10 +462,10 @@ def _check_account(a, path, now, pinned, r):
         r.text(a["error"]["message"], f"{path}.error.message")
         r.num(a["error"]["since"], f"{path}.error.since")
         r.flag(a["error"]["outage"], f"{path}.error.outage")
-    if not (r.seq(a["windows"], f"{path}.windows") and r.seq(a["other_windows"], f"{path}.other_windows")):
-        return False
-    if len(r.items) > before:
-        return False
+
+
+def _check_account_reading(a, path, now, r):
+    """The age the account claims matches its last reading, and each window is right for that reading."""
     if a["saved"] is False or a["id"] in UNSAVED_IDS.values():
         if a["id"] != UNSAVED_IDS[a["provider"]] or a["saved"] or not a["active"] or a["switchable"]:
             r.add(path, "only 'unsaved-claude' / 'unsaved-codex' may be unsaved, and they are active and not switchable")
@@ -465,8 +481,11 @@ def _check_account(a, path, now, pinned, r):
     for group, primary in (("windows", True), ("other_windows", False)):
         for index, w in enumerate(a[group]):
             _check_window(w, f"{path}.{group}[{index}]", now, at, stale, primary, r)
-    if len(r.items) > before:
-        return False
+
+
+def _check_account_whole(a, path, pinned, r):
+    """What the account says as a whole follows from its windows: their order, the one that limits it
+    (`binding`), its state, its headline and its rank."""
     windows, others = a["windows"], a["other_windows"]
     _check_order(windows, f"{path}.windows", r)
     _check_order(others, f"{path}.other_windows", r)
@@ -501,7 +520,6 @@ def _check_account(a, path, now, pinned, r):
         r.text(h["text"], f"{path}.headline.text")
     if a["recommended"] and a["rank"] != 1:
         r.add(f"{path}.rank", "the recommended account has rank 1")
-    return len(r.items) == before
 
 
 def _check_trend(trend, path, now, r):
@@ -1017,7 +1035,7 @@ def _check_plan(plan, path, r):
         _check_plan_windows(target["windows"], f"{path}.target.windows", r)
     if plan["current"] is not None and r.obj(plan["current"], ("id", "label", "windows"), f"{path}.current"):
         _check_plan_windows(plan["current"]["windows"], f"{path}.current.windows", r)
-        # Switching away from the unsaved signed-in account saves it first (PLAN §9.4).
+        # Switching away from the unsaved signed-in account saves it first.
         if plan["purpose"] == "switch" and plan["saves_outgoing"] is not (plan["current"]["id"] in UNSAVED_IDS.values()):
             r.add(f"{path}.saves_outgoing", "is true exactly when the current account is the unsaved signed-in one")
     if plan["headroom"] is not None and r.obj(plan["headroom"], ("now", "after"), f"{path}.headroom"):
@@ -1031,7 +1049,7 @@ def _check_plan(plan, path, r):
         _check_counts(running, counts, f"{path}.running", r)
         _check_consumers(running["codex_consumers"], f"{path}.running.codex_consumers", r)
         if _is_int(running["busy"]) and _is_int(running["unknown"]) and isinstance(running["codex_consumers"], list):
-            # Idle: no Code session busy or unknown and no Codex consumer left ("Switch now" needs none, §7.8).
+            # Idle: no Code session busy or unknown and no Codex consumer left ("Switch now" needs none).
             idle = running["busy"] == 0 and running["unknown"] == 0 and not running["codex_consumers"]
     pairs = plan["process_set"]
     if not (isinstance(pairs, list) and all(isinstance(p, list) and len(p) == 2 and all(_is_int(v) for v in p) for p in pairs)):
@@ -1044,7 +1062,7 @@ def _check_plan(plan, path, r):
         if r.seq(plan[key], f"{path}.{key}"):
             for index, item in enumerate(plan[key]):
                 if r.obj(item, ("code", "message"), f"{path}.{key}[{index}]"):
-                    # A blocker's code becomes the refusal's error code (PLAN §3.4).
+                    # A blocker's code becomes the refusal's error code.
                     if codes is not None:
                         r.enum(item["code"], codes, f"{path}.{key}[{index}].code")
                     else:

@@ -1,4 +1,4 @@
-"""Notification delivery policy (PLAN §8.3): which stored alerts reach a sink, and when.
+"""Notification delivery policy: which stored alerts reach a sink, and when.
 
 Pure: `Notifier.poll` depends only on its arguments and on what the notifier remembers (the alert
 ids it has settled, when its sink last delivered, the start/resume hold). Alerts are the state's
@@ -19,13 +19,12 @@ from .contract import ALERT_KINDS, LEVELS
 
 HOLD = 120.0      # nothing is delivered for 2 min after start and after a resume
 EXPIRE = 300.0    # an alert still waiting after 5 min is old news: only the dashboard keeps it
-# One in-page toast a minute (§6.10); desktop notifications at least 20 s apart (§8.2). Alerts that arrive
+# One in-page toast a minute; desktop notifications at least 20 s apart. Alerts that arrive
 # while a sink waits for its gap are merged into its next delivery.
 GAP = {"page": 60.0, "desktop": 20.0}
-# Desktop notifications carry the kinds that are on by default for browser notifications (§7.14).
+# Desktop notifications carry the kinds that are on by default for browser notifications.
 KINDS = {"page": frozenset(ALERT_KINDS),
          "desktop": frozenset({"reset_confirmed", "limit_reached", "credential_expired", "switch_result"})}
-SINKS = tuple(GAP)
 
 
 @dataclass(frozen=True)

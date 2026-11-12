@@ -1,8 +1,8 @@
-"""Importing the PC's accounts on the Mac: the receiving half of the move (docs/mac/PLAN.md §2.3-§2.6).
+"""Importing the PC's accounts on the Mac: the receiving half of the move.
 
 Actions (engine `_do_*`, contract.ACTIONS):
 - `import-bundle-preview` {path, passphrase}: opens the bundle and says, per account, what an import would
-  do. Nothing is written.
+  do, and which of this Mac's settings the PC's would replace. Nothing is written.
 - `import-bundle` {path, passphrase, wait?}: ImportBundle, one step per account.
   Applying a bundle again is safe: every account is an identity-keyed upsert where the newer sign-in wins.
 - `import-bundle-dismiss` {bundle_id}: hides that import's confirmation code or failure list.
@@ -21,7 +21,7 @@ What each account becomes:
   (readable), check_action refuses account actions naming it, and its flags keep it out of switching and
   terminal auto-switch. A hand-over bundle fills it: the row gets its sign-in and becomes "v2".
 
-The confirmation code (§2.4) is move_bundle.code_for_imported over the accounts this run stored, so it
+The confirmation code is move_bundle.code_for_imported over the accounts this run stored, so it
 exists only when every account was stored (a deferred Desktop account and an "on_pc" row count). It is kept
 in the encrypted ledger record `move-import` and shown in the state until dismissed; it never goes into
 logs, events or error messages. Neither does any token, cookie or the passphrase.
@@ -58,6 +58,19 @@ MIN_SCRYPT_N = mb.SCRYPT_MIN_N           # tests lower it together with the scry
 IMPORT_WAIT = 30.0                       # how long `import-bundle` waits for its operation before answering
 LEDGER_KEEP = 10
 SNAPSHOT_DAYS, READING_DAYS, REFILL_DAYS = 90, 7, 30   # what core.Store keeps
+# A main bundle's settings replace this Mac's. These are the words the preview and the result use for each
+# one that changes (every key of move_bundle.PORTABLE_SETTINGS, in the order they are listed).
+SETTING_NAMES = {
+    "cli_autoswitch": "automatic terminal switching", "cli_threshold": "the switch point",
+    "cli_order": "the switching order", "cli_manual_order": "your own account order",
+    "cli_early_switch": "early switching for weekly allowance", "pinned_model": "the pinned model",
+    "use_soon": "using expiring quota first", "confirm_when_idle": "asking before a switch when Claude is idle",
+    "usage_display": "showing usage as used or left", "sort": "account sorting", "density": "cards or rows",
+    "show_other_limits": "showing other limits", "cookie_route": "the Claude Desktop web check",
+    "alerts_enabled": "alerts", "alert_low_left": "the low-limit alert level", "quiet_hours": "quiet hours",
+    "notify_reset_minutes": "the reset notice time", "notifications": "notifications",
+    "refresh_paused": "paused usage checks", "log_level": "log detail",
+}
 _DAY = 86400
 # Deferred conversion back-off (seconds). A missing key or template is cheap to look for again (no dialog);
 # a refused or locked Keychain read may have shown macOS's access dialog, so each such wait doubles.
@@ -150,6 +163,25 @@ def _template_ready(engine):
         return False
 
 
+def _settings_here(settings, mapping):
+    """The bundle's settings as they apply on this Mac: the manual order lists this Mac's account ids
+    (`mapping`: the PC's id -> the id here), without the accounts that were not brought over."""
+    settings = copy.deepcopy(settings)
+    if "cli_manual_order" in settings:
+        settings["cli_manual_order"] = [mapping[key] for key in settings["cli_manual_order"] if key in mapping]
+    return settings
+
+
+def _settings_changed(engine, settings):
+    """The names of this Mac's settings that `settings` would change."""
+    current = engine.settings()
+    return [name for key, name in SETTING_NAMES.items() if key in settings and settings[key] != current[key]]
+
+
+def _listed(names):
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
 def preview(engine, path, passphrase):
     """The `import-bundle-preview` payload (see the module docstring). Writes nothing."""
     header, payload = open_file(path, passphrase, paths=engine.paths)
@@ -167,13 +199,19 @@ def preview(engine, path, passphrase):
                          "conflict": row["label"] if row is not None and action == "update" else None,
                          "reason": reason})
     refused = counts["refused"] > 0
+    # An account not saved here yet gets its id at the import; the PC's id stands in for it, so a manual
+    # order that names it counts as changed.
+    mapping = {account["id"]: account["id"] if row is None else row["id"] for account, row, _action, _reason in plan}
+    settings = [] if refused else _settings_changed(
+        engine, _settings_here(config.validate_settings(payload["settings"]), mapping))
     log("move.import_preview", kind=header.kind, accounts=len(accounts), refused=counts["refused"])
     return {"bundle_id": header.bundle_id, "kind": header.kind, "created": header.created,
             "source_platform": payload["source_platform"], "accounts": accounts, "counts": counts,
-            "refused": refused, "message": _preview_message(header.kind, counts, refused)}
+            "refused": refused, "settings": settings,
+            "message": _preview_message(header.kind, counts, refused, settings)}
 
 
-def _preview_message(kind, counts, refused):
+def _preview_message(kind, counts, refused, settings):
     if refused:
         return (f"{_count(counts['refused'], 'account')} in this hand-over bundle {_verb(counts['refused'], 'is')} "
                 "not waiting on this Mac. Import the main move bundle first; nothing will be imported.")
@@ -189,6 +227,8 @@ def _preview_message(kind, counts, refused):
     if counts["deferred"]:
         parts.append(f"Claude Desktop is not set up on this Mac yet, so {_count(counts['deferred'], 'Claude Desktop account')} "
                      "will finish importing once you open it here.")
+    if settings:
+        parts.append(f"{_count(len(settings), 'setting')} on this Mac will change to match the PC: {_listed(settings)}.")
     return " ".join(parts)
 
 
@@ -218,7 +258,7 @@ class ImportBundle(Operation):
     def run(self):
         began = time.monotonic()
         engine, header = self.engine, self.header
-        stored, failures, mapping = set(), [], {}
+        stored, failures, mapping, changed = set(), [], {}, []
         counts = dict.fromkeys(OUTCOMES, 0)
         code = None
         try:
@@ -240,10 +280,8 @@ class ImportBundle(Operation):
                               status=None if history else "warning")
             with self.step("finish"):
                 if not failures:
-                    settings = copy.deepcopy(self._settings)
-                    if "cli_manual_order" in settings:
-                        settings["cli_manual_order"] = [mapping[key] for key in settings["cli_manual_order"]
-                                                        if key in mapping]
+                    settings = _settings_here(self._settings, mapping)
+                    changed = _settings_changed(engine, settings)
                     # Persist (one transaction) before updating the preference cache, so a failed
                     # write cannot look like an unchanged setting on the retry.
                     engine.store.set_settings(settings)
@@ -257,7 +295,7 @@ class ImportBundle(Operation):
         finally:
             self._plan = None        # drops the decrypted payload
             self._settings = None
-        self.report["summary"] = _summary(header.kind, counts, failures, code)
+        self.report["summary"] = _summary(header.kind, counts, failures, code, changed)
         log("move.import_done", kind=header.kind, stored=len(stored), failed=len(failures),
             deferred=counts["deferred"], on_pc=counts["on_pc"], complete=code is not None,
             ms=round((time.monotonic() - began) * 1000))
@@ -892,38 +930,6 @@ def start_import(engine, body):
     return {**started, "result": copy.deepcopy(op.result)}
 
 
-def last_result(engine, bundle_id=None):
-    """The newest import (or that bundle's) as _entry_public shows it, also once dismissed; or None."""
-    found = [item for item in _ledger(engine).entries() if bundle_id is None or item.get("bundle_id") == bundle_id]
-    return _entry_public(found[-1]) if found else None
-
-
-def import_from_file(engine, path, passphrase, *, timeout=None) -> dict:
-    """For the automated setup (run.py): imports the bundle at `path`; returns the result
-    ({"bundle_id", "kind", "at", "complete", "code", "counts", "failures", "message"}). With an Engine it
-    runs ImportBundle and waits for it (`timeout` seconds, None = no limit); anything else must offer
-    `action(name, body)` (the server's EngineAPI) and answers within IMPORT_WAIT. Read the passphrase from
-    stdin or a private file, never argv. A partial import returns its result (complete False, no code,
-    failures listed). DeckError when the bundle does not open, a hand-over is refused, nothing was recorded
-    or the import is still running."""
-    from .engine import Engine          # engine imports this module: imported on use
-    if isinstance(engine, Engine):
-        engine._own_the_login()
-        op = ImportBundle(engine, str(path), passphrase)
-        engine.submit(op)
-        if not op.wait(timeout):
-            raise DeckError("The import is still running. Check the dashboard for its code.", "busy")
-        if op.result is None:
-            report = engine.runner.report() or {}
-            error = report.get("error") or {}
-            raise DeckError(error.get("message") or "The import did not finish.", error.get("code") or "invalid")
-        return copy.deepcopy(op.result)
-    answer = engine.action(IMPORT_KIND, {"path": str(path), "passphrase": passphrase}) or {}
-    if answer.get("result") is None:
-        raise DeckError("The import is still running or did not finish. Check the dashboard.", "busy")
-    return answer["result"]
-
-
 # ---- history ----
 
 def _copy_history(store, key, account, now):
@@ -994,8 +1000,9 @@ def _verb(number, verb):
     return {"was": ("was", "were"), "is": ("is", "are")}[verb][number != 1]
 
 
-def _summary(kind, counts, failures, code):
-    """The operation's summary, which the engine also files as an event: never the code."""
+def _summary(kind, counts, failures, code, settings):
+    """The operation's summary, which the engine also files as an event: never the code. `settings` names
+    this Mac's settings the import changed."""
     stored = sum(counts[key] for key in ("new", "updated", "filled", "kept", "deferred"))
     if kind == "handover":
         text = f"Took over {_count(stored, 'account')} handed over from the PC."
@@ -1008,4 +1015,6 @@ def _summary(kind, counts, failures, code):
         return f"{text} {_count(len(failures), 'account')} could not be imported. {CANCEL_HINT}"
     if counts["deferred"]:
         text += " " + deferred_message(counts["deferred"])
+    if settings:
+        text += f" {_count(len(settings), 'setting')} now {'matches' if len(settings) == 1 else 'match'} the PC: {_listed(settings)}."
     return text + (" The confirmation code is shown on the dashboard." if code else "")

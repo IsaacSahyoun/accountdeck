@@ -1,5 +1,5 @@
-"""Saved accounts (PLAN §2.1 AccountService): saving the signed-in account, reading usage, and the
-unsaved signed-in account of §9.4.
+"""Saved accounts: saving the signed-in account, reading usage, and the signed-in account that is not
+saved yet.
 
 Every Claude capture is health-gated. A capture taken while Claude runs holds its tokens but not
 its cookie database; the account can be read at once and becomes switchable after its next
@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import contextlib
 import threading
-import time
 
-from . import diagnostics, intel
+from . import diagnostics, intel, readings
 from .contract import ERROR_CODES, PROVIDER_FAILURES, UNSAVED_IDS
 from .core import DeckError, FrozenAccountError, is_frozen
 from .providers import CredentialState, OutcomeLog, Reading
@@ -65,35 +64,34 @@ def error_code(exc) -> str:
     return code if code in ERROR_CODES else "network"
 
 
+def _touch_due(account, now) -> bool:
+    last = account["flags"].get("last_active_at")
+    return last is None or now - last >= ACTIVE_TOUCH
+
+
 class AccountService:
     """`levels()` gives each provider's status level; `observed` the ObservedStatus per provider.
     `lock_for(account_id)` is the account's lock (the scheduler's): saving or removing an account
     waits up to `lock_wait` seconds for a read of it to finish. `on_change()` is called after the
     saved accounts changed (the engine moves its revision)."""
 
-    def __init__(self, store, vault, providers, settings, *, clock=time.time, observed=None,
-                 levels=lambda: {"claude": "ok", "codex": "ok"}, lock_for=None, lock_wait=30.0, on_change=None):
+    def __init__(self, store, vault, providers, settings, *, clock, observed, levels, lock_for, lock_wait, on_change):
         self.store, self.vault, self.providers, self.settings = store, vault, providers, settings
-        self.clock, self.observed, self.levels = clock, observed or {}, levels
+        self.clock, self.observed, self.levels = clock, observed, levels
         self.lock_for, self.lock_wait, self.on_change = lock_for, lock_wait, on_change
         self.unsaved = {"claude": None, "codex": None, "muse": None}
         self._identities, self._series = {}, {}
         self._series_lock = threading.Lock()
 
-    def _changed(self):
-        if self.on_change is not None:
-            self.on_change()
-
     @contextlib.contextmanager
     def _locked(self, account_id):
-        lock = self.lock_for(account_id) if self.lock_for is not None else None
-        if lock is not None and not lock.acquire(timeout=self.lock_wait):
+        lock = self.lock_for(account_id)
+        if not lock.acquire(timeout=self.lock_wait):
             raise DeckError(BUSY_ACCOUNT, "busy")
         try:
             yield
         finally:
-            if lock is not None:
-                lock.release()
+            lock.release()
 
     # ---- saving ----
     def capture(self, provider, *, label=None, claude_running=True, owner="v2") -> str:
@@ -163,14 +161,14 @@ class AccountService:
             self.unsaved[provider] = None
         diagnostics.log("capture.saved", provider=provider, acct=diagnostics.account_ref(key),
                         complete=restorable(provider, profile), new=existing is None)
-        self._changed()
+        self.on_change()
         return key
 
     def _carry_over(self, key, provider, identity):
         """A newly saved account keeps the reading its unsaved row showed, so it never goes blank."""
         row = self.unsaved.get(provider)
         if row and row["identity"] == identity and row["usage"]:
-            self.store.observe(key, row["usage"], at=row["last_good_at"])
+            readings.record(self.store, key, row["usage"])
             self.store.update(key, last_outcome=row["last_outcome"] or "2xx")
 
     def _save_over(self, existing, provider, profile, info, source):
@@ -192,7 +190,7 @@ class AccountService:
             self.store.record_generation(key, digest, source=source, health="ok")
         flags = dict((self.store.account(key) or existing)["flags"])
         if provider == "claude":
-            flags.pop("outcomes", None)     # a new profile starts a new outcome log (A1)
+            flags.pop("outcomes", None)     # a new profile starts a new outcome log
         flags["restorable"] = restorable(provider, profile)
         self.store.update(key, flags=flags)
 
@@ -213,7 +211,7 @@ class AccountService:
         if self.store.account(account_id) is None:
             raise DeckError("That account no longer exists.", "not_found")
         self.store.update(account_id, label=label)
-        self._changed()
+        self.on_change()
 
     def remove(self, account_id):
         account = self.store.account(account_id)
@@ -226,7 +224,7 @@ class AccountService:
             self._series.pop(account_id, None)
         self.store.event("remove", f"Removed {account['label']}.")
         diagnostics.log("account.removed", acct=diagnostics.account_ref(account_id), provider=account["provider"])
-        self._changed()
+        self.on_change()
 
     # ---- reading ----
     def read(self, account_id, *, active_identity, read_only=False) -> str:
@@ -266,10 +264,7 @@ class AccountService:
         if plan and account["provider"] == "muse" and plan != account["plan"]:
             fields["plan"] = plan
         if reading.usage is not None:
-            for refill in intel.detect_refill(account["last_good_usage"], reading.usage):
-                self.store.record_refill(account_id, refill["window"], reset_at=refill["reset_at"],
-                                         confirmed_at=refill["confirmed_at"], previous_used=refill["previous_used"])
-            self.store.observe(account_id, reading.usage, at=reading.checked or now)
+            readings.record(self.store, account_id, reading.usage)
             flags.pop("error_since", None)
             self.store.update(account_id, flags=self._flags(account_id, flags), last_outcome="2xx",
                               paused_until=None, **fields)
@@ -490,15 +485,23 @@ class AccountService:
 
     def touch_active(self, provider, identity, now):
         """Notes that a saved account is the signed-in one (`flags.last_active_at`, renewed hourly):
-        the dashboard's "unused for N days" hint reads it."""
+        the dashboard's "unused for N days" hint reads it. A read writes the account's flags under its
+        lock, so the flags are rewritten under that lock too, from the row as it is then. The tick never
+        waits for a read: when one holds the lock, the next tick tries again."""
         account = self.store.find(provider, identity)
-        if account is None or is_frozen(account):
+        if account is None or is_frozen(account) or not _touch_due(account, now):
             return
-        last = account["flags"].get("last_active_at")
-        if last is None or now - last >= ACTIVE_TOUCH:
-            self.store.update(account["id"], flags={**account["flags"], "last_active_at": now})
+        lock = self.lock_for(account["id"])
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            account = self.store.account(account["id"])
+            if account is not None and _touch_due(account, now):
+                self.store.update(account["id"], flags={**account["flags"], "last_active_at": now})
+        finally:
+            lock.release()
 
-    # ---- the unsaved signed-in account (§9.4) ----
+    # ---- the unsaved signed-in account ----
     def sense_unsaved(self, provider, identity):
         """Tracks the account signed in to `provider` when it is not saved (None clears it)."""
         if identity is None or self.store.find(provider, identity) is not None:
@@ -573,7 +576,7 @@ class AccountService:
             return error_code(exc)
         self._record(provider, UNSAVED_IDS[provider], reading.outcomes, now)
         if reading.usage is not None:
-            row.update(usage=reading.usage, last_good_at=reading.checked or now, error=None, last_outcome="2xx")
+            row.update(usage=reading.usage, last_good_at=reading.usage["checked"], error=None, last_outcome="2xx")
             return "ok"
         if reading.error is None:
             if reading.meta.get("hollow"):

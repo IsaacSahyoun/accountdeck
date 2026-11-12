@@ -1,4 +1,4 @@
-"""Provider HTTP (A1, §5.10): one request with classification, an honest user agent and the safe-mode host gate.
+"""Provider HTTP: one request with classification, an honest user agent and the safe-mode host gate.
 
 In safe mode (tests, demos) a request may only reach an in-process loopback server registered with
 `register_test_host`; everything else raises SafetyViolation before a socket is opened.

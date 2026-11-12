@@ -240,10 +240,3 @@ def tooltip_lines(pool: Pool, now) -> list[str]:
         lines += ([""] if pool.capacity else []) + extra
     return lines
 
-
-def tray_line(pool: Pool) -> str | None:
-    """A one-line summary ("Terminals 5h 4.2 · wk 5.6 / 6"), or None when there are no terminal accounts."""
-    if not pool.capacity:
-        return "Terminals: none counted" if pool.signin or pool.left_out or pool.unread else None
-    return (f"Terminals 5h {amount(pool.five, pool.five_approx)} · wk {amount(pool.weekly, pool.weekly_approx)}"
-            f" / {pool.capacity}")
