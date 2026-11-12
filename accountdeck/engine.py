@@ -941,12 +941,6 @@ class Engine:
         else:
             self.accounts.rename(key, body.get("label"))
 
-    def _do_reorder(self, body):
-        ids = body.get("ids")
-        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-            raise DeckError("Provide an account order.", "invalid")
-        self.store.reorder(ids)
-
     def _do_remove(self, body):
         key = self._account_id(body)
         self._own_the_login()
@@ -989,15 +983,6 @@ class Engine:
         with self.lock:
             self.notices = [n for n in self.notices if wanted is not None and n["id"] != wanted]
 
-    def _do_dismiss_alert(self, body):
-        self.store.update_alert(body.get("alert"), dismissed=True)
-
-    def _do_snooze_alert(self, body):
-        minutes = body.get("minutes")
-        if type(minutes) is not int or not 1 <= minutes <= 1440:
-            raise DeckError("Choose 1 to 1440 minutes.", "invalid")
-        self.store.update_alert(body.get("alert"), snoozed_until=self.clock() + minutes * 60)
-
     def _do_dismiss_report(self, body):
         self.runner.dismiss_report()
 
@@ -1013,12 +998,6 @@ class Engine:
 
     def _do_import_bundle_dismiss(self, body):
         move_import.dismiss(self, body.get("bundle_id"))
-
-    def _do_open_folder(self, body):
-        folders = {"data": self.paths.data_dir, "logs": self.paths.data_dir / "logs"}
-        if body.get("which") not in folders:
-            raise DeckError("Choose data or logs.", "invalid")
-        self.procs.open_folder(folders[body["which"]])
 
     def _do_test_notification(self, body):
         handle = self.tray_handle

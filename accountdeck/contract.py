@@ -58,10 +58,10 @@ ERROR_CODES = ("invalid", "not_found", "busy", "login_needed", "reauth_required"
                "network", "rate_limited", "timeout", "vault", "recovery", "not_installed", "system", "codex",
                "safety", "cancelled", "confirm_required", "needs_reconfirm", "stale_plan", "outage", "read_only")
 PROVIDER_FAILURES = ("token_refused", "blocked", "scope_missing", "web_session_stale", "rate_limited", "outage", "network")
-ACTIONS = ("refresh", "rename", "reorder", "switch-plan", "switch", "quit-claude", "cancel", "dismiss", "dismiss-alert",
-           "snooze-alert", "dismiss-report", "capture", "add", "finish-login", "cancel-login", "remove", "open",
-           "stop-consumer", "recover", "verify", "open-folder", "test-notification", "cli-exclude", "cli-undo",
-           "demo-clock", "import-bundle-preview", "import-bundle", "import-bundle-dismiss")
+ACTIONS = ("refresh", "rename", "switch-plan", "switch", "quit-claude", "cancel", "dismiss", "dismiss-report",
+           "capture", "add", "finish-login", "cancel-login", "remove", "open", "stop-consumer", "recover", "verify",
+           "test-notification", "cli-exclude", "cli-undo", "demo-clock", "import-bundle-preview", "import-bundle",
+           "import-bundle-dismiss")
 INTERNAL_SETTINGS = ("recommender_state", "alert_latches")  # = config's internal keys
 UNSAVED_IDS = {"claude": "unsaved-claude", "codex": "unsaved-codex", "muse": "unsaved-muse"}
 # Claude switch step ids in order (PLAN §5.4).
