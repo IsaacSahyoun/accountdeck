@@ -10,7 +10,7 @@ import uuid
 
 from tests import support
 
-from accountdeck import cli_policy, demo, fixtures, move_bundle, move_import
+from accountdeck import cli_policy, contract, demo, fixtures, move_bundle, move_import
 from accountdeck.providers import errors
 from accountdeck.providers import http as provider_http
 from accountdeck.scheduler import RefreshScheduler, Target
@@ -609,6 +609,89 @@ class MoveImportTest(unittest.TestCase):
 
     def test_every_setting_that_travels_has_a_name(self):
         self.assertEqual(set(move_import.SETTING_NAMES), set(move_bundle.PORTABLE_SETTINGS))
+
+
+# ---- the state validator ----
+def window(account, wid):
+    return next(w for w in account["windows"] + account["other_windows"] if w["id"] == wid)
+
+
+# Ways of breaking one account of the "typical" example state: name -> (the account's place, the change).
+BROKEN = {
+    # the fields of one account
+    "no label": (1, lambda a: a.pop("label")),
+    "a number for a label": (1, lambda a: a.update(label=5)),
+    "an unknown client": (1, lambda a: a.update(provider="gemini")),
+    "a word for a flag": (1, lambda a: a.update(active="yes")),
+    "a terminal account without its health": (7, lambda a: a.pop("health")),
+    "another computer's account marked switchable": (2, lambda a: a.update(owner="on_pc")),
+    "an unknown source": (1, lambda a: a.update(imported_from="mac")),
+    "a score above 1": (1, lambda a: a.update(score=2)),
+    "an identity in the payload": (1, lambda a: a["credential"].update(identity="someone")),
+    "an unknown credential state": (1, lambda a: a["credential"].update(state="maybe")),
+    "an error without its fields": (1, lambda a: a.update(error={"code": "network"})),
+    "a trend out of order": (1, lambda a: a.update(trend=[[20.0, 5.0], [10.0, 6.0]])),
+    # the reading and its windows
+    "an unsaved id on a saved account": (1, lambda a: a.update(id="unsaved-claude")),
+    "the wrong age": (1, lambda a: a.update(age_tier="stale")),
+    "stale without an old reading": (1, lambda a: a.update(stale=True)),
+    "windows without a reading": (1, lambda a: a.update(last_good_at=None)),
+    # the account as a whole
+    "the same window twice": (1, lambda a: a["windows"].append(copy.deepcopy(a["windows"][0]))),
+    "an other window with nothing to show": (1, lambda a: a["other_windows"][0].update(
+        used=0.0, left=100.0, reset=None, reset_state="none", pace=None)),
+    "no limiting window marked": (1, lambda a: window(a, "seven_day").update(binding=False)),
+    "two limiting windows marked": (1, lambda a: window(a, "five_hour").update(binding=True)),
+    "the wrong limiting window": (8, lambda a: (window(a, "five_hour").update(binding=False), window(a, "seven_day").update(binding=True))),
+    "a limiting window where none limits": (2, lambda a: window(a, "five_hour").update(binding=True)),
+    "the wrong state": (1, lambda a: a.update(state="limited")),
+    "the wrong headline": (1, lambda a: a["headline"].update(kind="ready")),
+    "a headline about another window": (1, lambda a: a["headline"].update(window="five_hour")),
+    "recommended without rank 1": (3, lambda a: a.update(rank=2)),
+}
+
+# What `contract.validate_state` says about each (the answers at the starting commit, 1c1787b).
+SAID = {
+    'no label': ["accounts[1]: missing 'label'"],
+    'a number for a label': ['accounts[1].label: must be a non-empty string, got 5'],
+    'an unknown client': ["accounts[1].provider: 'gemini' is not one of claude, codex, claude_cli, muse"],
+    'a word for a flag': ["accounts[1].active: must be true or false, got 'yes'"],
+    'a terminal account without its health': ["accounts[7]: missing 'health'", 'providers.claude_cli.autoswitch.next_up: must list every terminal account once'],
+    "another computer's account marked switchable": ['accounts[2].switchable: must be false for an account another computer owns'],
+    'an unknown source': ["accounts[1].imported_from: must be null, 'v1' or 'pc'"],
+    'a score above 1': ['accounts[1].score: must be a number in [0, 1], got 2'],
+    'an identity in the payload': ['accounts[1].credential.identity: identities, org ids and secrets never leave the server'],
+    'an unknown credential state': ["accounts[1].credential.state: 'maybe' is not one of live, fresh, expired, web_only, reauth_required, access_expired, unknown"],
+    'an error without its fields': ["accounts[1].error: missing 'message'", "accounts[1].error: missing 'since'", "accounts[1].error: missing 'outage'"],
+    'a trend out of order': ['accounts[1].trend: points must be in time order and not in the future'],
+    'an unsaved id on a saved account': ["accounts[1]: only 'unsaved-claude' / 'unsaved-codex' may be unsaved, and they are active and not switchable", "now_band.best.claude: unknown account 'acc_2'"],
+    'the wrong age': ["accounts[1].age_tier: must be 'fresh' for a reading 600s old"],
+    'stale without an old reading': ["accounts[1].stale: must be true exactly when age_tier is 'stale'"],
+    'windows without a reading': ['accounts[1].age_tier: must be None for a reading never taken', 'accounts[1].windows: an account without a reading has no windows'],
+    'the same window twice': ['accounts[1].windows: must be sorted session, weekly, then models by label', "accounts[1]: duplicate window id 'five_hour'"],
+    'an other window with nothing to show': ['accounts[1].other_windows[0]: other windows appear only when used > 0 or a reset exists'],
+    'no limiting window marked': ['accounts[1]: exactly one gating window must be binding', "accounts[1].headline.kind: must be 'ready'", 'accounts[1].headline.window: must be None'],
+    'two limiting windows marked': ['accounts[1]: exactly one gating window must be binding', "accounts[1].headline.kind: must be 'ready'", 'accounts[1].headline.window: must be None'],
+    'the wrong limiting window': ["accounts[8]: binding must be 'five_hour' (out beats everything, then the lowest left)", "accounts[8].headline.kind: must be 'ready'", 'accounts[8].headline.window: must be None', 'providers.claude_cli.autoswitch.next_up: must list every terminal account once'],
+    'a limiting window where none limits': ['accounts[2]: no gating window, so no window may be binding'],
+    'the wrong state': ["accounts[1].state: must be 'ok'"],
+    'the wrong headline': ["accounts[1].headline.kind: must be 'watch'"],
+    'a headline about another window': ["accounts[1].headline.window: must be 'seven_day'"],
+    'recommended without rank 1': ['accounts[3].rank: the recommended account has rank 1'],
+}
+
+
+class ValidatorTest(unittest.TestCase):
+    """The state validator names each broken rule of an account, and nothing else."""
+    maxDiff = None
+
+    def test_what_it_says_about_a_broken_account(self):
+        said = {}
+        for name, (index, change) in BROKEN.items():
+            state = fixtures.example_state("typical")
+            change(state["accounts"][index])
+            said[name] = contract.validate_state(state)
+        self.assertEqual(said, SAID)
 
 
 # ---- the example states ----
