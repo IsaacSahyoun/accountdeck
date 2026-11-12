@@ -37,7 +37,7 @@ from ..platform import facts_mac
 from ..procs import DEVNULL
 from ..usage import muse_plan, muse_usage
 from .base import Reading
-from .codex import ActiveIdentity
+from .codex import ActiveIdentity, stash
 from .errors import ProviderError
 
 USAGE_TIMEOUT = 45.0
@@ -281,7 +281,7 @@ class Muse:
                     try:
                         settled = self._settle(work, profile, identity, persist, quarantine, ref)
                     except BaseException:
-                        keep = not self._stash(work, profile, quarantine, ref)
+                        keep = not stash(work / "muse" / "auth.json", profile, quarantine, "muse", ref)
                         raise
             if settled:
                 reading = Reading(usage=reading.usage, source=reading.source, error=reading.error,
@@ -365,7 +365,7 @@ class Muse:
     def _settle(self, work, before, identity, persist, quarantine, ref):
         """Hands a renewed auth.json to `persist`, or its raw bytes to `quarantine` when it cannot be read.
         Returns meta for the Reading. A copy for another account, or a "conflict" from `persist`, raises
-        DeckError, and usage() hands the copy to `quarantine` (_stash)."""
+        DeckError, and usage() hands the copy to `quarantine` (codex.stash)."""
         path = Path(work) / "muse" / "auth.json"
         try:
             latest = read_json(path)
@@ -398,30 +398,6 @@ class Muse:
             return {"rotated": True, "stored": "kept", "needs_review": record}
         diagnostics.log("muse.renewed", account=ref, stored=stored if isinstance(stored, str) else None)
         return {"rotated": True, "stored": stored if isinstance(stored, str) else None}
-
-    def _stash(self, work, before, quarantine, ref):
-        """After _settle failed: True once the private folder holds nothing worth keeping (no auth.json, the
-        unchanged one, or one now in `quarantine`), so it can be deleted rather than left unencrypted."""
-        path = Path(work) / "muse" / "auth.json"
-        try:
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-        try:
-            if json.loads(raw) == before:
-                return True
-        except ValueError:
-            pass
-        if quarantine is None:
-            return False
-        try:
-            quarantine(raw)
-        except Exception:
-            return False
-        diagnostics.log("muse.kept_for_review", "warning", account=ref)
-        return True
 
     def sweep(self, quarantine):
         """Deletes the private folders an earlier run left behind (a crash during a usage read or a sign-in),

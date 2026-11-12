@@ -173,7 +173,8 @@ class CodexSwitch(Operation):
                     remaining = token_state(profile, ctx.clock()).remaining
                     if remaining is not None and remaining < 86400:
                         reading = ctx.codex.usage(profile, mode="refresh", owner=self.target["owner"],
-                            persist=lambda value: ctx.vault.put_guarded(self.account, value, "refresh", identity_key, freshness),
+                            persist=lambda value: ctx.vault.put_guarded(self.account, value, "refresh", identity_key,
+                                                                        freshness, expected=profile),
                             quarantine=lambda raw: ctx.vault.quarantine(self.account, raw), account=self.account)
                         if reading.error is not None:
                             raise reading.error

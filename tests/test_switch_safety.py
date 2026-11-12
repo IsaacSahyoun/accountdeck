@@ -17,7 +17,7 @@ from tests import support
 from accountdeck import cli_auto, switch_claude, switch_cli, switching
 from accountdeck.core import DeckError, FileTransaction, Vault, read_json, recover_transactions
 from accountdeck.operations import Operation, OperationRunner
-from accountdeck.providers import codex as codex_module
+from accountdeck.providers import codex as codex_module, fake as fake_module
 from accountdeck.providers.fake import test_cipher, unsigned_jwt
 from accountdeck.providers.muse import identity_key as muse_identity
 
@@ -40,11 +40,11 @@ class Waiting(Operation):
                 self.checkpoint()
 
 
-def codex_login(email, *, now, refresh="synthetic-refresh-side"):
-    """A Codex auth.json for a new synthetic account."""
+def codex_login(email, *, now, refresh="synthetic-refresh-side", lifetime=9 * 86400):
+    """A Codex auth.json for a new synthetic account, whose access token lasts `lifetime` seconds from `now`."""
     identity = str(uuid.uuid4())
     claims = {codex_module.AUTH_CLAIMS: {"chatgpt_account_id": identity, "chatgpt_plan_type": "plus"}}
-    exp = int(now + 9 * 86400)
+    exp = int(now) + lifetime
     return {"OPENAI_API_KEY": None, "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
             "tokens": {"id_token": unsigned_jwt({**claims, "email": email, "exp": exp}),
                        "access_token": unsigned_jwt({**claims, "exp": exp}), "refresh_token": refresh,
@@ -72,9 +72,9 @@ class DeckCase(unittest.TestCase):
         return next(a for a in self.rows(provider)
                     if not a["active"] and a["switchable"] and a.get("health", "ok") == "ok" and not a.get("excluded"))
 
-    def add_codex_account(self, email="codex-side@example.test"):
+    def add_codex_account(self, email="codex-side@example.test", **login):
         codex = self.engine.providers["codex"]
-        login = codex_login(email, now=self.engine.clock())
+        login = codex_login(email, **{"now": self.engine.clock(), **login})
         return self.engine.accounts.save("codex", login, codex.identity(login), source="login", owner="v2")
 
     def close_codex(self):
@@ -690,6 +690,83 @@ class CodexInterruptedSwitchTest(DeckCase):
         self.assertTrue(self.vault.path("set-aside-" + tx.key).exists())
         self.assertIn("could not undo an interrupted Codex switch", self.engine.snapshot()["notices"][-1]["message"])
         self.assertEqual(self.plan("codex", "capture")["blockers"], [])
+
+
+class CodexRenewalTest(DeckCase):
+    """Consider 2: a login Codex renewed is saved whatever expiry its new token has. An expiry does not say
+    which of two copies is the newer one; the copy the renewal started from does."""
+
+    OLD = "synthetic-refresh-side"
+    SAVED_FOR = 12 * 3600
+
+    def setUp(self):
+        super().setUp()
+        self.codex = self.engine.providers["codex"]
+        now = self.codex.clock()
+        self.codex.clock = lambda: now          # the fake stamps a renewed token from this clock
+        self.side = self.add_codex_account(now=now, lifetime=self.SAVED_FOR)
+        self.main = self.active("codex")
+        # the demo scripts usage answers by account, and the new account needs one for a renewal to succeed
+        self.codex.timelines[self.identity(self.side)] = self.codex.timelines[self.identity(self.main["id"])]
+
+    def renewed_token_lasts(self, seconds):
+        return mock.patch.object(fake_module, "ROTATED_LIFETIME", seconds)
+
+    def read_in_the_background(self):
+        self.engine.accounts.read(self.side, active_identity={"codex": self.identity(self.main["id"])})
+
+    def saved_refresh_token(self):
+        return self.vault.get(self.side)["tokens"]["refresh_token"]
+
+    def work_folders(self):
+        return sorted(path.name for path in self.codex.workspace.glob("probe-*"))
+
+    def test_a_background_renewal_with_the_same_expiry_is_saved(self):
+        with self.renewed_token_lasts(self.SAVED_FOR):
+            self.read_in_the_background()
+        self.assertNotEqual(self.saved_refresh_token(), self.OLD, "the renewed login was thrown away")
+        self.assertEqual(self.work_folders(), [])
+
+    def test_a_background_renewal_with_an_earlier_expiry_is_saved(self):
+        with self.renewed_token_lasts(3600):
+            self.read_in_the_background()
+        self.assertNotEqual(self.saved_refresh_token(), self.OLD, "the renewed login was thrown away")
+        self.assertEqual(self.work_folders(), [])
+
+    def test_a_renewal_right_before_a_switch_is_the_login_codex_gets(self):
+        self.close_codex()
+        with self.renewed_token_lasts(3600):
+            report = self.act("codex", "switch", self.side)
+        self.assertEqual(report["outcome"], "success", report)
+        live = read_json(Path(self.paths.codex_home) / "auth.json")
+        self.assertNotEqual(live["tokens"]["refresh_token"], self.OLD, "Codex was given the login the renewal used up")
+        self.assertEqual(self.saved_refresh_token(), live["tokens"]["refresh_token"])
+        self.assert_consistent("codex", self.identity(self.side))
+
+    def renew_with_a_vault_that_answers(self, answer):
+        """One renewal whose save the vault answers with `answer`; returns what was handed over for review."""
+        kept = []
+        profile = self.vault.get(self.side)
+        try:
+            reading = self.codex.usage(profile, mode="refresh", persist=lambda auth: answer,
+                                       quarantine=lambda raw: kept.append(json.loads(raw)) or "quarantine-test")
+        except DeckError as exc:
+            reading = exc
+        return reading, kept
+
+    def test_a_renewed_login_the_vault_will_not_file_is_kept_for_review(self):
+        reading, kept = self.renew_with_a_vault_that_answers("kept")
+        self.assertEqual(len(kept), 1, "the renewed login was thrown away")
+        self.assertNotEqual(kept[0]["tokens"]["refresh_token"], self.OLD)
+        self.assertEqual(reading.meta.get("needs_review"), "quarantine-test")
+        self.assertEqual(self.work_folders(), [])
+
+    def test_a_renewed_login_for_a_copy_of_another_account_is_kept_encrypted_not_in_a_plain_folder(self):
+        reading, kept = self.renew_with_a_vault_that_answers("conflict")
+        self.assertIsInstance(reading, DeckError)
+        self.assertEqual(reading.code, "identity")
+        self.assertEqual(len(kept), 1, "the renewed login was not kept")
+        self.assertEqual(self.work_folders(), [], "the renewed login was left in a plain-text folder")
 
 
 class DesktopSwitchTest(DeckCase):

@@ -134,6 +134,31 @@ def freshness(profile):
     return token_state(profile, 0).exp
 
 
+def stash(path, before, quarantine, provider, ref) -> bool:
+    """After a renewed login could not be saved: True once the helper's file `path` holds nothing worth
+    keeping (no file, the unchanged login `before`, or one now handed to `quarantine`), so its folder can be
+    deleted rather than left unencrypted. Shared by Codex and Muse."""
+    try:
+        raw = Path(path).read_bytes()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        if json.loads(raw) == before:
+            return True
+    except ValueError:
+        pass
+    if quarantine is None:
+        return False
+    try:
+        quarantine(raw)
+    except Exception:
+        return False
+    diagnostics.log(provider + ".kept_for_review", "warning", account=ref)
+    return True
+
+
 def fingerprint(profile):
     """sha256[:8] of a profile's refresh token, safe to log across a rotation; None when blank."""
     token = ((profile or {}).get("tokens") or {}).get("refresh_token") if isinstance(profile, dict) else None
@@ -415,9 +440,9 @@ class Codex:
 
         read_only (always for the active account): blank refresh token, account/read{refreshToken:
         false}. refresh (owner "v2" only): the intact profile and {refreshToken: true}; a rotated
-        auth.json goes to `persist` (e.g. Vault.put_guarded), an unreadable one to `quarantine`
-        (e.g. Vault.quarantine), and the helper folder is deleted only after that succeeded; a
-        "conflict" answer from `persist` raises DeckError "identity" and keeps the folder."""
+        auth.json goes to `persist` (Vault.put_guarded with `expected=profile`, the copy the renewal
+        started from). One that cannot be read or that `persist` did not store goes to `quarantine`
+        (Vault.quarantine), and the helper folder is deleted only after one of the two holds it."""
         if mode not in MODES:
             raise ValueError(f"unknown Codex probe mode: {mode}")
         refresh = mode == "refresh"
@@ -444,9 +469,11 @@ class Codex:
                 reading = self._failed(exc, refresh, tokens, profile, now)
             finally:
                 if refresh:
-                    keep = True
-                    settled = self._settle(work, profile, identity, persist, quarantine, ref)
-                    keep = False
+                    try:
+                        settled = self._settle(work, profile, identity, persist, quarantine, ref)
+                    except BaseException:
+                        keep = not stash(work / "auth.json", profile, quarantine, "codex", ref)
+                        raise
             if refresh:
                 reading = replace(reading, meta={**reading.meta, **settled})
         finally:
@@ -498,9 +525,9 @@ class Codex:
 
     def _settle(self, work, before, identity, persist, quarantine, ref):
         """Hands a refresh probe's auth.json to `persist` when the helper rotated it, or its raw
-        bytes to `quarantine` when it cannot be read. Returns meta for the Reading. Both callbacks
-        raise when they could not store the copy; that, like a "conflict" answer from `persist`,
-        keeps the helper folder."""
+        bytes to `quarantine` when it cannot be read or `persist` kept its own copy. Returns meta for the
+        Reading. A copy for another account, or a "conflict" from `persist`, raises DeckError, and usage()
+        hands the copy to `quarantine` (stash)."""
         path = Path(work) / "auth.json"
         try:
             latest = read_json(path)
@@ -523,9 +550,16 @@ class Codex:
             diagnostics.log("codex.conflict", "warning", account=ref)
             raise DeckError("Codex renewed this sign-in, but the saved copy belongs to another account. "
                             "The new copy was kept for review.", "identity")
-        stored = stored if isinstance(stored, str) else None      # e.g. put_guarded's "accepted" / "kept"
+        stored = stored if isinstance(stored, str) else None      # put_guarded's "accepted" / "kept"
         diagnostics.log("codex.rotation", account=ref, fp_before=fp_before, fp_after=fp_after, stored=stored)
-        return {"rotated": True, "fp_before": fp_before, "fp_after": fp_after, "stored": stored}
+        meta = {"rotated": True, "fp_before": fp_before, "fp_after": fp_after, "stored": stored}
+        if stored == "kept":
+            # The vault holds another copy than the one this renewal started from, yet Codex issued this
+            # one: an expiry does not say which is newer, so it is never dropped.
+            if quarantine is None:
+                raise DeckError("Codex renewed this sign-in, but the new copy could not be stored.", "vault")
+            meta["needs_review"] = quarantine(self.quarantine(path))
+        return meta
 
     @staticmethod
     def quarantine(path):
