@@ -962,8 +962,8 @@ class Engine:
                         self.bump()
                         return
                     with self.cli.gate(key):
-                        live = self.cli.adapter.current()
-                        if live["identity"] == account["identity"]:
+                        # Nobody signed in to Claude Code (None) means no saved account is in use.
+                        if self.cli.adapter.active_identity() == account["identity"]:
                             raise DeckError("The account in use by your terminals cannot be removed.", "invalid")
                         self.accounts.remove(key)
                 self.scheduler.forget(key)

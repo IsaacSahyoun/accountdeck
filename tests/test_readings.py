@@ -355,8 +355,8 @@ class UpkeepTest(unittest.TestCase):
             with self.subTest(provider=provider):
                 self.rename_then_remove(provider, signed_out=False)
 
-    def test_while_signed_out_of_the_other_three_clients(self):
-        for provider in ("claude", "codex", "muse"):
+    def test_while_signed_out(self):
+        for provider in CLIENTS:
             with self.subTest(provider=provider):
                 self.rename_then_remove(provider, signed_out=True)
 
