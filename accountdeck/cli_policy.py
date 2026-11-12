@@ -12,6 +12,9 @@
 - holds: an expired idle terminal token, and a 5-hour refill within 10 minutes when only the 5-hour
   window is past. An Anthropic incident never holds (the owner's choice, 2026-10-09): a switch only
   needs the target's own fresh reading;
+- a window of the account in use whose reset time has passed has refilled, so its last number is not
+  acted on: the windows still running decide, and when none of them asks for a switch the rule holds
+  and asks for a new reading of that account (`refresh`);
 - the optional early switch spends weekly allowance that expires within 24 hours, at most every 2
   hours and never within 2 hours of a manual choice.
 """
@@ -70,6 +73,13 @@ def forecast(readings, now, horizon):
 
 def reset(window):
     return number(window.get("reset"))
+
+
+def ended(window, now):
+    """True once a window's reset time has passed. The limit it measured has refilled, so its last number
+    says nothing about the new window, whenever that number was read."""
+    at = reset(window)
+    return at is not None and at <= now
 
 
 def duration(seconds):
@@ -140,7 +150,11 @@ def evaluate(accounts, settings, history, now):
     active = next((row for row in rows if row["account"].get("active")), None)
     if not settings.get("cli_autoswitch", True) or active is None or is_frozen(active["account"]):
         return result
-    values = active["values"]
+    # The account in use is judged on the windows still running. One that ended while it was at or past the
+    # threshold is waited for instead: its new reading decides.
+    values = [value for value in active["values"] if not ended(value[2], now)]
+    refilled = [label for label, used, w in active["values"]
+                if ended(w, now) and (w.get("blocked") or (used is not None and used >= threshold))]
     over = [(label, used, w) for label, used, w in values if used is not None and used >= threshold]
     # A limit filling fast can pass the threshold, or run out, before the next read is allowed: act on the
     # forecast for that moment rather than the last reading.
@@ -157,9 +171,13 @@ def evaluate(accounts, settings, history, now):
         return result
     trigger = "login" if login else "out" if out else "threshold" if over else None
     eligible = [row for row in rows if row["skip"] is None]
+    if not trigger and refilled:
+        result.update(hold=f"{active['label']}'s {refilled[0]} limit has refilled. Waiting for its new reading.",
+                      refresh=[active["id"]])
+        return result
     if trigger:
-        five_reset = reset(values[0][2])
-        if not out and not login and over and all(label == "5-hour" for label, _, _ in over) and five_reset is not None and 0 <= five_reset - now <= 600:
+        five_reset = reset(active["values"][0][2])
+        if not out and not login and over and all(label == "5-hour" for label, _, _ in over) and five_reset is not None and five_reset - now <= 600:
             result["hold"] = f"{active['label']} refills in {duration(five_reset - now)} — staying"
             return result
         stale = [row for row in rows if row["stale"]]

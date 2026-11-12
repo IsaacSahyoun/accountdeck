@@ -92,16 +92,16 @@ ROWS = {
     "Beta's week ends in 12 h, early switch 1 h ago": ([beta(**SOON)], {"early_at": NOW - HOUR}, {}, {}),
 }
 
-HOLDS = {"refills in": "r", "Checking": "c", "Every account is past": "d", "Usage updates after": "x",
+HOLDS = {"refills in": "r", "has refilled": "w", "Checking": "c", "Every account is past": "d", "Usage updates after": "x",
          "An early switch happened": "e", "Your manual choice": "m"}
 KINDS = {"threshold": "T", "out": "O", "login": "L", "early": "E", "refilled": "R"}
 
 
 def code(result):
     """One decision as two characters. A switch: its kind (Threshold, Out, Login, Early, Refilled after all were
-    low) and the target's initial. A hold: h and its reason (r refills soon, c checking the others, d using
-    every account up, x login expired, e early switch too recent, m manual choice), in capitals when the rule
-    also asks for a new reading. XX: every account is low. ..: nothing to do."""
+    low) and the target's initial. A hold: h and its reason (r refills soon, w has refilled, c checking the
+    others, d using every account up, x login expired, e early switch too recent, m manual choice), in capitals
+    when the rule also asks for a new reading. XX: every account is low. ..: nothing to do."""
     if result["action"] == "switch":
         return KINDS[result["kind"]] + result["target"][0]
     if result["exhausted"]:
@@ -124,43 +124,45 @@ def table():
     return {row: " ".join(code(decide(row, column)) for column in COLUMNS) for row in ROWS}
 
 
-# The answers at the starting commit (1c1787b). 5-hour % used:
+# The answers at the starting commit (1c1787b), apart from one fixed bug. A 5-hour window that ended 40 s ago used
+# to count with its old number (Tb, Ob at 96% and up). Now it is waited for (hW) and the weekly limit decides.
+# 5-hour % used:
 #                                                      20                96                99                100
 # 5-hour reset (in 4 h, in 4 min, 40 s ago), each with weekly 30 then 96:
 #                                                      4h    4m    ago   4h    4m    ago   4h    4m    ago   4h    4m    ago
 EXPECTED = {
-    "Beta has room":                                   ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Beta's reading is 20 min old":                    ".. hC .. hC .. hC hC hC hr hC hC hC hC hC hr hC hC hC hC hC hC hC hC hC",
-    "Beta was never read":                             ".. hd .. hd .. hd hd hd hr hd hd hd XX XX hr XX XX XX XX XX XX XX XX XX",
-    "Beta's weekly is at 90%":                         ".. hd .. hd .. hd hd hd hr hd hd hd Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Beta's weekly is at 98%":                         ".. hd .. hd .. hd hd hd hr hd hd hd XX XX hr XX XX XX XX XX XX XX XX XX",
-    "Beta's weekly is unknown":                        ".. hd .. hd .. hd hd hd hr hd hd hd XX XX hr XX XX XX XX XX XX XX XX XX",
-    "Beta needs sign-in":                              ".. hd .. hd .. hd hd hd hr hd hd hd XX XX hr XX XX XX XX XX XX XX XX XX",
-    "Beta is left out":                                ".. hd .. hd .. hd hd hd hr hd hd hd XX XX hr XX XX XX XX XX XX XX XX XX",
-    "Beta belongs to the PC":                          ".. hd .. hd .. hd hd hd hr hd hd hd XX XX hr XX XX XX XX XX XX XX XX XX",
-    "Alpha is the only account":                       ".. hd .. hd .. hd hd hd hr hd hd hd XX XX hr XX XX XX XX XX XX XX XX XX",
-    "Beta is 20 min old, Gamma at 90%":                ".. hC .. hC .. hC hC hC hr hC hC hC hC hC hr hC hC hC hC hC hC hC hC hC",
-    "Gamma's week ends sooner":                        ".. Tg .. Tg .. Tg Tg Tg hr Tg Tg Tg Tg Tg hr Tg Tg Tg Og Og Og Og Og Og",
-    "Gamma's week ends sooner, most room first":       ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Gamma's week ends sooner, my order Beta first":   ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Undo pressed 5 s ago":                            "hm Tb hm Tb hm Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Manual choice 2 h 5 s ago":                       ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Early switch 1 h ago":                            "he Tb he Tb he Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Every account was low before":                    ".. Rb .. Rb .. Rb Rb Rb hr Rb Rb Rb Rb Rb hr Rb Rb Rb Rb Rb Rb Rb Rb Rb",
+    "Beta has room":                                   ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Beta's reading is 20 min old":                    ".. hC .. hC .. hC hC hC hr hC hW hC hC hC hr hC hW hC hC hC hC hC hW hC",
+    "Beta was never read":                             ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
+    "Beta's weekly is at 90%":                         ".. hd .. hd .. hd hd hd hr hd hW hd Tb Tb hr Tb hW hd Ob Ob Ob Ob hW hd",
+    "Beta's weekly is at 98%":                         ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
+    "Beta's weekly is unknown":                        ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
+    "Beta needs sign-in":                              ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
+    "Beta is left out":                                ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
+    "Beta belongs to the PC":                          ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
+    "Alpha is the only account":                       ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
+    "Beta is 20 min old, Gamma at 90%":                ".. hC .. hC .. hC hC hC hr hC hW hC hC hC hr hC hW hC hC hC hC hC hW hC",
+    "Gamma's week ends sooner":                        ".. Tg .. Tg .. Tg Tg Tg hr Tg hW Tg Tg Tg hr Tg hW Tg Og Og Og Og hW Tg",
+    "Gamma's week ends sooner, most room first":       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Gamma's week ends sooner, my order Beta first":   ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Undo pressed 5 s ago":                            "hm Tb hm Tb hm Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Manual choice 2 h 5 s ago":                       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Early switch 1 h ago":                            "he Tb he Tb he Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Every account was low before":                    ".. Rb .. Rb .. Rb Rb Rb hr Rb hW Rb Rb Rb hr Rb hW Rb Rb Rb Rb Rb hW Rb",
     "Auto-switch is off":                              ".. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..",
-    "Early switch is off":                             ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Threshold is 80%":                                ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
+    "Early switch is off":                             ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Threshold is 80%":                                ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
     "Alpha's login expired while idle":                "hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx",
     "Alpha needs sign-in":                             "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
     "Alpha is marked out":                             "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
     "Alpha belongs to the PC":                         ".. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..",
-    "Alpha's 5-hour is forecast at 97%":               "Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Alpha's pinned Fable limit is at 96%":            "Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Beta's week ends in 12 h":                        "Eb Tb Eb Tb Eb Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Beta's week ends in 12 h, 85% used":              ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Beta's week ends in 12 h, left 10 min ago":       ".. Tb .. Tb .. Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Beta's week ends in 12 h, manual choice 5 s ago": "hm Tb hm Tb hm Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
-    "Beta's week ends in 12 h, early switch 1 h ago":  "he Tb he Tb he Tb Tb Tb hr Tb Tb Tb Tb Tb hr Tb Tb Tb Ob Ob Ob Ob Ob Ob",
+    "Alpha's 5-hour is forecast at 97%":               "Tb Tb hr Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Alpha's pinned Fable limit is at 96%":            "Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Ob Ob Ob Ob Tb Tb",
+    "Beta's week ends in 12 h":                        "Eb Tb Eb Tb Eb Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Beta's week ends in 12 h, 85% used":              ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Beta's week ends in 12 h, left 10 min ago":       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Beta's week ends in 12 h, manual choice 5 s ago": "hm Tb hm Tb hm Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Beta's week ends in 12 h, early switch 1 h ago":  "he Tb he Tb he Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
 }
 
 
@@ -190,6 +192,7 @@ class AutoSwitchWordsTest(unittest.TestCase):
             "drain": self.result("Beta's weekly is at 90%", five=99)["reason"],
             "early": self.result("Beta's week ends in 12 h")["reason"],
             "refills soon": self.result("Beta has room", five=96, reset=240)["hold"],
+            "has refilled": self.result("Beta has room", five=96, reset=-40)["hold"],
             "checking": self.result("Beta's reading is 20 min old", five=96)["hold"],
             "using up": self.result("Beta's weekly is at 90%", five=96)["hold"],
             "login expired": self.result("Alpha's login expired while idle")["hold"],
@@ -205,6 +208,7 @@ class AutoSwitchWordsTest(unittest.TestCase):
             "drain": "Alpha reached 99%; every account is past 95%, so Beta is used up to 99%.",
             "early": "Using Beta's weekly allowance before it resets in 12h 0m (50% left).",
             "refills soon": "Alpha refills in 4 min — staying",
+            "has refilled": "Alpha's 5-hour limit has refilled. Waiting for its new reading.",
             "checking": "Checking Beta before switching",
             "using up": "Every account is past 95% — using Alpha up to 99%",
             "login expired": "Usage updates after your next message in Claude Code",
@@ -214,6 +218,9 @@ class AutoSwitchWordsTest(unittest.TestCase):
 
     def test_checking_asks_for_the_old_readings(self):
         self.assertEqual(self.result("Beta is 20 min old, Gamma at 90%", five=96)["refresh"], ["beta"])
+
+    def test_a_refilled_limit_asks_for_a_new_reading_of_the_account_in_use(self):
+        self.assertEqual(self.result("Beta has room", five=100, reset=-1)["refresh"], ["alpha"])
 
     def test_all_low_says_who_refills_first(self):
         result = self.result("Beta's weekly is at 98%", five=99)
