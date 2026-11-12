@@ -1,4 +1,4 @@
-"""The menu bar item's content and behaviour, free of AppKit (docs/mac/PLAN.md D8, §1.10).
+"""The menu bar item's content and behaviour, free of AppKit.
 
 What it shows, from the engine's cached snapshot (pure functions: state + now in, text and pixels out):
 
@@ -210,10 +210,6 @@ def title_runs(state, now) -> tuple[tuple[str, str], ...]:
     return (("5h ", "label"), (five, "value"), (" · ", "label"), ("wk ", "label"), (weekly, "value"))
 
 
-def title_text(state, now) -> str:
-    return "".join(text for text, _role in title_runs(state, now))
-
-
 def _number(window, display) -> str:
     """"38% used" or "62% left", as model.js formatNumber writes it."""
     used = window["used"]
@@ -378,7 +374,7 @@ def menu_model(state, now, *, start_on_login: bool | None, notifications: str | 
     return tuple(items), targets
 
 
-# ---- consent prompts (the dashboard's switch modal, PLAN §7.8) ----
+# ---- consent prompts (the dashboard's switch modal) ----
 
 def _working(plan) -> tuple[list, int]:
     """(the Code sessions that are working or of unknown status, how many there are)."""
@@ -443,7 +439,7 @@ def switch_prompt(plan, note: str | None = None) -> Prompt:
 
 
 def interrupt_prompt(plan) -> Prompt:
-    """The second confirmation before "Switch Now" ends working sessions (§7.8); Cancel is the default."""
+    """The second confirmation before "Switch Now" ends working sessions; Cancel is the default."""
     sessions, count = _working(plan)
     names = [f'"{s.get("name")}"' for s in sessions[:3]]
     if names:
@@ -456,7 +452,7 @@ def interrupt_prompt(plan) -> Prompt:
 
 
 def blocked_prompt(plan) -> Prompt:
-    """Blockers replace the choice (§7.8): their text and one button."""
+    """Blockers replace the choice: their text and one button."""
     blockers = [b["message"] for b in plan.get("blockers") or () if b.get("message")]
     title = f"Switch {PROVIDER_NAMES.get(plan['provider'], plan['provider'])} to {plan['target']['label']}?"
     return Prompt(title, _sections(["This cannot start yet."], blockers))

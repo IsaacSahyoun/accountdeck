@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs or upgrades AccountDeck 2 for this Mac user (Apple silicon; docs/mac/PLATFORM-MAC.md §4-6).
+# Installs or upgrades AccountDeck 2 for this Mac user (Apple silicon).
 #
 #     bash install.sh [--no-launch] [--start-at-login] [--prefix DIR] [--downloads DIR]
 #
@@ -54,7 +54,7 @@ usage() {
     sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# ---- pinned runtime (PLATFORM-MAC.md §6): Apple silicon only ----
+# ---- pinned runtime: Apple silicon only ----
 PY_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8%2B20261003-aarch64-apple-darwin-install_only.tar.gz
 PY_SHA=d15291f940cfecd2e54010d5e37d2e03aa192f076a65d26ab741372fff2dabfe
 CFFI_URL=https://files.pythonhosted.org/packages/b3/a9/9db617d05d7367c1ad0ab00b3aa6e6f9281edd689b4ee9ea0e5a84e89c97/cffi-2.1.1-cp314-cp314-macosx_11_0_arm64.whl
@@ -118,9 +118,6 @@ cleanup() {
     local status=$?
     trap - EXIT
     [ -n "${WORK:-}" ] && rm -rf "$WORK"
-    [ -n "${RT_NEW:-}" ] && rm -rf "$RT_NEW"
-    [ -n "${APP_NEW:-}" ] && rm -rf "$APP_NEW"
-    [ -n "${BUNDLE_NEW:-}" ] && rm -rf "$BUNDLE_NEW"
     exit "$status"
 }
 
@@ -176,22 +173,22 @@ main() {
     case "$src/" in "$APPDIR/"*|"$RT/"*) die "run install.sh from the package folder, not from the installed copy." ;; esac
 
     mkdir -p "$SUPPORT" "$APPS"
-    chmod 700 "$SUPPORT"            # the data folder: private to you (PLATFORM-MAC.md §7)
+    chmod 700 "$SUPPORT"            # the data folder: private to you
     trap cleanup EXIT
+    # Everything is built in a work folder of this run's own, so two installs started at once never write into
+    # each other's files. An install that is killed leaves its folder behind; uninstall.sh removes those.
     WORK=$(mktemp -d "$SUPPORT/.install-XXXXXX")
     say "Installing $APP_NAME for $(id -un) (macOS $version) into $base"
 
     # ---- the app code: staged, compared with the installed copy ----
     local app_changed=0 new_hash pattern
     excludes=()
-    APP_NEW="$SUPPORT/app.new"
-    rm -rf "$APP_NEW"
+    APP_NEW="$WORK/app"
     mkdir "$APP_NEW"
     for pattern in "${EXCLUDES[@]}"; do excludes+=(--exclude "$pattern"); done
     (cd "$src" && tar -cf - "${excludes[@]}" .) | (cd "$APP_NEW" && tar -xf -)
     new_hash=$(tree_hash "$APP_NEW")
     if [ -f "$APPDIR/.source-sha256" ] && [ "$(cat "$APPDIR/.source-sha256")" = "$new_hash" ]; then
-        rm -rf "$APP_NEW"; APP_NEW=""
         say "App code: unchanged."
     else
         printf '%s\n' "$new_hash" > "$APP_NEW/.source-sha256"
@@ -211,8 +208,7 @@ main() {
         fetch "$PY_URL" "$PY_SHA" "$WORK/python.tar.gz"
         fetch "$CFFI_URL" "$CFFI_SHA" "$cffi_whl"
         fetch "$CRYPTO_URL" "$CRYPTO_SHA" "$crypto_whl"
-        RT_NEW="$SUPPORT/runtime.new"
-        rm -rf "$RT_NEW"
+        RT_NEW="$WORK/runtime"
         mkdir "$RT_NEW"
         tar -xzf "$WORK/python.tar.gz" -C "$RT_NEW"
         [ -x "$RT_NEW/python/bin/python3.14" ] || die "the Python download did not unpack as expected."
@@ -231,7 +227,7 @@ main() {
     if [ "$rt_changed" = 1 ]; then
         rm -rf "$RT.old"
         [ -d "$RT" ] && mv "$RT" "$RT.old"
-        mv "$RT_NEW" "$RT"; RT_NEW=""
+        mv "$RT_NEW" "$RT"
         rm -rf "$RT.old"
     fi
     PY="$RT/python/bin/python3.14"
@@ -240,7 +236,7 @@ main() {
     if [ "$app_changed" = 1 ]; then
         rm -rf "$APPDIR.old"
         [ -d "$APPDIR" ] && mv "$APPDIR" "$APPDIR.old"
-        mv "$APP_NEW" "$APPDIR"; APP_NEW=""
+        mv "$APP_NEW" "$APPDIR"
         rm -rf "$APPDIR.old"
         say "App code: installed $(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$APPDIR/accountdeck/__init__.py")."
     fi
@@ -255,12 +251,11 @@ with open(target + ".tmp", "w", encoding="utf-8") as handle:
 ' "$APP/Contents/MacOS/$EXECUTABLE" "$AGENTS_DIR" "$LOGS" "$manage" "$APPDIR/install.json"
     mv "$APPDIR/install.json.tmp" "$APPDIR/install.json"
 
-    # ---- the app bundle (PLATFORM-MAC.md §5): built aside, swapped in only when it differs ----
+    # ---- the app bundle: built aside, swapped in only when it differs ----
     local app_version icns bundle_changed=0
     app_version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$APPDIR/accountdeck/__init__.py")
     [ -n "$app_version" ] || die "the app version was not found."
-    BUNDLE_NEW="$APPS/.$APP_NAME.app.new"
-    rm -rf "$BUNDLE_NEW"
+    BUNDLE_NEW="$WORK/bundle"
     mkdir -p "$BUNDLE_NEW/Contents/MacOS" "$BUNDLE_NEW/Contents/Resources"
     icns="$APPDIR/AccountDeck2.icns"
     if [ ! -f "$icns" ] || [ "$(head -c 4 "$icns")" != icns ]; then
@@ -313,12 +308,11 @@ LAUNCHER
         || die "the app's python does not find its runtime."
     xattr -dr com.apple.quarantine "$BUNDLE_NEW" "$RT" "$APPDIR" 2>/dev/null || true
     if [ -d "$APP" ] && diff -r "$APP" "$BUNDLE_NEW" >/dev/null 2>&1; then
-        rm -rf "$BUNDLE_NEW"; BUNDLE_NEW=""
         say "App: $APP unchanged."
     else
         rm -rf "$APP.old"
         [ -e "$APP" ] && mv "$APP" "$APP.old"
-        mv "$BUNDLE_NEW" "$APP"; BUNDLE_NEW=""
+        mv "$BUNDLE_NEW" "$APP"
         rm -rf "$APP.old"
         bundle_changed=1
         say "App: $APP"

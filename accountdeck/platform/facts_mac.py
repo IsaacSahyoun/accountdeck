@@ -1,4 +1,4 @@
-"""Facts about this Mac besides processes (docs/mac/PLAN.md §1.3, §1.4, §1.9): the data folder's permissions,
+"""Facts about this Mac besides processes: the data folder's permissions,
 Claude Desktop's data folder and launch id, the Codex CLI and the file-release probe.
 
 Claude Desktop keeps one data folder (~/Library/Application Support/Claude), opens by the bundle id read
@@ -23,7 +23,7 @@ DATA_FOLDER_FILES = (("Cookies",), ("Cookies-journal",), ("Network", "Cookies"),
                      ("config.json",), ("Local State",))
 DATA_FOLDER_KIND = "Application Support"
 CLAUDE_APP = "Claude.app"
-CODEX_APP = "ChatGPT.app"                                   # the Codex app on macOS (PLAN §8)
+CODEX_APP = "ChatGPT.app"                                   # the Codex app on macOS
 CODEX_IN_APP = ("Contents", "Resources", "codex-cli", "bin", "codex")
 CODEX_PACKAGE = (".local", "share", "openai-codex", "current", "bin", "codex")
 CODEX_LAUNCHER = (".local", "bin", "codex")
@@ -82,7 +82,7 @@ def remove_work_directory(path, root) -> None:
         shutil.rmtree(path, onexc=retry)
 
 
-# ---- Claude Desktop's identity, data folder and launch id (PLAN §1.2, §1.4, §1.9) ----
+# ---- Claude Desktop's identity, data folder and launch id ----
 
 def claude_launch_id(paths, *, applications=None) -> str | None:
     """How macOS opens Claude Desktop: the CFBundleIdentifier of the installed Claude.app, read now from its
@@ -105,12 +105,12 @@ def claude_base(paths) -> tuple[Path, str, str]:
 
 
 def data_folder_files(paths) -> list[Path]:
-    """The files Claude must have released before its sign-in state is touched (§4.6 settle)."""
+    """The files Claude must have released before its sign-in state is touched."""
     base = claude_base(paths)[0]
     return [base.joinpath(*parts) for parts in DATA_FOLDER_FILES]
 
 
-# ---- Codex (PLAN §1.8, §8) ----
+# ---- Codex ----
 
 def codex_exe(paths) -> Path:
     """The Codex CLI binary. `paths.codex_exe` when it exists (synthetic paths); live, in this order: `codex`
@@ -201,7 +201,7 @@ def _launcher_targets(script: Path, home: Path) -> list[Path]:
     return found + [home.joinpath(*CODEX_PACKAGE)]
 
 
-# ---- files (§1.3 settle) and Claude's own preference ----
+# ---- files and Claude's own preference ----
 
 def file_is_free(path) -> bool:
     """Without asking about processes this module can only say "free" for a file that does not exist, or for
@@ -219,7 +219,7 @@ def file_is_free(path) -> bool:
 
 
 def files_released(paths, procs) -> bool:
-    """The settle check (PLAN §1.3): no Claude desktop process is alive, and the controller's probe answers
+    """The settle check: no Claude desktop process is alive, and the controller's probe answers
     exactly True for every sign-in file. A failing or doubtful probe means "not released"."""
     try:
         if procs.claude_desktop():

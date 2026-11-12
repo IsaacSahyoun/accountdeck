@@ -1,4 +1,4 @@
-"""Open AccountDeck 2, run its local service, or run the synthetic demo (PLAN §8.1).
+"""Open AccountDeck 2, run its local service, or run the synthetic demo.
 
     run.py [--app] [--no-browser]   the app (what AccountDeck 2.app and its LaunchAgent run): open the
                                     dashboard of the running service, or become the service with the
@@ -28,7 +28,6 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-ROOT = Path(__file__).resolve().parent
 STARTUP_WAIT = 30.0        # a starting copy may wait on a Keychain prompt before it serves
 # Loopback requests must never be routed through a system or environment proxy.
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -116,7 +115,7 @@ def healthy(runtime: dict) -> bool:
     try:
         if runtime.get("app") != "accountdeck2" or runtime.get("host") != "127.0.0.1":
             return False
-        if safe_mode():   # refused here too: tests and demos never contact the live service (PLAN §4.1)
+        if safe_mode():   # refused here too: tests and demos never contact the live service
             return False
         with _LOCAL.open(f"http://127.0.0.1:{int(runtime['port'])}/_health", timeout=1) as response:
             return json.load(response).get("app") == "accountdeck2"
@@ -224,7 +223,7 @@ def run_move_cli(args, paths) -> int:
 
 # ---- the app and the service ----
 
-def run_app(paths, *, port=None, open_browser=True, make_app=None) -> int:
+def run_app(paths, *, port=None, open_browser=True) -> int:
     """App mode, what the app bundle and its LaunchAgent run. A healthy service for this data folder already
     runs: open its dashboard (unless --no-browser) and exit 0. Otherwise this process becomes the service: HTTP
     server and engine on background threads, AppKit and the menu bar on the main thread, the dashboard opened
@@ -235,8 +234,8 @@ def run_app(paths, *, port=None, open_browser=True, make_app=None) -> int:
         raise SafetyViolation("The app is not started in safe mode.")
     runtime = read_runtime(paths.data_dir)
     if not healthy(runtime):
-        app = (make_app or make_mac_app)()
-        if serve(paths, port, app=app, open_browser=open_browser):
+        from accountdeck.platform.appkit import MacApp
+        if serve(paths, port, app=MacApp(), open_browser=open_browser):     # AppKit starts here, on the main thread
             return 0
         deadline = time.monotonic() + STARTUP_WAIT
         runtime = read_runtime(paths.data_dir)
@@ -248,12 +247,6 @@ def run_app(paths, *, port=None, open_browser=True, make_app=None) -> int:
     if open_browser:
         webbrowser.open(dashboard_address(runtime))    # Python pipes the URL to osascript on stdin
     return 0
-
-
-def make_mac_app():
-    """The AppKit application object; built here, on the main thread."""
-    from accountdeck.platform.appkit import MacApp
-    return MacApp()
 
 
 def serve_app(server, app) -> None:
@@ -278,8 +271,8 @@ def serve_app(server, app) -> None:
 
 
 def serve(paths, port=None, *, app=None, open_browser=False) -> bool | None:
-    """The live service (PLAN §2.2-2.3, §8.1). A second instance on the same data folder returns None at once;
-    one that cannot take the machine-wide owner lock runs read-only (§9.1). With `app` (app mode) the menu bar
+    """The live service. A second instance on the same data folder returns None at once; one that cannot take
+    the machine-wide owner lock runs read-only. With `app` (app mode) the menu bar
     item shows and AppKit keeps the main thread (`serve_app`); `open_browser` then opens the dashboard once the
     server is up. Shutdown order: menu bar, engine (operations, scheduler), server, runtime.json, owner lock."""
     from accountdeck import __version__, diagnostics
@@ -417,7 +410,7 @@ def set_autostart(enabled: bool) -> int:
 
 def run_demo(args) -> int:
     """Serves synthetic accounts from a temporary folder; safe mode forbids every real process, file and port
-    for this process and its children (PLAN §11.4)."""
+    for this process and its children."""
     os.environ["ACCOUNTDECK_SAFE_MODE"] = "1"
     os.environ["ACCOUNTDECK_DEMO"] = "1"
     demo = importlib.import_module("accountdeck.demo")
@@ -430,7 +423,7 @@ def run_demo(args) -> int:
         try:
             server = Server(("127.0.0.1", args.port or 0), engine)
             # The token only opens this synthetic demo, so printing the URL is safe.
-            url = f"http://127.0.0.1:{server.server_port}/#token={server.token}"
+            url = dashboard_address({"port": server.server_port, "token": server.token})
             print(f"AccountDeck 2 demo ({args.demo}, synthetic data only): {url}", flush=True)
             print("Press Ctrl+C to stop.", flush=True)
             if not args.no_browser:

@@ -1,8 +1,8 @@
 AccountDeck 2 for Mac
 
-Use your own Claude and Codex accounts on your own Mac login.
+Use your own Claude, Codex and Muse accounts on your own Mac login.
 Requires Apple silicon (M1 or newer), macOS Sonoma 14 or newer, and internet access.
-Install Claude Code, Claude Desktop, or Codex first. You can use any of them on its own.
+Install Claude Code, Claude Desktop, Codex, or Muse Code first. You can use any of them on its own.
 
 1. Double-click the zip in Finder to unzip it.
 2. Open AccountDeck2-mac and double-click Install AccountDeck.command.
@@ -28,11 +28,17 @@ Do not use sudo. Do not disable Gatekeeper system-wide.
 First run:
 - Claude Code: your current login is saved once verified. Use Add Account for more.
   Finish the sign-in in its new Terminal window, then close that window.
-- Claude Desktop / Codex: choose Save Current Account, or Add Account.
-  Codex needs file-based login storage. README.md explains how to set it.
+- Claude Desktop / Codex / Muse Code: choose Save Current Account, or Add Account.
+  Codex and Muse need file-based login storage. README.md explains how to set it.
 - Choose Switch beside a saved account. Review the plan before continuing.
+- Rename or remove any saved account from the ... menu in its row.
 - Auto-switch applies only to Claude Code. It starts on at 95% used and needs
   two accounts. Change it or turn it off in Settings > Auto-Switch.
+- "Use weekly allowance before it resets" also starts on. It can switch Claude Code
+  long before 95% to spend another account's week before that week resets.
+  Turn it off in Settings > Auto-Switch. README.md has the exact rule.
+- An account you pick yourself, or return to with Undo, is left alone for 2 hours
+  unless it runs out or needs sign-in.
 - Use AccountDeck to change accounts. Never use /login, /logout, or the client's
   Log Out to switch saved accounts: these can revoke a saved sign-in.
 

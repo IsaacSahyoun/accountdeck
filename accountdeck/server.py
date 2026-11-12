@@ -1,4 +1,4 @@
-"""The local HTTP server: dashboard files and the JSON API of PLAN §3.1.
+"""The local HTTP server: the dashboard's files and its JSON API.
 
 Security rules: listen on 127.0.0.1 only; every request must name exactly
 `Host: 127.0.0.1:<port>`; the bootstrap token (handed to the page in the URL fragment) is
@@ -28,9 +28,6 @@ STATIC_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".ico": "image/x-icon",
-    ".json": "application/json; charset=utf-8",
 }
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -51,25 +48,25 @@ ACTION_FAILED = "The action could not be completed. Your saved accounts are pres
 class EngineAPI(Protocol):
     """What the server needs from `accountdeck.engine.Engine`; called from HTTP handler threads.
 
-    Failures the user should see are raised as DeckError (codes of §3.1); anything else is a 500.
+    Failures the user should see are raised as DeckError; anything else is a 500.
     """
 
     @property
     def pending(self) -> dict | None:
-        """The running operation (§3.5); `/api/stop` answers 409 `busy` while it is set."""
+        """The running operation; `/api/stop` answers 409 `busy` while it is set."""
 
     def snapshot(self, rev: int | None) -> dict | None:
-        """The state of §3.3, or None when `rev` equals the current revision (answered 304)."""
+        """The dashboard state, or None when `rev` equals the current revision (answered 304)."""
 
     def action(self, name: str, body: dict) -> dict | None:
-        """Answers `switch-plan` and other quick actions inline and enqueues operations (§3.2).
+        """Answers `switch-plan` and other quick actions inline and enqueues operations.
 
         Returns the fields merged into `{"ok": true}`. A DeckError may carry `retry_after`
         and, for `confirm_required`/`needs_reconfirm`, a fresh `plan` for the error body.
         """
 
     def settings(self) -> dict:
-        """The settings of §3.6 as the dashboard sees them."""
+        """The settings as the dashboard sees them."""
 
     def update_settings(self, patch: dict) -> None:
         """Validates and applies a patch; unknown keys or bad values raise DeckError `invalid`."""
@@ -78,7 +75,7 @@ class EngineAPI(Protocol):
         """`{"account", "readings", "snapshots"}` newer than `since`, at most `limit` (≤ 700) each."""
 
     def manifest(self, op: str | None) -> dict | None:
-        """A per-switch manifest (§10.2), the latest when `op` is None; None when there is none."""
+        """A per-switch manifest, the latest when `op` is None; None when there is none."""
 
     def diagnostics_tail(self, lines: int) -> dict:
         """`{"lines": [redacted log lines], "path": log file, "health": Engine.health()}` for the last
@@ -91,15 +88,16 @@ class EngineAPI(Protocol):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
+    # A browser opens one connection per file of the dashboard, many at once. Python's default waiting line
+    # of 5 drops some of them, and the page then stays half drawn. 128 is the most macOS allows by default.
+    request_queue_size = 128
 
-    def __init__(self, address: tuple[str, int], engine: EngineAPI, token: str | None = None, *,
-                 web_root: Path = WEB_ROOT):
+    def __init__(self, address: tuple[str, int], engine: EngineAPI, token: str | None = None):
         if address[0] != "127.0.0.1":
             raise ValueError("AccountDeck 2 listens on 127.0.0.1 only.")
         self.engine = engine
         self.token = token or secrets.token_urlsafe(32)
         self.session = secrets.token_urlsafe(32)
-        self.web_root = Path(web_root).resolve()
         super().__init__(address, Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         # Browsers share cookies between the ports of one host (RFC 6265 §8.5); a per-port name keeps
@@ -203,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(200, body)
 
     def _static(self, relative: str):
-        file = _static_file(self.server.web_root, relative)
+        file = _static_file(WEB_ROOT, relative)
         if file is None:
             raise _not_found()
         self._send(200, file.read_bytes(), STATIC_TYPES[file.suffix.lower()])

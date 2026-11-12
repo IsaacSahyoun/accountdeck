@@ -1,8 +1,8 @@
 /* AccountDeck 2 — the Claude Code (terminal) accounts section. Every open terminal follows the
  * account in use; auto-switch moves them all to the next account before a limit runs out.
  * This file owns the section's header (sort and Add Account), its notes (Undo after an automatic
- * switch, read-only mode, an account being added), the table frame and the account actions
- * (add, rename, remove, leave out). rows.js draws the rows. */
+ * switch, read-only mode, an account being added), the table frame and the two actions only terminal
+ * accounts have (add, leave out). rows.js draws the rows. */
 (function () {
   'use strict';
   const AD = window.AD = window.AD || {};
@@ -37,41 +37,6 @@
         const result = await action('add');
         if (result) AD.dom.closeModal();
       }, { kind: 'primary', attrs: { 'data-autofocus': '' } })] });
-  }
-
-  function rename(account) {
-    const R = T.rename;
-    const input = el('input', { class: 'text-input', value: account.label, maxlength: 80, 'aria-label': R.label,
-      'data-autofocus': '', autocomplete: 'off', spellcheck: 'false' });
-    const save = async () => {
-      const label = input.value.trim();
-      if (!label || label === account.label) {
-        AD.dom.closeModal();
-        return;
-      }
-      const result = await action('rename', { id: account.id, label });
-      if (result) AD.dom.closeModal();
-    };
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        save();
-      }
-    });
-    AD.dom.openModal({ title: R.title, body: input, view: 'cli-rename', size: 'alert',
-      actions: [AD.dom.button(STRINGS.button.cancel, () => AD.dom.closeModal()), AD.dom.button(R.save, save, { kind: 'primary' })] });
-    input.select();
-  }
-
-  function remove(account) {
-    const R = T.remove;
-    AD.dom.openModal({ title: fill(R.title, { label: mask(account.label) }), view: 'cli-remove', size: 'alert',
-      body: el('p', { text: R.body }),
-      actions: [AD.dom.button(STRINGS.button.cancel, () => AD.dom.closeModal(), { attrs: { 'data-autofocus': '' } }),
-        AD.dom.button(R.button, async () => {
-          const result = await action('remove', { id: account.id });
-          if (result) AD.dom.closeModal();
-        }, { kind: 'danger' })] });
   }
 
   async function exclude(account) {
@@ -262,11 +227,11 @@
     const ctx = {
       nowMs, display: A.display(state), threshold: auto.enabled && Number.isFinite(auto.threshold) ? auto.threshold : null,
       fableLeader: A.fableLeader(A.fableBoard(accounts, nowMs)), nextId: A.nextUp(state),
-      bestId: best ? best.account.id : null, readonly,
+      bestId: best ? best.account.id : null, readonly, busy: !!state.pending,
     };
     AD.rows.patchRows(list, A.sorted(accounts, mode, nowMs), state, ctx);
     washRefills(accounts, nowMs);
   }
 
-  AD.terminal = { render, add, rename, remove, exclude };
+  AD.terminal = { render, add, exclude };
 })();

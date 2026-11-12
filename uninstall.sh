@@ -66,11 +66,12 @@ main() {
         [ "$answer" = delete ] || die "you did not type delete. Nothing was changed."
     fi
 
-    # Open at login: unloading the job also stops a copy that launchd started at login.
+    # Unloading the Open at login job stops a copy that launchd started at login. Any other copy has to be quit
+    # by hand. The agent file is removed only once the app is gone, so an uninstall that stops here leaves Open
+    # at login switched on: macOS loads the file again at the next login.
     if [ "$manage" = true ]; then
         launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
     fi
-    rm -f "$agent"
 
     local waited=0
     while pgrep -U "$(id -u)" -f -- "$appdir/run.py" >/dev/null 2>&1; do
@@ -78,6 +79,7 @@ main() {
         sleep 1
         waited=$((waited + 1))
     done
+    rm -f "$agent"
 
     if [ -e "$app" ]; then
         if [ "$manage" = true ] && [ -x "$LSREGISTER" ]; then

@@ -142,13 +142,5 @@
     return items;
   }
 
-  /** Remove a frozen row (an account still on the PC) and its history from this Mac. */
-  function remove(account) {
-    AD.dom.openModal({ title: `Remove “${AD.dom.maskEmail(account.label)}”?`, view: VIEW, size: 'alert',
-      body: p('This removes the saved row and its history from AccountDeck on this Mac.'),
-      actions: [AD.dom.button(AD.format.STRINGS.button.cancel, () => AD.dom.closeModal(), { attrs: { 'data-autofocus': '' } }),
-        submit('Remove', async () => { await AD.api.action('remove', { id: account.id }); AD.dom.closeModal(); }, { kind: 'danger' })] });
-  }
-
-  AD.move = { open: () => openImport(), bannerItems, remove };
+  AD.move = { open: () => openImport(), bannerItems };
 })();

@@ -1,13 +1,13 @@
 # AccountDeck 2 for Mac
 
-AccountDeck 2 keeps Claude and Codex usage, reset times, and saved logins in one local dashboard.
+AccountDeck 2 keeps Claude, Codex and Muse usage, reset times, and saved logins in one local dashboard.
 It lives in your menu bar. Use it with your own accounts on your own Mac user account.
 
 ## Requirements
 
 - An Apple silicon Mac (M1 or newer), with macOS Sonoma 14 or newer.
 - Internet access for the first install and for sign-in and usage checks.
-- Claude Code, Claude Desktop, or Codex. Use whichever you have; you do not need all three.
+- Claude Code, Claude Desktop, Codex, or Muse Code. Use whichever you have; you do not need all four.
   Install and sign in to each client you want to manage. Codex needs its command-line tool.
 
 The installer downloads a pinned Python runtime and its libraries. You do not need Python,
@@ -32,20 +32,36 @@ Or choose **Add Account**. A separate Terminal window opens for sign-in. Close t
 when sign-in is finished; only then is the account saved. A private browser window helps you
 choose a different account. Repeat to save more accounts.
 
-**Claude Desktop and Codex:** Their sections show the current login when it can be read.
+**Claude Desktop, Codex and Muse Code:** Their sections show the current login when it can be read.
 Choose **Save Current Account** to keep it, or **Add Account** for another login.
 Desktop may close briefly to save a complete sign-in. Codex adds accounts in a separate folder.
+Codex and Muse must keep their login in a file; see Help below.
 If a client is not installed, leave its section alone.
 
 **Switch:** Choose **Switch…** beside a saved account and review the plan. Claude Code terminals
 follow the new login on their next message. Desktop switches may close and reopen Claude;
-save Chat and Cowork work first. Codex switches wait for its sessions to close.
+save Chat and Cowork work first. Codex and Muse switches wait for their sessions to close.
 Settings, MCP definitions, plugins, projects, and transcripts stay shared.
+
+**Rename or remove:** Every saved account, for every client, has a **More** menu (the … button
+in its row) with **Rename…** and **Remove…**. Remove makes AccountDeck forget the saved login.
+The account itself is not affected, and you can add it again. The Claude Code account your
+terminals are using cannot be removed; switch to another one first.
 
 **Auto-switch:** This applies to Claude Code only. It starts on at 95% used and needs at least
 two saved accounts. Change it in **Settings → Auto-Switch**, or turn it off. It waits for a usable
 account with a recent reading. **Leave out** excludes an account. An automatic switch has a
-10-minute **Undo**. Desktop and Codex only switch when you ask.
+10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
+
+**Early switch:** **Use weekly allowance before it resets** also starts on. With it on, AccountDeck
+can move Claude Code to another account long before 95%, for example when the account in use is
+only 20% used. It does this when the other account's weekly limit resets within 24 hours, sooner
+than the weekly limit of the account in use, and at least 20% of that week is still unused.
+This happens at most once every 2 hours. Turn it off in **Settings → Auto-Switch** if you want
+switches only at your own percentage.
+
+**Your own choice:** When you switch Claude Code accounts yourself, or choose **Undo**, auto-switch
+leaves that choice alone for 2 hours. It still switches if that account runs out or needs sign-in.
 
 **Start at login:** Turn it on in **Settings → Menu Bar & Login**. Closing the dashboard leaves
 usage checks running. Choose **Quit AccountDeck 2** from its menu to stop them.
@@ -89,6 +105,11 @@ that AccountDeck saved. Use **Sign In Again** if a saved login expires or is rev
 do not add a duplicate). Then sign in to Codex with file storage and choose **Save Current Account**.
 Keychain-backed Codex logins cannot be switched by this app. Do not share `auth.json`.
 
+**Muse cannot save the current account.** Muse must keep its login in a file. Run
+`env -u TBH_CREDENTIAL_BACKEND muse logout`, add `export TBH_CREDENTIAL_BACKEND=file` to `~/.zshrc`,
+open a new terminal, and run `muse login`. Then choose **Save Current Account**.
+Or use **Add Account** to sign in to a Muse account from AccountDeck.
+
 **Claude Code is read-only.** Custom `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`
 settings disable terminal login management. Another running copy of AccountDeck can also make it
 read-only. Quit the other copy and use your normal Claude Code configuration.
@@ -108,23 +129,18 @@ from GitHub and libraries from PyPI. The dashboard uses no CDNs.
 
 ## Development
 
-In a source checkout, see `AGENTS.md` for safety rules. Never develop against real logins or the live service.
-From the repository root, use the installed runtime:
+Never develop against real logins or the live service. From the repository root, use the installed runtime.
+The tests and the demo run on synthetic accounts only:
 
 ```sh
 PY="$HOME/Library/Application Support/AccountDeck2/runtime/python/bin/python3.14"
 ACCOUNTDECK_SAFE_MODE=1 "$PY" -E -s -m unittest discover -s tests -t .
 "$PY" -E -s run.py --demo first-run --port 0 --no-browser
+"$PY" -E -s tools/slop_scan.py
 ```
 
-Build and test the shareable package:
-
-```sh
-tools/build_mac_package.sh
-tools/mac_package_test.sh
-```
-
-The builder writes `dist/AccountDeck2-mac.zip`. It includes only distribution files, rejects
-personal data and unexpected files in the app tree, and preserves executable permissions.
-The package test installs and uninstalls under a temporary prefix in safe mode.
-`PY` can select another compatible development runtime. No live install is needed for package testing.
+The dashboard tests draw the page in a headless Chrome. They look for one in `$ACCOUNTDECK_TEST_CHROME`,
+in Playwright's download folder and in `/Applications`, and skip when there is none.
+`tools/slop_scan.py` lists code nothing uses. `PY` can select another compatible development runtime.
+To try `install.sh` or `uninstall.sh` without touching your real install, pass `--prefix DIR`:
+everything then goes below `DIR`, and `launchctl` and the Finder registration are skipped.

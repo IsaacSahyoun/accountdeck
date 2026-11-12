@@ -149,10 +149,6 @@
 
   // ---- #banners: pending, report, sign-in, server banners ----------------------------------------
 
-  function sessionNames(list) {
-    return list.map((s) => `“${s.name}” (${STRINGS.session[s.status] || STRINGS.session.unknown})`).join(', ');
-  }
-
   function pendingItem(state) {
     const pending = state.pending;
     const label = mask(pending.label || '');
@@ -161,7 +157,7 @@
     const title = switching ? fill(STRINGS.progress.title, { label }) : (pending.message || STRINGS.modal.progressTitle);
     let message = active ? active.label : (switching ? pending.message : '');
     if (pending.waiting_on && pending.waiting_on.length) {
-      message = fill(STRINGS.progress.waitingOn, { names: sessionNames(pending.waiting_on) });
+      message = fill(STRINGS.progress.waitingOn, { names: AD.format.sessionNames(pending.waiting_on) });
     }
     const reconfirm = pending.phase === 'needs_reconfirm';
     if (reconfirm) message = pending.message || STRINGS.modal.reconfirm;

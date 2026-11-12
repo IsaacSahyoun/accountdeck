@@ -178,5 +178,5 @@
     if (polling.active && !polling.inFlight) schedule();
   }
 
-  AD.api = { get, post, action, settings, startPolling, stopPolling, setFast, poll, ApiError };
+  AD.api = { get, post, action, settings, startPolling, stopPolling, setFast, poll };
 })();

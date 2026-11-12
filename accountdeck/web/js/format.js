@@ -18,7 +18,6 @@
   const STRINGS = freeze({
     app: 'AccountDeck 2',
     apps: { claude: 'Claude Desktop', codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse Code' },
-    provider: { claude: 'Claude', codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse' },
 
     shell: {
       version: 'AccountDeck {version}', updated: 'Updated {age} ago', updatedNow: 'Updated just now',
@@ -64,12 +63,12 @@
       fableRoom: '{label} room', fableFallback: 'Fable 5.1 weekly', noFable: 'No readings yet',
       noFableLine: 'They appear after a Fable 5.1 message in Claude Code.',
       leaderLine: '{n}% left · resets {clock}', tie: 'Tied for the most room', fableTag: 'Most Fable room',
-      left: '{n}% left', notReported: 'not reported', show: 'Show {label} in the list', rank: '{n}',
+      left: '{n}% left', notReported: 'not reported', show: 'Show {label} in the list',
     },
 
     accounts: {
       title: 'Claude Code accounts', count: '{n} accounts', countOne: '1 account',
-      sub: 'Every open terminal follows the account in use.', add: 'Add Account', sortLabel: 'Sort accounts',
+      sub: 'Every open terminal follows the account in use.', add: 'Add Account',
       sorts: {
         room: 'Most room left', fable: 'Most Fable 5.1 room', weekly: 'Most weekly room',
         session: 'Most 5-hour room', reset: 'Soonest weekly reset', manual: 'My order',
@@ -77,26 +76,39 @@
       emptyTitle: 'No terminal accounts yet',
       emptyText: 'Your current Claude Code login is saved automatically when it can be verified. To start, install Claude Code and sign in, or choose Add Account. Use a private browser window to choose a different account.',
       unavailableTitle: "Claude Code accounts aren't available", unavailableText: 'This build has no Claude Code (terminal) support.',
-      colAccount: 'Account', switch: 'Switch', signIn: 'Sign In Again', more: 'More actions for {label}',
-      blockedSignin: 'Usage is unavailable until you sign in again.',
-      liveExpired: 'Usage updates after your next message in Claude Code.',
-      checked: 'Checked {age} ago', paused: 'Checks paused until {clock}',
+      colAccount: 'Account',
       tip: 'Switch accounts here, not with /login or /logout in Claude Code. Open terminals follow on their next message.',
       readOnlyOther: 'Another AccountDeck 2 is managing your sign-ins. Quit that copy to make changes here.',
       undo: 'Undo', undoLeft: 'Undo available for {countdown}', cancelAdd: 'Cancel',
-      menu: {
-        leaveOut: 'Leave Out of Auto-Switch', include: 'Let Auto-Switch Use It', rename: 'Rename…', remove: 'Remove…',
-        removeActive: 'Switch to another account before removing this one.',
-      },
       addSheet: {
         title: 'Add a Terminal Account',
         body: 'A Terminal window opens. Sign in there with the account you want to add, then close that window to finish.',
         hint: 'If the browser signs in to the wrong account, use a private window.', open: 'Open Terminal',
       },
+    },
+
+    // One account row, the same for every client.
+    row: {
+      switch: 'Switch', switchReview: 'Switch…', signIn: 'Sign In Again', save: 'Save Current Account',
+      more: 'More actions for {label}',
+      blockedSignin: 'Usage is unavailable until you sign in again.',
+      liveExpired: 'Usage updates after your next message in Claude Code.',
+      checked: 'Checked {age} ago', paused: 'Checks paused until {clock}',
+      setup: {
+        importing: 'Open Claude Desktop once on this Mac to finish importing this account.',
+        saving: 'Close Claude Desktop, then choose Save Current Account to finish saving this login.',
+        signIn: 'Use Add Account to sign in to this account again before switching.',
+      },
+      menu: {
+        leaveOut: 'Leave Out of Auto-Switch', include: 'Let Auto-Switch Use It', rename: 'Rename…', remove: 'Remove…',
+        removeActive: 'Switch to another account before removing this one.',
+      },
       rename: { title: 'Rename Account', label: 'Account name', save: 'Rename' },
       remove: {
         title: 'Remove “{label}”?', button: 'Remove',
-        body: "AccountDeck forgets this terminal login. The account itself isn't affected, and you can add it again later.",
+        body: "AccountDeck forgets this {app} login. The account itself isn't affected, and you can add it again later.",
+        inUse: '{app} stays signed in to it, and the account shows here as not saved.',
+        elsewhere: 'This removes the saved row and its history from AccountDeck on this Mac.',
       },
     },
 
@@ -108,7 +120,7 @@
     button: {
       switchIdle: 'Switch When Claude Is Idle', switchNow: 'Switch Now', switchAnyway: 'Switch Now Anyway',
       continueIdle: 'Continue When Claude Is Idle', continueNow: 'Continue Now', continueAnyway: 'Continue Anyway',
-      cancel: 'Cancel', done: 'Done', close: 'Close', hide: 'Hide', progress: 'Show Progress', review: 'Review…',
+      cancel: 'Cancel', done: 'Done', hide: 'Hide', progress: 'Show Progress', review: 'Review…',
       retry: 'Try Again', viewReport: 'Show Report', explain: 'Explain Last Switch', recover: 'Recover…',
       refresh: 'Refresh', resume: 'Resume Checks', dismiss: 'Dismiss', reset: 'Reset', quit: 'Quit',
       endCodex: 'End Session', waitCodex: 'Wait for Them to Finish', importPC: 'Import from PC…',
@@ -125,7 +137,7 @@
       sessionsOne: '1 Code session is open: {names}. Switching will end it.',
       running: 'Running now', will: 'What will happen', stays: 'What stays with you', bound: 'Tied to each account',
       headsUp: 'Heads-up', rowNow: 'Now', rowAfter: 'After', remember: "Don't ask again when Claude is idle",
-      blocked: 'This cannot start yet.', unsavedHint: 'You can switch to it after the next switch away from it.',
+      blocked: 'This cannot start yet.',
       consumers: '{n} Codex sessions are running. Switch when they finish, or end them one by one.',
       museConsumers: '{n} Muse sessions are open. The switch waits until you close them.',
       progressTitle: 'Working…',
@@ -196,8 +208,7 @@
       testButton: 'Send Test', testSent: 'Test notification sent.',
       mac: 'Mac notifications are off',
       macOff: 'macOS is blocking notifications from AccountDeck 2. Choose Turn On Notifications… in its menu bar item, or allow them in System Settings › Notifications.',
-      menuBar: 'Show in the menu bar', menuBarHint: 'The menu bar item shows the terminal room left. Click it for every account.',
-      login: 'Open at login', loginHint: 'Listed in System Settings › General › Login Items, where you can also turn it off.',
+      loginHint: 'Listed in System Settings › General › Login Items, where you can also turn it off.',
       pause: 'Pause usage checks', pauseHint: 'Background usage readings stop until you turn this back on.',
       importPC: 'Import accounts from your PC', importPCHint: 'Open an encrypted .adeck bundle exported by AccountDeck 2 on Windows.',
       shortcuts: 'Keyboard shortcuts', shortcutsButton: 'Show…', diagnostics: 'Diagnostics', diagnosticsButton: 'Show…',
@@ -248,6 +259,11 @@
     return isNum(ts) ? ageText(nowMs / 1000 - ts) : '—';
   }
 
+  /** Open sessions as words: “name” (working), “other” (idle). */
+  function sessionNames(sessions) {
+    return sessions.map((s) => `“${s.name}” (${STRINGS.session[s.status] || STRINGS.session.unknown})`).join(', ');
+  }
+
   /** "Max" from "max": a plan name for display. */
   function capitalised(text) {
     return typeof text === 'string' && text ? text[0].toUpperCase() + text.slice(1) : null;
@@ -262,14 +278,13 @@
     status_icon: 'Show in the menu bar',
     status_icon_hint: 'The menu bar item shows the terminal room left. Click it for every account.',
     start_on_login: 'Open at login',
-    quit_hint: 'Quit Claude from its menu and try again.',
     reopen_hint: 'Reopen AccountDeck 2 from Applications.',
     open_hint: 'Open AccountDeck 2 from Applications.',
     closed_hint: 'Open it again from Applications to see your accounts.',
     system_error: "macOS didn't allow that. Try again.",
   });
   // Server labels that are allowed to replace the built-in copy (the rest stay the page's own).
-  const SERVER_LABELS = new Set(['quit_hint', 'reopen_hint', 'open_hint', 'closed_hint', 'system_error', 'status_icon_hint']);
+  const SERVER_LABELS = new Set(['reopen_hint', 'open_hint', 'closed_hint', 'system_error', 'status_icon_hint']);
   let platform = { features: {}, labels: {}, notifications: null };
   // The app's own window (a WKWebView) names itself in the user agent. It has no browser
   // notifications; Mac notifications come from the menu bar item instead.
@@ -317,5 +332,5 @@
     return message;
   }
 
-  AD.format = { STRINGS, fill, ageText, ago, capitalised, setPlatform, feature, label, errorText, appWindow, notificationState };
+  AD.format = { STRINGS, fill, ageText, ago, sessionNames, capitalised, setPlatform, feature, label, errorText, appWindow, notificationState };
 })();

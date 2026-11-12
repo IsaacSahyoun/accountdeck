@@ -115,5 +115,5 @@
       icon ? AD.dom.svgIcon(icon) : null, AD.dom.el('span', { text }));
   }
 
-  AD.meter = { meter, limit, badge, shown };
+  AD.meter = { meter, limit, badge };
 })();

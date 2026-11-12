@@ -151,5 +151,5 @@
 
   window.addEventListener('resize', () => close(false));
 
-  AD.menu = { open, close, isOpen };
+  AD.menu = { open };
 })();

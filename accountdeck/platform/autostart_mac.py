@@ -1,4 +1,4 @@
-"""Open at login on macOS (docs/mac/PLAN.md §1.9, D3; docs/mac/PLATFORM-MAC.md §4): a user LaunchAgent.
+"""Open at login on macOS: a user LaunchAgent.
 
 `~/Library/LaunchAgents/local.accountdeck2.plist` runs the app bundle's launcher
 (`AccountDeck 2.app/Contents/MacOS/AccountDeck2 --app --no-browser`), never bare Python, so the process
@@ -12,7 +12,7 @@ launchctl may be used. A `--prefix` install (tests) writes `"manage": false`, so
 in the prefix and launchctl is never run for it. Running from a checkout without install.json, start
 at login is unavailable: there is no app bundle to start.
 
-Status mapping (PLATFORM-MAC.md §4): `registered` = our plist exists with our label and arguments;
+Status mapping: `registered` = our plist exists with our label and arguments;
 `command` = its arguments, shell-quoted; `approved` = False when `launchctl print-disabled` lists the
 label as disabled or `bootstrap` fails with error 5 (switched off under System Settings › Login
 Items), otherwise None.
@@ -43,7 +43,7 @@ from ..config import SafetyViolation
 from ..core import DeckError
 
 LABEL = "local.accountdeck2"
-BUNDLE_ID = "local.accountdeck2"        # PLAN D3: Info.plist CFBundleIdentifier and the agent's association
+BUNDLE_ID = "local.accountdeck2"        # Info.plist CFBundleIdentifier and the agent's association
 ARGS = ("--app", "--no-browser")
 LAUNCHER_TAIL = ("AccountDeck 2.app", "Contents", "MacOS", "AccountDeck2")
 LAUNCHCTL = "/bin/launchctl"
@@ -145,7 +145,7 @@ class Launchctl:
 
 
 def agent_plist(layout: Layout) -> dict:
-    """The LaunchAgent (PLATFORM-MAC.md §4) with absolute paths only: launchd expands neither ~ nor $HOME."""
+    """The LaunchAgent, with absolute paths only: launchd expands neither ~ nor $HOME."""
     log = str(layout.logs / LOG_NAME)
     return {
         "Label": LABEL,
