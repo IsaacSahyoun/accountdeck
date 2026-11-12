@@ -18,8 +18,10 @@ from dataclasses import dataclass, field
 import re
 import time
 
+from . import waiting
 from .config import SafetyViolation
 from .core import DeckError
+from .operations import OperationCancelled
 from .platform import facts_mac
 from .procs import MAX_DESKTOP_ROWS, READY_FOR_QUIT, ProcessInfo, ProcessSet, desktop_main
 
@@ -85,12 +87,14 @@ class StopLadder:
 
     # ---- T0 ----
     def _gate(self, token, plan_set, cancel, progress):
-        """(desktop rows, Code rows) to stop, or the StopResult that ends the job without a signal."""
+        """(desktop rows, Code rows) to stop, or the StopResult that ends the job without a signal. In "idle"
+        mode it waits until every Code session is idle (waiting.until_idle, so not past the confirmation)."""
         if token is None:
             return StopResult(False, "manual", detail=MANUAL_MESSAGE)
         idle_state: dict = {}
         confirmed = set(plan_set.pairs)
-        while True:
+
+        def look():
             kinds = self.procs.classify(self.procs.snapshot())
             desktop, code = kinds["claude_desktop"], kinds["claude_code"]
             if kinds["claude_unknown"]:
@@ -103,20 +107,26 @@ class StopLadder:
                 return StopResult(False, "aborted", detail=SELF_PROTECT_MESSAGE)
             if set(ProcessSet.of(desktop + code).pairs) - confirmed:
                 return StopResult(False, "reconfirm", detail=RECONFIRM_MESSAGE)
-            if token.mode != "idle":
-                break
-            report = self.activity.report(self.paths, self.procs, now=time.time(),
-                                          idle_hold_s=self.timings.idle_hold, state=idle_state)
-            if report.all_idle:
-                break
-            self.waiting_on = [{"pid": s.pid, "name": s.name, "status": s.status} for s in report.blockers]
-            progress("wait", _waiting_detail(report.blockers))
+            if token.mode == "idle":
+                report = self.activity.report(self.paths, self.procs, now=time.time(),
+                                              idle_hold_s=self.timings.idle_hold, state=idle_state)
+                if not report.all_idle:
+                    self.waiting_on = [{"pid": s.pid, "name": s.name, "status": s.status} for s in report.blockers]
+                    progress("wait", _waiting_detail(report.blockers))
+                    return None
+            return desktop, code
+
+        def pause():
             if cancel.wait(self.timings.idle_poll):
-                return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
-        self.waiting_on = []
-        if cancel.is_set():
+                raise OperationCancelled()
+        try:
+            found = waiting.until_idle(token, "Claude", look, pause)
+        except OperationCancelled:
             return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
-        return desktop, code
+        self.waiting_on = []
+        if not isinstance(found, StopResult) and cancel.is_set():
+            return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
+        return found
 
     # ---- T1a / T2 ----
     def _stop(self, token, desktop, code, cancel, progress) -> StopResult:

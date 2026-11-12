@@ -10,7 +10,7 @@ import tempfile
 import time
 import uuid
 
-from . import recovery
+from . import recovery, waiting
 from .rules import plan_current, plan_target
 from .core import DeckError, FileTransaction, is_frozen, read_json
 from .diagnostics import Manifest
@@ -138,18 +138,9 @@ class CodexSwitch(Operation):
                 if is_frozen(self.target):
                     raise DeckError("This account's sign-in belongs to another computer.", "read_only")
                 with self.step("wait", phase="waiting_idle", message="Waiting for Codex sessions to close…"):
-                    allowed = set(self.token.pairs)
-                    while True:
-                        consumers, daemons, found = processes(ctx)
-                        if not set(found.pairs) <= allowed:
-                            raise DeckError("The Codex process set changed. Review the switch again.", "needs_reconfirm",
-                                            plan=plan_codex_switch(ctx, self.account, ignore_op=self.id))
-                        if not consumers:
-                            break
-                        if self.consent != "idle":
-                            raise DeckError("Close the Codex sessions or choose Wait.", "busy")
-                        self.set_waiting([{"pid": r.pid, "name": r.name, "status": "busy"} for r in consumers])
-                        self.sleep(.25)
+                    _, daemons, _ = waiting.for_sessions(
+                        self, "Codex", lambda: processes(ctx),
+                        lambda: plan_codex_switch(ctx, self.account, ignore_op=self.id))
                     engine.sense_active()
                     if not engine.identity_known["codex"] or engine.active_identity["codex"] != self.claimed.entry["identity"]:
                         raise DeckError("The outgoing sign-in changed. Review the switch again.", "identity")

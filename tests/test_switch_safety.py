@@ -507,6 +507,39 @@ class RunnerLanesTest(unittest.TestCase):
         self.assertFalse(self.runner.busy)
 
 
+class WaitDeadlineTest(DeckCase):
+    """Act on 4: a wait for sessions ends when the confirmation it runs on does, for every client that waits."""
+
+    def setUp(self):
+        super().setUp()
+        self.engine.timings = dataclasses.replace(self.engine.timings, consent_ttl=1.0)
+
+    def assert_the_wait_ended(self, provider, outgoing):
+        self.assertTrue(self.engine.runner.wait(15), "the wait had no time limit")
+        report = self.engine.snapshot()["report"]
+        self.assertEqual((report["outcome"], report["error"]["code"]), ("failed", "stale_plan"), report)
+        self.assertIn("still open when your confirmation ran out", report["error"]["message"])
+        self.assert_consistent(provider, outgoing)
+        self.assertEqual(self.pending_records(), [])
+
+    def test_a_codex_wait(self):
+        side, main = self.add_codex_account(), self.active("codex")
+        self.act("codex", "switch", side, consent="idle", wait=False)
+        self.assert_the_wait_ended("codex", self.identity(main["id"]))
+
+    def test_a_desktop_wait(self):
+        outgoing = self.active("claude")
+        self.act("claude", "switch", self.spare("claude")["id"], consent="idle", wait=False)
+        self.assert_the_wait_ended("claude", self.identity(outgoing["id"]))
+        self.assertTrue(self.procs.claude_desktop(), "Claude was closed though the wait never ended")
+
+    def test_a_muse_wait(self):
+        outgoing = self.active("muse")
+        self.procs.add_muse("muse_session")
+        self.act("muse", "switch", self.spare("muse")["id"], consent="idle", wait=False)
+        self.assert_the_wait_ended("muse", self.identity(outgoing["id"]))
+
+
 class CodexSwitchTest(DeckCase):
     def setUp(self):
         super().setUp()

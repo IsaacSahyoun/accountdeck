@@ -15,7 +15,7 @@ import tempfile
 import time
 import urllib.parse
 
-from . import recovery
+from . import recovery, waiting
 from .contract import UNSAVED_IDS
 from .core import DeckError, FileTransaction, atomic_write, is_frozen, json_bytes
 from .diagnostics import Manifest
@@ -179,21 +179,8 @@ class MuseSwitch(Operation):
                     if is_frozen(self.target):
                         raise DeckError("This account's sign-in belongs to another computer.", "read_only")
                     with self.step("wait", phase="waiting_idle", message="Waiting for Muse sessions to close…"):
-                        allowed = set(self.token.pairs)
-                        while True:
-                            consumers, found = processes(ctx)
-                            if not set(found.pairs) <= allowed:
-                                raise DeckError("The Muse process set changed. Review the switch again.", "needs_reconfirm",
-                                                plan=plan_muse_switch(ctx, self.account, ignore_op=self.id))
-                            if not consumers:
-                                break
-                            if self.consent != "idle":
-                                raise DeckError("Close your Muse sessions or choose Wait.", "busy")
-                            if time.time() >= self.token.expires:      # every other action waits behind this one
-                                raise DeckError("Muse sessions stayed open too long. Close them, then switch again.",
-                                                "stale_plan")
-                            self.set_waiting([{"pid": r.pid, "name": r.name, "status": "busy"} for r in consumers])
-                            self.sleep(.25)
+                        waiting.for_sessions(self, "Muse", lambda: processes(ctx),
+                                             lambda: plan_muse_switch(ctx, self.account, ignore_op=self.id))
                         engine.sense_active()
                         if not engine.identity_known["muse"] or engine.active_identity["muse"] != self.claimed.entry["identity"]:
                             raise DeckError("The outgoing sign-in changed. Review the switch again.", "identity")
