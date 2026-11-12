@@ -1,6 +1,7 @@
 """What AccountDeck measures and decides, on synthetic data: the terminal auto-switch rule as a decision table,
 and usage readings, refills and account upkeep for all four clients. Builder B's file (2026-11-12 refactor)."""
 import copy
+import http.server
 from pathlib import Path
 import threading
 import time
@@ -11,6 +12,7 @@ from tests import support
 
 from accountdeck import cli_policy, demo, fixtures, move_bundle, move_import
 from accountdeck.providers import errors
+from accountdeck.providers import http as provider_http
 from accountdeck.scheduler import RefreshScheduler, Target
 from accountdeck.usage import claude_usage, muse_usage
 
@@ -467,6 +469,39 @@ class RetryAfterTest(unittest.TestCase):
         self.assertEqual(seconds("Wed, 21 Oct 2015 07:28:00 GMT", now=1445412480.0 - 90), 90.0)
         self.assertEqual((errors.rate_limit_wait(None), errors.rate_limit_wait(120.0)), (900, 1020.0))
         self.assertEqual(errors.ProviderError("rate_limited").retry_after, 900)
+
+    def refused(self, retry_after):
+        """The error `http.request` raises when a loopback server answers 429 with this Retry-After header."""
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(429)
+                self.send_header("Retry-After", retry_after)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        host = f"127.0.0.1:{server.server_address[1]}"
+        provider_http.register_test_host(host)
+        try:
+            with self.assertRaises(errors.ProviderError) as caught:
+                provider_http.request("GET", f"http://{host}/usage", timeout=5)
+        finally:
+            provider_http.unregister_test_host(host)
+            server.shutdown()
+            server.server_close()
+        return caught.exception
+
+    def test_no_answer_pauses_an_account_for_more_than_an_hour(self):
+        """Noted 12. `Retry-After: 99999999` used to pause the account for 3.2 years."""
+        self.assertEqual((self.refused("120").kind, self.refused("120").retry_after), ("rate_limited", 1020.0))
+        self.assertEqual(self.refused("99999999").retry_after, 3600)
+        self.assertEqual(self.refused("Fri, 01 Jan 2100 00:00:00 GMT").retry_after, 3600)
+        self.assertEqual(errors.ProviderError("rate_limited", retry_after=4000).retry_after, 3600)
+        self.assertEqual(errors.ProviderError("blocked").retry_after, 1800)
 
 
 # ---- the PC move import ----
