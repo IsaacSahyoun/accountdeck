@@ -4,9 +4,7 @@ classification and the Now band.
 
 The rules the state contract checks are the very functions `contract.validate_state` applies
 (`rules.band`, `rules.pace`, `rules.window_state`, `rules.pick_binding`, `rules.headline`, `rules.strip`, ...), so an engine
-snapshot, a fixture and the validator cannot drift apart; the functions named as in the plan
-(severity, window_state, age_tier, pace, binding, headline, resetting_soon, now_band) give them
-plan-shaped signatures. Everything here is pure: the caller passes `now`, the settings and the
+snapshot, a fixture and the validator cannot drift apart. Everything here is pure: the caller passes `now`, the settings and the
 previous recommender picks, and nothing reads a clock, a file or the network. Unknown is never 0:
 a window without a percentage stays `None`, a passed reset hides the percentage until a fresh
 reading confirms it, and a stale reading is marked, never presented as current.
@@ -44,59 +42,6 @@ def _text(value):
 
 def _count(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-
-# ---- the rule functions ----
-
-def severity(win, pacing=None):
-    """Severity band of a window. It keys off `left` whatever `usage_display` shows: `unknown`
-    without a percentage, `out` when blocked or at most 0.5 % is left, then critical / low / watch
-    below 5 / 20 / 50 % left. A ready pace demotes `watch` to `plenty` when on pace (delta <= +2)
-    and promotes `plenty` to `watch` when far ahead of an even pace (delta >= +15)."""
-    return rules.severity(win.get("used"), win.get("blocked"), pacing)
-
-
-def window_state(win, refilled, stale, now):
-    """State of a window from its started / reset_state / severity fields: `not_started`,
-    `resetting` (a reset passed and the reading predates it; the percentage is hidden) or
-    `expected_refill` (the same, on a stale account), `out`, `refilled` (a refill confirmed in the
-    last 60 min), `last_known` (stale account) or `live`."""
-    return rules.window_state(win["started"], win["reset_state"], win["severity"], refilled, stale, now)
-
-
-def age_tier(age, active):
-    """`fresh` up to 6 min (active account) or 20 min, `aging` up to 60 min, else `stale`; None without a reading."""
-    return rules.age_tier(age, active)
-
-
-def pace(readings, win, at):
-    """Pace of one window at the time of its reading `at`, or None while hidden, out, unknown or
-    too early; `readings` are the window's stored readings, of which those of the current reset
-    epoch are counted as `samples`."""
-    return _pace_at(win, at, epoch_samples(readings, win.get("reset"), win.get("minutes")))
-
-
-def binding(windows, pinned=""):
-    """The window that limits an account: among the session, weekly and model windows that are at
-    least 50 % used, out or the pinned model, the one that is out for longest, else the lowest `left`."""
-    return rules.pick_binding(windows, pinned)
-
-
-def headline(account, window, now, tz=None):
-    """{"kind", "text", "window"} of an account; `window` is its binding window or None."""
-    return rules.headline(account, window, now, tz)
-
-
-def resetting_soon(accounts, now):
-    """The Resetting-soon strip: refilled windows first, then by reset, each with its chip and bucket."""
-    return rules.strip(accounts, now)
-
-
-def now_band(accounts, best, now, tz=None, strip=None):
-    """{"next_reset", "best", "attention"}. `best` is the per-provider recommendation from
-    `recommend`; `strip` is `resetting_soon(accounts, now)` when the caller already has it."""
-    strip = resetting_soon(accounts, now) if strip is None else strip
-    return {"next_reset": rules.next_reset(accounts, strip, now), "best": best, "attention": rules.attention(accounts, now, tz)}
 
 
 # ---- windows ----
@@ -152,8 +97,8 @@ def build_window(raw, *, now, at, stale, refilled=None, samples=0):
               "state": None, "severity": "unknown", "binding": False, "pace": None, "blocked": raw["blocked"],
               "primary": raw["kind"] in PRIMARY_KINDS, "refilled": _refill(refilled, now)}
     window["pace"] = _pace_at(window, at, _count(samples))
-    window["severity"] = severity(window, window["pace"])
-    window["state"] = window_state(window, window["refilled"], stale, now)
+    window["severity"] = rules.severity(used, window["blocked"], window["pace"])
+    window["state"] = rules.window_state(window["started"], reset_state, window["severity"], window["refilled"], stale, now)
     return window
 
 
@@ -279,7 +224,7 @@ def build_account(acct, *, now, pinned="", tz=None):
     usage = acct.get("usage") if isinstance(acct.get("usage"), dict) else None
     at = _number(acct.get("last_good_at")) if usage is not None else None
     active = bool(acct.get("active"))
-    tier = age_tier(None if at is None else now - at, active)
+    tier = rules.age_tier(None if at is None else now - at, active)
     stale = tier == "stale"
     refills, samples = acct.get("refills") or {}, acct.get("samples") or {}
     windows, others = [], []
@@ -317,11 +262,11 @@ def build_account(acct, *, now, pinned="", tz=None):
                        live_expired=bool(acct.get("live_expired")))
     if reset_credits:
         account["reset_credits"] = reset_credits
-    limiting = binding(windows, pinned)
+    limiting = rules.pick_binding(windows, pinned)
     if limiting is not None:
         limiting["binding"] = True
     account["state"] = rules.account_state(account)
-    account["headline"] = headline(account, limiting, now, tz)
+    account["headline"] = rules.headline(account, limiting, now, tz)
     return account
 
 
@@ -417,7 +362,7 @@ def recommend(provider, accounts, settings, prev_state, now, *, tz=None):
     if not fresh:
         best["confidence"] = "low"
     if active is not None and top is not active and age(active) <= FRESH_ACTIVE:
-        limiting = binding(active["windows"], pinned)
+        limiting = rules.pick_binding(active["windows"], pinned)
         left = limiting["left"] if limiting is not None else rules.headroom(active, pinned)
         best["suggest_switch"] = left is not None and left <= 20 and headroom - left >= 25
     return best, ranked, pick
@@ -466,7 +411,8 @@ def enrich_state(raw, *, now, settings, recommender_state=None, tz=None):
             next(a for a in accounts if a["id"] == best[provider]["account"])["recommended"] = True
         if pick is not None:
             picks[provider] = pick
-    strip = resetting_soon(accounts, now)
+    strip = rules.strip(accounts, now)
     state = {**raw, "now": now, "accounts": accounts, "resetting_soon": strip,
-             "now_band": now_band(accounts, best, now, tz, strip)}
+             "now_band": {"next_reset": rules.next_reset(accounts, strip, now), "best": best,
+                          "attention": rules.attention(accounts, now, tz)}}
     return state, picks
