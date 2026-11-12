@@ -1,5 +1,4 @@
-"""Claude Desktop's Chromium/Electron credential encryption on macOS (docs/mac/PLAN.md D5, §1.6;
-docs/mac/PROVIDERS-MAC.md §2).
+"""Claude Desktop's Chromium/Electron credential encryption on macOS.
 
 Electron's safeStorage (the `oauth:tokenCache*` values in config.json) and Chromium's os_crypt (every cookie
 `encrypted_value`) share one key and one framing: the key is PBKDF2-HMAC-SHA1(password, b"saltysalt", 1003
@@ -217,11 +216,6 @@ class ChromiumCryptoMac(ChromiumCrypto):
                     raise
                 self._key, self._failure = _CbcKey(derive_mac_key(password)), None
             return self._key
-
-    def forget(self) -> None:
-        """Drops the remembered key or failure; the next use reads the Keychain again."""
-        with self._lock:
-            self._key = self._failure = None
 
     def _password(self) -> str:
         """Electron's lookup: the first account that has the item wins; any error other than "no such

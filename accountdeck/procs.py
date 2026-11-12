@@ -1,14 +1,14 @@
-"""The only module that enumerates, signals, terminates, launches or activates processes (PLAN §4).
+"""The only module that enumerates, signals, terminates, launches or activates processes.
 
 Three files make up process control on the Mac: this one (rows, classification, consent, the test-ownership
 registry, the self-guarded spawn, the controller interface and the synthetic `FakeProcessController`),
 `platform/libproc.py` (read-only libSystem facts: pids, paths, start times, descriptors) and
 `platform/procs_mac.py` (the live controller, the one place that sends a signal).
 
-Every mutating path runs the interlock in this order (§4.1-4.3):
+Every mutating path runs the interlock in this order:
 
 1. safe mode: the target must be test-owned (registered by a test or spawned by this process);
-2. the consent token must cover the target (§4.3 rules 1, 2, 4 and 5);
+2. the consent token must cover the target (`consent_refusal`);
 3. the target is re-verified behind a kqueue NOTE_EXIT watch, which pins the process the way a handle
    would: start time, executable path and bundle id are re-read and must match what was consented to;
 4. the syscall.
@@ -37,7 +37,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 
 from . import config, diagnostics
 from .config import SafetyViolation
@@ -58,7 +57,7 @@ CONSUMER_KINDS = frozenset({"codex_tui", "codex_app_server_child", "codex_deskto
 MUSE_KINDS = frozenset({"muse_session", "muse_host"})     # every Muse process uses the Muse login
 STOPPABLE_CONSUMER_KINDS = frozenset({"codex_tui", "codex_app_server_child"})
 
-# ---- what this Mac's processes are called (docs/mac/PLAN.md §1.2, §8), compared lower-case ----
+# ---- what this Mac's processes are called, compared lower-case ----
 # Claude Desktop is "Claude" with "Claude Helper …" processes, its Code tabs run "claude", and so does
 # Claude Code in a terminal. ChatGPT.app (bundle com.openai.codex) is the Codex app: everything inside that
 # bundle, its own codex app-server included, is the Codex Desktop consumer and is never stopped. ShipIt is
@@ -98,6 +97,7 @@ DAEMON_STOP_MARGIN = 15.0             # beyond shutdownGraceSeconds for `codex a
 DAEMON_EXIT_WAIT = 10.0
 DAEMON_START_WAIT = 30.0
 REMEMBERED_LIMIT = 256
+HELPER_MARK = ".helper"         # in a helper's private folder: "<pid> <start time>" of the process using it
 
 CONSENT_MESSAGE = "AccountDeck did not get permission to stop this process, so it left it alone. Nothing was changed."
 CHANGED_MESSAGE = "The process changed since you confirmed, so AccountDeck left it alone. Nothing was changed."
@@ -128,6 +128,27 @@ def process_name(path: str | None, fallback: str = "") -> str:
 def is_code_child_path(path) -> bool:
     """True for Claude Desktop's bundled Claude Code (…/Claude/claude-code/<version>/claude)."""
     return bool(path) and CODE_CHILD_PATH.search(str(path)) is not None
+
+
+def mark_helper_home(folder, pid, ctime) -> None:
+    """Notes in `folder` that process `pid`, started at `ctime`, is using it. A note that cannot be written
+    is only logged: the helper already runs."""
+    if not ctime:
+        return
+    try:
+        (Path(folder) / HELPER_MARK).write_text(f"{pid} {ctime}")
+    except OSError as exc:
+        diagnostics.log("procs.helper_mark_failed", "warning", error=type(exc).__name__)
+
+
+def helper_running(folder) -> bool:
+    """True while the helper noted in `folder` still runs: the same pid, started at the same moment. False
+    when the folder has no note."""
+    try:
+        pid, ctime = (int(part) for part in (Path(folder) / HELPER_MARK).read_text().split())
+    except (OSError, ValueError):
+        return False
+    return libproc.creation_time(pid) == ctime
 
 
 def _is_code_child(row) -> bool:
@@ -170,14 +191,14 @@ def _log(ev: str, **fields) -> None:
 
 
 def _refusal(reason: str, message: str) -> SafetyViolation:
-    """A SafetyViolation carrying a machine-readable `reason`; logged as proc.refused (§4.3)."""
+    """A SafetyViolation carrying a machine-readable `reason`; logged as proc.refused."""
     _log("proc.refused", reason=reason)
     error = SafetyViolation(message)
     error.reason = reason
     return error
 
 
-# ---- process rows, sets and consent (PLAN §4.2, §4.3) ----
+# ---- process rows, sets and consent ----
 
 @dataclass(frozen=True)
 class ProcessInfo:
@@ -210,7 +231,7 @@ class ProcessSet:
 
 @dataclass(frozen=True)
 class ConsentToken:
-    """What the user confirmed: the process pairs one job may signal (§4.3). Never serialised."""
+    """What the user confirmed: the process pairs one job may signal. Never serialised."""
     job_id: str
     provider: str
     purpose: str
@@ -233,7 +254,7 @@ class ConsentToken:
 
 def consent_refusal(token: ConsentToken | None, target: ProcessInfo, *, action: str, now: float,
                     protected=frozenset()) -> str | None:
-    """Consent rules 1, 2, 4 and 5 of PLAN §4.3 for `action` ("request_close" | "terminate" |
+    """The consent rules for `action` ("request_close" | "terminate" |
     "stop_consumer"); returns the refusal reason, or None when the token allows the action."""
     if token is None:
         return "no_consent"
@@ -256,7 +277,7 @@ def consent_refusal(token: ConsentToken | None, target: ProcessInfo, *, action: 
     return "kind"
 
 
-# ---- classification (PLAN §4.4): pure over rows, so synthetic tables drive every branch ----
+# ---- classification: pure over rows, so synthetic tables drive every branch ----
 
 def classify(rows, paths) -> dict[str, list[ProcessInfo]]:
     """Every row with its kind, grouped by kind (all KINDS present as keys)."""
@@ -322,7 +343,7 @@ def _kind(row: ProcessInfo, desktop: dict, paths) -> str:
     return "other"
 
 
-# ---- test-ownership registry (PLAN §4.1; process-wide; only tests and the demo call these) ----
+# ---- test-ownership registry (process-wide; only tests and the demo call these) ----
 
 _registry_lock = threading.Lock()
 _test_roots: list[str] = []                               # normalised absolute paths
@@ -407,7 +428,7 @@ def _is_test_bundle_id(bundle_id: str) -> bool:
 def _check_spawn_target(executable: str, *, keychain: str | None = None) -> None:
     """Safe-mode spawn policy (ORCH-1): only this Python or an executable under a test root, and
     /usr/bin/security only for a command whose keychain file (`keychain`, checked by run_security to be
-    the command's trailing argument) is a test's own, never the login keychain (docs/mac/PLAN.md §1.5)."""
+    the command's trailing argument) is a test's own, never the login keychain."""
     if not config.safe_mode():
         return
     if executable == SECURITY_TOOL and keychain is not None and _is_test_keychain(keychain):
@@ -436,7 +457,7 @@ def _popen(argv: list[str], *, keychain: str | None = None, **options) -> subpro
     return process
 
 
-# /usr/bin/security for platform/keychain.py (docs/mac/PLAN.md §1.5, PLATFORM-MAC.md §8): only the three
+# /usr/bin/security for platform/keychain.py: only the three
 # generic-password commands, which never touch the keychain search list or the default keychain.
 SECURITY_TOOL = "/usr/bin/security"
 _SECURITY_COMMANDS = ("find-generic-password", "add-generic-password", "delete-generic-password")
@@ -481,7 +502,7 @@ def run_security(args: list[str], *, keychain=None, stdin: bytes | None = None,
     return process.returncode, out or b"", err or b""
 
 
-# ---- controllers (PLAN §4.2) ----
+# ---- controllers ----
 
 class ProcessController(abc.ABC):
     """Process control for one AccountDeck instance. Read-only methods may run on any thread;
@@ -508,15 +529,12 @@ class ProcessController(abc.ABC):
     def claude_desktop_main(self) -> ProcessInfo | None:
         return desktop_main(self.claude_desktop())
 
-    def claude_code_sessions(self) -> list[ProcessInfo]:
-        return self.classify(self.snapshot())["claude_code"]
-
     def claude_foreign(self) -> list[ProcessInfo]:
         return self.classify(self.snapshot())["claude_foreign"]
 
     def codex_consumers(self, rows=None) -> list[ProcessInfo]:
         """Processes using the Codex login (in `rows`, a snapshot the caller already took, or a fresh one);
-        AccountDeck's own helpers (and their children) do not count, but terminals it opened do (AGENTS.md)."""
+        AccountDeck's own helpers (and their children) do not count, but terminals it opened do."""
         rows = [row for row in (self.snapshot() if rows is None else rows) if row.kind in CONSUMER_KINDS]
         excluded = self._helper_tree() if rows else set()
         return [row for row in rows if (row.pid, row.ctime) not in excluded]
@@ -579,11 +597,15 @@ class ProcessController(abc.ABC):
         self._remember(self.owned, process.pid)
         return process
 
-    def spawn_helper(self, args, **options) -> subprocess.Popen:
-        """A background helper (Codex RPC) without API keys in its environment."""
+    def spawn_helper(self, args, *, home=None, **options) -> subprocess.Popen:
+        """A background helper (a Codex app-server, Muse) without API keys in its environment. `home` is the
+        private folder it was handed a login in: the process is noted there, so the cleanup at the next
+        start (workfolders.sweep) leaves the folder alone while this helper still runs."""
         options.update(strip_api_keys=True)
         process = self.spawn(args, **options)
         self._remember(self.helpers, process.pid)
+        if home is not None:
+            mark_helper_home(home, process.pid, self.helpers.get(process.pid))
         return process
 
     def find_claude_cli(self):
@@ -661,7 +683,7 @@ class ProcessController(abc.ABC):
     def open_terminal(self, cwd, env) -> None: ...
 
 class FakeProcessController(ProcessController):
-    """An in-memory Mac process table for tests and the demo (§4.2). Nothing it does reaches a real process:
+    """An in-memory Mac process table for tests and the demo. Nothing it does reaches a real process:
     spawn() is the real, safe-mode-gated implementation; everything else acts on the table, with the live controller's rules (consent, re-verification, "only the main may be asked to
     quit"). Scripted behaviour:
 
@@ -747,27 +769,6 @@ class FakeProcessController(ProcessController):
                 self.add_row(name, path=helper, family=family, parent=main.pid)
             self._helper_count = helpers
             return main
-
-    def add_code_session(self, name: str = "Code session", status: str = "busy", *, parent: int | None = None,
-                         version: str = "2.1.284", status_age_s: float = 60.0, entrypoint: str = "claude-desktop",
-                         registry: bool = True) -> ProcessInfo:
-        """A Code-tab `claude` under the desktop main (or `parent`) with its sessions-registry row."""
-        with self._lock:
-            if parent is None:
-                main = desktop_main(self.classify(list(self._table.values()))["claude_desktop"])
-                if main is None:
-                    raise ValueError("add_claude_desktop() first")
-                parent = main.pid
-            path = Path(self.paths.claude_profile) / "claude-code" / version / "claude"
-            row = self.add_row("claude", path=path, parent=parent)
-            if registry:
-                now_ms = int(time.time() * 1000)
-                self._write_session(row.pid, {
-                    "pid": row.pid, "sessionId": str(uuid.uuid4()), "cwd": str(self.paths.home), "startedAt": now_ms,
-                    "procStart": str(row.ctime), "version": version, "kind": "interactive", "entrypoint": entrypoint,
-                    "name": name, "status": status, "updatedAt": now_ms,
-                    "statusUpdatedAt": int((time.time() - status_age_s) * 1000)})
-            return row
 
     def add_foreign_claude(self) -> ProcessInfo:
         """Claude Code in a terminal, as the native installer runs it (named by its version)."""

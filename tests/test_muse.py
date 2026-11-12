@@ -21,7 +21,7 @@ from accountdeck import diagnostics
 from accountdeck.config import Paths, Timings
 from accountdeck.core import DeckError, FileTransaction, Vault, atomic_write, json_bytes, read_json, recover_transactions
 from accountdeck.engine import Engine
-from accountdeck.procs import FakeProcessController, process_name
+from accountdeck.procs import FakeProcessController, helper_running, process_name
 from accountdeck.providers import muse as muse_module
 from accountdeck.providers.fake import (STUB_MUSE, FakeClaude, FakeCodex, _write_stub, build_fake_home, muse_auth,
                                         test_cipher)
@@ -408,9 +408,11 @@ class ReviewFindingsTest(EngineCase):
         live = read_json(self.auth)
         live["providers"]["meta"].update(refresh_token="side-renewed", expires_at=int(time.time()) + 7200)
         atomic_write(self.auth, json_bytes(live))
-        newest = engine.vault.get(main["id"])
+        saved = engine.vault.get(main["id"])
+        newest = json.loads(json.dumps(saved))
         newest["providers"]["meta"].update(refresh_token="main-renewed", expires_at=int(time.time()) + 7200)
-        engine.vault.put_guarded(main["id"], newest, "probe", identity_key, lambda d: d["providers"]["meta"]["expires_at"])
+        # stored the way a usage read stores a renewal: against the copy it renewed from
+        self.assertEqual(engine.accounts._put_muse(main["id"], newest, "probe", expected=saved), "accepted")
         engine.recovery = recover_transactions(engine.vault)
         plan = self.plan("recover")
         engine.action("recover", {"provider": "muse", "plan_id": plan["plan_id"], "consent": "now"})
@@ -462,6 +464,30 @@ class ReviewFindingsTest(EngineCase):
                                           "META_TOKEN": "y"}):
             self.assertTrue({"TBH_AUTH_BASE_URL", "MUSE_CUSTOM_HEADERS", "META_TOKEN"} <= set(cleared_env()))
 
+    REDIRECTS = {"TBH_AUTH_BASE_URL": "https://elsewhere.test", "TBH_CA_CERTIFICATE": "/nonexistent",
+                 "MUSE_CUSTOM_HEADERS": "x", "META_TOKEN": "y"}
+
+    def test_no_muse_helper_is_started_with_a_sign_in_redirect(self):
+        """Consider 7: each helper is really started with the redirects set in AccountDeck's own environment.
+        The stand-in Muse refuses to run when one reaches it."""
+        engine = self.make()
+        engine.tick()
+        muse = engine.providers["muse"]
+        with mock.patch.dict(os.environ, self.REDIRECTS):
+            with self.subTest(helper="a usage check of the signed-in account"):
+                reading = muse.usage(live=True)
+                self.assertIsNone(reading.error)
+                self.assertIsNotNone(reading.usage)
+            with self.subTest(helper="a usage check of a saved account"):
+                reading = muse.usage(muse_auth("side@example.test"), persist=lambda doc: "accepted")
+                self.assertIsNone(reading.error)
+                self.assertIsNotNone(reading.usage)
+            with self.subTest(helper="a sign-in"):
+                self.act("add")
+                login = engine.snapshot()["login"]
+                self.assertIsNotNone(login, engine.snapshot()["report"])
+                self.assertEqual(login["url"], "https://auth.meta.com/oauth/device/?code=SYNT-HETC")
+
     def test_a_renewal_the_vault_refuses_is_kept_for_review(self):
         self.make()
         kept = []
@@ -475,9 +501,59 @@ class ReviewFindingsTest(EngineCase):
         engine = self.make()
         left = Path(self.paths.data_dir) / "work" / "muse-probe-left" / "muse" / "auth.json"
         atomic_write(left, json_bytes(muse_auth("side@example.test")))
-        engine._sweep_muse()
+        engine._sweep_work()
         self.assertFalse(left.parent.parent.exists())
         self.assertTrue(list((Path(self.paths.data_dir) / "vault").glob("quarantine-muse-leftover-*")))
+
+    def helper_homes(self):
+        """Records, for each helper started from now on, the private folder it was noted in (None: no note)
+        and whether the note already says the helper runs."""
+        seen, original = [], self.procs.spawn_helper
+
+        def spawn(args, *, home=None, **options):
+            process = original(args, home=home, **options)
+            seen.append((home, home is not None and helper_running(home)))
+            return process
+        patcher = mock.patch.object(self.procs, "spawn_helper", spawn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return seen
+
+    def test_a_usage_check_of_a_saved_account_notes_its_helper_in_its_private_folder(self):
+        engine = self.make()
+        seen = self.helper_homes()
+        engine.providers["muse"].usage(muse_auth("side@example.test"), persist=lambda doc: "accepted")
+        work = Path(self.paths.data_dir) / "work"
+        self.assertEqual([(Path(home).parent, Path(home).name[:11], running) for home, running in seen],
+                         [(work, "muse-probe-", True)])
+
+    def test_a_usage_check_of_the_signed_in_account_writes_no_note_into_muses_own_folder(self):
+        engine = self.make()
+        seen = self.helper_homes()
+        engine.providers["muse"].usage(live=True)
+        self.assertEqual(seen, [(None, False)])
+        config = Path(self.paths.muse_config)
+        self.assertEqual([path.name for folder in (config, config.parent) for path in folder.glob(".helper")], [])
+
+    def test_the_start_up_cleanup_leaves_a_sign_in_that_is_still_running_alone(self):
+        engine = self.make()
+        engine.tick()
+        seen = self.helper_homes()
+        self.act("add")
+        home = next((Path(self.paths.data_dir) / "work").glob("muse-login-*"))
+        self.assertEqual(seen, [(home, True)])
+        engine._sweep_work()                    # what the next start would do if AccountDeck had died here
+        self.assertTrue(home.exists(), "the folder a running sign-in writes its login to was deleted")
+        approve = home / "muse" / "stub-approve"
+        approve.parent.mkdir(parents=True, exist_ok=True)
+        approve.write_text("side@example.test", encoding="utf-8")
+        for _ in range(100):
+            if not approve.exists():
+                break
+            time.sleep(0.05)
+        report = self.act("finish-login")["report"]
+        self.assertEqual(report["outcome"], "success", report)
+        self.assertIsNotNone(self.saved("side@example.test"))
 
     def test_only_muse_codes_own_binary_counts_as_a_session(self):
         self.make()

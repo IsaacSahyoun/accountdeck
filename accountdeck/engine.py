@@ -26,7 +26,7 @@ import time
 import tomllib
 
 from . import (__version__, activity, alerts, cli_auto, contract, diagnostics, intel, move_import, switch_claude,
-               switching)
+               switching, workfolders)
 from .accounts import AccountService
 from .cli_accounts import CLIAccounts
 from .cli_policy import considered
@@ -163,7 +163,7 @@ class Engine:
             self.cli.adopt_stashes()
             self.cli.restore_enrollment()
         self.recovery = self._scan_recovery()
-        self._sweep_muse()
+        self._sweep_work()
         self.alert_engine = alerts.AlertEngine(started=clock())
         self._machine, self._slow, self._idle_state = None, None, {}
         self._read_once = set()
@@ -228,21 +228,18 @@ class Engine:
     def roots(self):
         return [self.paths.claude_profile, self.paths.codex_home, self.paths.claude_projects, self.paths.muse_config]
 
-    def _sweep_muse(self):
-        """Once at start, before any read: private Muse folders a crash left behind are deleted, any sign-in in
-        them kept for review in the vault. Another AccountDeck 2 that owns the sign-ins may be using them."""
+    def _sweep_work(self):
+        """Once at start, before any read: the helper folders a crash left behind are cleaned up
+        (workfolders.sweep). Another AccountDeck 2 that owns the sign-ins may be using them."""
         if not self.owns_login:
             return
         try:
-            self.providers["muse"].sweep(lambda key, raw: self.vault.quarantine(key, raw))
+            workfolders.sweep(self)
         except Exception as exc:
-            diagnostics.log_exception("engine.muse_sweep_failed", exc)
+            diagnostics.log_exception("engine.work_sweep_failed", exc)
 
     def _scan_recovery(self):
-        try:
-            return recover_transactions(self.vault)
-        except DeckError:      # an unreadable record still means a switch was interrupted
-            return ["unreadable"]
+        return recover_transactions(self.vault)
 
     def _restore_login(self):
         """Once after construction: an add-account sign-in that was waiting when the service last stopped

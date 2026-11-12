@@ -1,4 +1,4 @@
-"""Whether Claude Desktop came back signed in as the account a job restored (PLAN §5.5), and the
+"""Whether Claude Desktop came back signed in as the account a job restored, and the
 secret-free facts the switch manifest and report read from Claude's folder (main.log lines, config.json
 key names, token-cache shape, MCP server names).
 
@@ -303,10 +303,11 @@ class BackgroundVerifier:
         self.next = 0.0
 
     def tick(self, now) -> bool:
+        """At most one look; True once the check is over (a verdict, or the deadline). While another job runs
+        it only waits, because that job may be changing the files this check reads. A Claude job that
+        replaces the switch ends the check itself (switching.submit)."""
         engine = self.ctx.engine
-        if engine.runner.busy:            # another job is changing the files this verifier watches
-            return True
-        if now < self.next:
+        if engine.runner.busy or now < self.next:
             return False
         self.next = now + self.every
         verdict = self.verifier.check()
@@ -317,8 +318,9 @@ class BackgroundVerifier:
             engine.notice(f"Claude is signed in as {self.label}.", "good", sticky=False)
             return True
         if verdict.state == "failed":
-            if engine.runner.busy:
-                return True
+            if engine.runner.busy:        # a job started during the look: look again once it is done
+                self.next = 0.0
+                return False
             self._finish("failed", verdict)
             engine.runner.update_report(
                 self.op_id, verified="failed", verify_reason=verdict.message,
@@ -343,10 +345,8 @@ class BackgroundVerifier:
         """A switch that opened the wrong account stays undoable: its transaction is pending again."""
         engine = self.ctx.engine
         try:
-            tx = FileTransaction.load(self.ctx.vault, engine.roots(), self.tx_key)
-            tx.doc["status"] = "verifying"
-            tx.save()
-            engine.recovery = recover_transactions(self.ctx.vault)
-        except DeckError:
-            engine.recovery = ["unreadable"]
+            FileTransaction.load(self.ctx.vault, engine.roots(), self.tx_key).close("verifying")
+        except DeckError as exc:
+            diagnostics.log("verify.record_unreadable", lvl="warning", code=exc.code)
+        engine.recovery = recover_transactions(self.ctx.vault)
         engine.bump()

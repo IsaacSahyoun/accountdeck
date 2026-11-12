@@ -361,7 +361,8 @@ class AccountService:
             flags["refresh_attempt"] = now
         key = account["id"]
         reading = codex.usage(profile, mode=mode, owner=account["owner"],
-                              persist=lambda auth: self.vault.put_guarded(key, auth, "probe", identity_key, freshness),
+                              persist=lambda auth: self.vault.put_guarded(key, auth, "probe", identity_key, freshness,
+                                                                          expected=profile),
                               quarantine=lambda raw: self.vault.quarantine(key, raw), account=key)
         if mode == "refresh":
             flags["refresh_failures"] = 0 if reading.meta.get("rotated") or reading.usage is not None \

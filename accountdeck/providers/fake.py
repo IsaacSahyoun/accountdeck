@@ -436,9 +436,18 @@ def fail(text):
     return 1
 
 
+def redirected():
+    """Names of the settings that reached this process and could send a sign-in or its tokens elsewhere. The
+    real binary would follow them; AccountDeck sets only TBH_CREDENTIAL_BACKEND."""
+    return sorted(name for name in os.environ if name.upper().startswith(("TBH_", "MUSE_", "META_"))
+                  and name != "TBH_CREDENTIAL_BACKEND")
+
+
 def usage():
     if os.environ.get("META_API_KEY"):        # the real binary would report the API key's allowance instead
         return fail("Error: META_API_KEY is set; this stub only reads account logins.")
+    if redirected():
+        return fail("Error: redirect settings reached this stub: " + ", ".join(redirected()))
     try:
         doc = json.loads(auth_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -470,6 +479,8 @@ def usage():
 
 
 def login():
+    if redirected():
+        return fail("Error: redirect settings reached this stub: " + ", ".join(redirected()))
     print("Open this page to sign in:\n  https://auth.meta.com/oauth/device/?code=SYNT-HETC\n"
           "confirm this code matches:\n  SYNT-HETC\n\nWaiting for approval…", flush=True)
     approve = auth_path().with_name("stub-approve")

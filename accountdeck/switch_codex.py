@@ -1,19 +1,17 @@
-"""Consent-bound Codex switching; only auth.json is exchanged (docs/mac/PLAN.md §1.8).
+"""Consent-bound Codex switching; only auth.json is exchanged.
 
 The consumers are what the process controller classifies (ChatGPT.app, the codex processes it bundles,
 Codex CLI terminals); Codex Desktop is never signalled, and the Codex CLI is the one
 `Codex.executable()` resolves."""
-from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 import tempfile
-import time
 import uuid
 
+from . import recovery
 from .rules import plan_current, plan_target
-from .core import DeckError, FileTransaction, is_frozen
-from .diagnostics import Manifest
-from .operations import Operation
+from .core import DeckError, is_frozen, read_json
+from .file_switch import FileSwitch
 from .platform import facts_mac
 from .procs import ProcessSet, unix_time
 from .providers.codex import RPC, Codex, daemon_settings, freshness, identity_key, token_state
@@ -84,122 +82,85 @@ def build_plan(ctx, account, purpose="switch", *, ignore_op=None):
     return result
 
 
+def login_file(ctx) -> recovery.FileLogin:
+    """Codex's auth.json as recovery.put_back sees it."""
+    path = ctx.codex.codex_home / "auth.json"
+
+    def live():
+        try:
+            return read_json(path)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            raise DeckError("Codex's auth.json could not be read.", "login_needed") from None
+
+    def keep(doc):
+        if identity_key(doc) is not None:
+            ctx.accounts.save("codex", doc, ctx.codex.identity(doc), source="recover", owner="v2")
+    return recovery.FileLogin("codex", path, running=lambda: bool(processes(ctx)[2].pairs),
+                              busy="Close Codex before recovering.", live=live, keep=keep, identity_of=identity_key)
+
+
 def plan_codex_switch(ctx, account=None, purpose="switch", *, ignore_op=None):
     return register(ctx, build_plan(ctx, account, purpose, ignore_op=ignore_op))
 
 
-class CodexSwitch(Operation):
-    def __init__(self, ctx, claimed, target):
-        super().__init__("switch", provider="codex", account=target["id"], label=target["label"],
-                         consent=claimed.mode, token=claimed.token,
-                         steps=(("wait", "Waiting for Codex sessions"), ("save", "Saving the current sign-in"),
-                                ("restore", "Restoring the selected sign-in"), ("verify", "Checking the sign-in")))
-        self.ctx, self.claimed, self.target = ctx, claimed, target
+class CodexSwitch(FileSwitch):
+    client = "Codex"
+    stopped = False             # the daemon was stopped for the switch; it is started again afterwards
 
-    def run(self):
-        ctx, engine = self.ctx, self.ctx.engine
-        manifest = Manifest.start(self.id, "switch", directory=Path(ctx.paths.data_dir) / "logs" / "manifests")
-        self.report["manifest"] = self.id
-        manifest.set("consent.mode", self.consent).set("consent.pair_count", len(self.token.pairs))
-        tx, stopped, outcome = None, False, "failed"
-        codex_exe = ctx.codex.executable()
-        ctx.scheduler.pause("codex")
-        try:
-            with ExitStack() as stack:
-                for row in engine.store.accounts():
-                    if row["provider"] == "codex":
-                        lock = ctx.scheduler.account_lock(row["id"])
-                        if not lock.acquire(timeout=ctx.timings.lock_wait):
-                            raise DeckError("A Codex usage check is still running.", "busy")
-                        stack.callback(lock.release)
-                self.target = engine.store.account(self.account)
-                if self.target is None:
-                    raise DeckError("That account no longer exists.", "not_found")
-                if is_frozen(self.target):
-                    raise DeckError("This account's sign-in belongs to another computer.", "read_only")
-                with self.step("wait", phase="waiting_idle", message="Waiting for Codex sessions to close…"):
-                    allowed = set(self.token.pairs)
-                    while True:
-                        consumers, daemons, found = processes(ctx)
-                        if not set(found.pairs) <= allowed:
-                            raise DeckError("The Codex process set changed. Review the switch again.", "needs_reconfirm",
-                                            plan=plan_codex_switch(ctx, self.account, ignore_op=self.id))
-                        if not consumers:
-                            break
-                        if self.consent != "idle":
-                            raise DeckError("Close the Codex sessions or choose Wait.", "busy")
-                        self.set_waiting([{"pid": r.pid, "name": r.name, "status": "busy"} for r in consumers])
-                        self.sleep(.25)
-                    engine.sense_active()
-                    if not engine.identity_known["codex"] or engine.active_identity["codex"] != self.claimed.entry["identity"]:
-                        raise DeckError("The outgoing sign-in changed. Review the switch again.", "identity")
-                    if engine.read_only:
-                        raise DeckError("Codex sign-ins are read-only.", "read_only")
-                    if time.time() >= self.token.expires:
-                        raise DeckError("The switch confirmation expired. Review it again.", "stale_plan")
-                    self.checkpoint()
-                    self.set_phase("stopping", "Stopping the Codex daemon…", cancellable=False)
-                    if daemons:
-                        result = ctx.procs.codex_daemon_stop(codex_exe, ctx.paths.codex_home,
-                                                            daemon_settings(ctx.paths.codex_home))
-                        if result == "timeout":
-                            raise DeckError("The Codex daemon is still running. Nothing was changed.", "busy")
-                        stopped = True
-                    if processes(ctx)[2].pairs:
-                        raise DeckError("Codex is still running. Nothing was changed.", "busy")
-                with self.step("save", phase="saving", message="Saving the current Codex sign-in…"):
-                    if engine.active_identity["codex"] is not None:
-                        ctx.accounts.capture("codex", owner="v2")
-                with self.step("restore", phase="restoring", message="Restoring the selected sign-in…"):
-                    if processes(ctx)[2].pairs:
-                        raise DeckError("Codex started again. Nothing was changed.", "busy")
-                    active = ctx.codex.active_identity()
-                    if active.status == "unknown" or active.identity != self.claimed.entry["identity"]:
-                        raise DeckError("The outgoing sign-in changed.", "identity")
-                    profile = ctx.vault.get(self.account)
-                    if identity_key(profile) != self.target["identity"]:
-                        raise DeckError("The saved sign-in identity changed.", "identity")
-                    remaining = token_state(profile, ctx.clock()).remaining
-                    if remaining is not None and remaining < 86400:
-                        reading = ctx.codex.usage(profile, mode="refresh", owner=self.target["owner"],
-                            persist=lambda value: ctx.vault.put_guarded(self.account, value, "refresh", identity_key, freshness),
-                            quarantine=lambda raw: ctx.vault.quarantine(self.account, raw), account=self.account)
-                        if reading.error is not None:
-                            raise reading.error
-                        profile = ctx.vault.get(self.account)
-                    if processes(ctx)[2].pairs or engine.read_only:
-                        raise DeckError("The process set changed before the swap. Review it again.", "busy")
-                    tx = FileTransaction(ctx.vault, engine.roots())
-                    tx.doc.update(provider="codex", purpose="switch")
-                    ctx.codex.restore(profile, tx)
-                with self.step("verify", phase="verifying", message="Checking the selected Codex account…"):
-                    if ctx.codex.active_identity().identity != self.target["identity"]:
-                        raise DeckError("Codex did not retain the selected sign-in.", "identity")
-                    reading = ctx.codex.usage(profile, mode="read_only")
-                    if getattr(reading.error, "kind", None) in ("identity", "unauthorized", "refresh_rejected"):
-                        self.report.update(verified="failed", verify_reason="The provider rejected the selected sign-in.")
-                        raise DeckError("The selected Codex sign-in could not be verified.", "identity")
-                    verified = "verified" if reading.error is None and reading.usage is not None else "unconfirmed"
-                    self.report.update(verified=verified, verified_at=ctx.clock() if verified == "verified" else None,
-                                       verify_reason=None if verified == "verified" else "The provider check is unavailable; the local identity matches.",
-                                       summary=f"Codex is ready as {self.label}." +
-                                       (" The outgoing account was saved." if self.claimed.plan["saves_outgoing"] else ""))
-                    tx.commit()
-                    manifest.set("verification.result", verified)
-                    outcome = "success"
-        except BaseException:
-            if tx is not None and tx.doc["status"] != "complete":
-                if processes(ctx)[2].pairs:
-                    tx.doc["status"] = "conflict"
-                    tx.save()
-                else:
-                    tx.rollback()
-            raise
-        finally:
-            if stopped:
-                ctx.procs.codex_daemon_start(codex_exe, ctx.paths.codex_home)
-            ctx.scheduler.resume_provider("codex")
-            manifest.set("outcome", outcome).finish()
+    @property
+    def adapter(self):
+        return self.ctx.codex
+
+    def login_file(self):
+        return login_file(self.ctx)
+
+    def wait(self, stack):
+        ctx = self.ctx
+        _, daemons, _ = self.sessions_closed(lambda: processes(ctx),
+                                             lambda: plan_codex_switch(ctx, self.account, ignore_op=self.id))
+        self.set_phase("stopping", "Stopping the Codex daemon…", cancellable=False)
+        if daemons:
+            self.codex_exe = ctx.codex.executable()
+            result = ctx.procs.codex_daemon_stop(self.codex_exe, ctx.paths.codex_home, daemon_settings(ctx.paths.codex_home))
+            if result == "timeout":
+                raise DeckError("The Codex daemon is still running. Nothing was changed.", "busy")
+            self.stopped = True
+        if processes(ctx)[2].pairs:
+            raise DeckError("Codex is still running. Nothing was changed.", "busy")
+
+    def save(self):
+        if self.ctx.engine.active_identity["codex"] is not None:
+            self.ctx.accounts.capture("codex", owner="v2")
+
+    def renew(self, profile):
+        """A saved login with less than a day left is renewed first, and Codex is handed the renewed copy."""
+        ctx = self.ctx
+        remaining = token_state(profile, ctx.clock()).remaining
+        if remaining is None or remaining >= 86400:
+            return profile
+        reading = ctx.codex.usage(profile, mode="refresh", owner=self.target["owner"],
+                                  persist=lambda value: ctx.vault.put_guarded(self.account, value, "refresh", identity_key,
+                                                                              freshness, expected=profile),
+                                  quarantine=lambda raw: ctx.vault.quarantine(self.account, raw), account=self.account)
+        if reading.error is not None:
+            raise reading.error
+        return ctx.vault.get(self.account)
+
+    def verify(self, profile):
+        ctx = self.ctx
+        if ctx.codex.active_identity().identity != self.target["identity"]:
+            raise DeckError("Codex did not retain the selected sign-in.", "identity")
+        reading = ctx.codex.usage(profile, mode="read_only")
+        if getattr(reading.error, "kind", None) in ("identity", "unauthorized", "refresh_rejected"):
+            self.report.update(verified="failed", verify_reason="The provider rejected the selected sign-in.")
+            raise DeckError("The selected Codex sign-in could not be verified.", "identity")
+        return self.confirmed(reading, "The provider check is unavailable; the local identity matches.")
+
+    def afterwards(self):
+        if self.stopped:
+            self.ctx.procs.codex_daemon_start(self.codex_exe, self.ctx.paths.codex_home)
 
 
 def dispatch(engine, name, body):
@@ -210,13 +171,10 @@ def dispatch(engine, name, body):
     if name == "recover":
         claimed = claim(ctx, "recover", body, provider="codex", build=build_plan)
         def recover():
-            if processes(ctx)[2].pairs or engine.read_only:
-                raise DeckError("Close Codex before recovering.", "busy")
-            for key in engine.recovery:
-                tx = FileTransaction.load(ctx.vault, engine.roots(), key)
-                if tx.doc.get("provider") == "codex":
-                    tx.rollback()
-            return "The previous Codex sign-in was restored."
+            if engine.read_only:
+                raise DeckError("Codex sign-ins are read-only.", "read_only")
+            client = login_file(ctx)
+            return recovery.summary(recovery.press(engine, "codex", lambda tx: recovery.put_back(ctx, tx, client)))
         return submit(ctx, claimed, QuickOp("recover", recover, provider="codex", message="Recovering Codex…",
                                            step=("recover", "Restoring the previous sign-in")))
     if name in ("add", "finish-login", "cancel-login"):

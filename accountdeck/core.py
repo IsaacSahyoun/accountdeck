@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-# The owner lock (§9.1, flock) lives with the other macOS code; it is re-exported here for its callers
+# The owner lock (flock) lives with the other macOS code; it is re-exported here for its callers
 # (run.py, cli_accounts). platform.locks imports nothing else from the package.
 from .platform.locks import OwnerLock  # noqa: F401  (re-export)
 
@@ -31,7 +31,7 @@ ERROR_CODES = frozenset({
 
 
 class DeckError(Exception):
-    """A failure the user can act on (§3.1). `str(exc)` is the message shown and `code` one of
+    """A failure the user can act on. `str(exc)` is the message shown and `code` one of
     ERROR_CODES; `retry_after` is set (seconds) when a provider asked us to wait; `plan` carries a
     fresh SwitchPlan for `confirm_required` and `needs_reconfirm`."""
 
@@ -83,7 +83,7 @@ def atomic_write(path, data):
 
 
 def vault_cipher(data_dir, *, keychain=None):
-    """The Vault's `protect` cipher (docs/mac/PLAN.md D4, §1.5): AES-256-GCM under a per-data-folder key
+    """The Vault's `protect` cipher: AES-256-GCM under a per-data-folder key
     in the keychain (`keychain=None` is the login keychain, which safe mode refuses)."""
     from .platform.keychain import VaultCipher   # imports core: taken in on use
     return VaultCipher(data_dir, keychain=keychain)
@@ -92,11 +92,14 @@ def vault_cipher(data_dir, *, keychain=None):
 # Vault files end in ".dpapi" because the format predates the Mac port (the Windows build protected them
 # with DPAPI). The suffix is part of the on-disk format: existing data folders keep loading as they are.
 VAULT_SUFFIX = ".dpapi"
-GENERATIONS = 3          # current copy + g1 + g2 of every account profile (A3)
-PREV_TTL = 2 * 3600      # how long a guarded overwrite keeps the displaced copy (A9)
+GENERATIONS = 3          # current copy + g1 + g2 of every account profile
+PREV_TTL = 2 * 3600      # how long a guarded overwrite keeps the displaced copy
 _ORPHAN_TTL = 3600       # temporary files an interrupted atomic_write left behind
 _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,159}")
 _SINGLE_COPY = ("transaction-", "quarantine-")
+SET_ASIDE = "set-aside-"
+OPEN_STATUSES = ("prepared", "verifying", "conflict")     # a switch record that still waits for recovery
+RECORD_TTL = 30 * 86400                                   # closed and set-aside records are kept this long
 
 
 def _blob_digest(blob):
@@ -161,7 +164,7 @@ class Vault:
 
     def newest_good(self, key, is_good):
         """(n, profile) of the newest generation that decrypts and satisfies is_good(profile), or
-        None. Restores prefer it (A3), so one bad capture never strands an account."""
+        None. Restores prefer it, so one bad capture never strands an account."""
         for generation in self.generations(key):
             try:
                 profile = self.get(key, generation["n"])
@@ -170,20 +173,6 @@ class Vault:
             if is_good(profile):
                 return generation["n"], profile
         return None
-
-    def restore_generation(self, key, n):
-        """Make generation n current; the newer generations each move one slot older. Returns the
-        promoted digest."""
-        with self.lock:
-            source = self._slot(key, n)
-            if not source.exists():
-                raise DeckError("That saved sign-in is no longer available.", "vault")
-            if n:
-                staged = self._file(key, ".restore")
-                self._copy(source, staged)      # the shift below overwrites slot n
-                self._shift(key, n)
-                os.replace(staged, self._file(key))
-            return _blob_digest(self._file(key).read_bytes())
 
     def put_guarded(self, key, incoming, source, identity_of, freshness_of, *, expected=None):
         """Freshness-guarded overwrite for rotating credentials (Codex, A9).
@@ -228,7 +217,7 @@ class Vault:
 
     def quarantine(self, key, raw_bytes):
         """Keep unreadable credential bytes, encrypted, as `quarantine-<key>-<ms>` for review instead
-        of deleting them (A9); returns the record key."""
+        of deleting them; returns the record key."""
         self._file(key)                         # refuses a key that is not a plain identifier
         with self.lock:
             stamp = int(time.time() * 1000)
@@ -236,6 +225,14 @@ class Vault:
                 stamp += 1
             name = f"quarantine-{key}-{stamp}"
             atomic_write(self._file(name), self.protect(bytes(raw_bytes)))
+        return name
+
+    def set_aside(self, key):
+        """Moves a record out of its key, bytes unchanged, to `set-aside-<key>`: a switch record that
+        cannot be read or applied stops counting as pending, and what it holds is kept. Returns the new key."""
+        name = SET_ASIDE + key
+        with self.lock:
+            os.replace(self._file(key), self._file(name))
         return name
 
     def prune(self, now=None):
@@ -255,7 +252,8 @@ class Vault:
         return removed
 
     def remove(self, key):
-        """Delete every copy of key: all generations, the .prev copy and a staged restore."""
+        """Delete every copy of key: all generations, the .prev copy, and the `.restore` copy an older
+        version of the app may have left."""
         with self.lock:
             for n in range(GENERATIONS):
                 self._slot(key, n).unlink(missing_ok=True)
@@ -569,7 +567,7 @@ class Store:
                 "snapshots": [{"at": row["at"], "usage": json.loads(row["usage"])} for row in reversed(snapshots)]}
 
     def record_refill(self, account, window, *, reset_at, confirmed_at, previous_used):
-        """Record a confirmed refill once per (account, window, reset); True when it is new (§6.3)."""
+        """Record a confirmed refill once per (account, window, reset); True when it is new."""
         with self.lock:
             cursor = self.db.execute("INSERT OR IGNORE INTO refills(account, window_id, reset_at, confirmed_at, "
                                      "previous_used) VALUES(?, ?, ?, ?, ?)",
@@ -622,7 +620,7 @@ class Store:
         return f"al_{cursor.lastrowid}"
 
     def alerts(self, *, include_dismissed=False, limit=50):
-        """Newest first, in the §3.3 alert shape."""
+        """Newest first, as the rows the snapshot shows."""
         with self.lock:
             rows = self.db.execute("SELECT * FROM alerts" + ("" if include_dismissed else " WHERE dismissed=0")
                                    + " ORDER BY at DESC, id DESC LIMIT ?", (limit,)).fetchall()
@@ -721,7 +719,11 @@ class FileTransaction:
         self.vault.put(self.key, self.doc, generation=False)
 
     def commit(self):
-        self.doc["status"] = "complete"
+        self.close("complete")
+
+    def close(self, status="rolled_back"):
+        """Marks the record finished without touching a file: the caller put the files right itself."""
+        self.doc["status"] = status
         self.save()
 
     def rollback(self):
@@ -746,17 +748,24 @@ class FileTransaction:
 
 
 def recover_transactions(vault):
-    """The keys of transactions a switch left unfinished (prepared, verifying or conflict), which the
-    Recover action puts right; finished ones older than 30 days are deleted. DeckError("vault") when a
-    record cannot be read (the caller treats that as a pending recovery too)."""
-    pending = []
+    """The keys of the records a switch left open, which the Recover action settles (recovery.press). A
+    record that cannot be read is listed too: Recover sets it aside. Closed records and set-aside ones
+    older than RECORD_TTL are deleted."""
+    pending, old = [], time.time() - RECORD_TTL
     for path in vault.root.glob("transaction-*" + VAULT_SUFFIX):
         key = path.name.removesuffix(VAULT_SUFFIX)
         if not _KEY.fullmatch(key):
             continue
-        doc = vault.get(key)
-        if doc.get("status") in ("prepared", "conflict", "verifying"):
+        try:
+            doc = vault.get(key)
+        except DeckError:
             pending.append(key)
-        elif doc.get("at", time.time()) < time.time() - 30 * _DAY:
+            continue
+        if doc.get("status") in OPEN_STATUSES:
+            pending.append(key)
+        elif doc.get("at", time.time()) < old:
+            path.unlink()
+    for path in vault.root.glob(SET_ASIDE + "*" + VAULT_SUFFIX):
+        if path.stat().st_mtime < old:
             path.unlink()
     return pending

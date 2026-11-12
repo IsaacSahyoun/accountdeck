@@ -1,4 +1,4 @@
-"""Claude Desktop's switch flows (PLAN §5): the plan, the stop ladder, capture, restore, relaunch and the
+"""Claude Desktop's switch flows: the plan, the stop ladder, capture, restore, relaunch and the
 hand-off to verification.
 
 Every job that stops Claude Desktop (switch, quit, capture, add, finish-login, cancel-login, recover) runs
@@ -17,7 +17,7 @@ from pathlib import Path
 import shutil
 import time
 
-from . import activity, contract, diagnostics
+from . import activity, contract, diagnostics, recovery
 from .accounts import HEALTH_MESSAGES
 from .claude_verify import (NOT_OPENED, OPEN_IT, BackgroundVerifier, Verdict, Verifier, cache_org, config_keys,
                             files_present, generation_digest, log_size, log_text, mcp_names, token_cache_summary,
@@ -56,7 +56,6 @@ CHROME_HINT = "If Chrome is open, close it first: the Claude in Chrome connector
 ADD_HINT = ("Sign in with the account you intend to add; a browser already signed into another Claude "
             "account can approve the wrong one.")
 INCIDENT_WARNING = "Claude is reporting problems; sign-in checks may fail. Verification will keep retrying."
-SAFETY_MESSAGES = (SELF_PROTECT_MESSAGE, UNKNOWN_MESSAGE, TOO_MANY_MESSAGE)
 LAUNCH_FAILURES = ("system", "not_installed")         # DeckError codes of a launch macOS refused
 
 
@@ -90,7 +89,7 @@ def claude_login(engine):
     return login if isinstance(login, dict) and login.get("provider") == "claude" else None
 
 
-# ---- the plan (§5.2) ----
+# ---- the plan ----
 
 def plan_claude_switch(ctx, account_id=None, purpose="switch", *, ignore_op=None) -> dict:
     """The side-effect-free plan the user confirms, registered for the claim that follows."""
@@ -219,10 +218,10 @@ def _stop_tier(ctx, observed):
         return "manual"
     if not observed.desktop:
         return "not_running"
-    return "graceful" if graceful_first(ctx.paths, ctx.procs, observed.main) else "managed"
+    return "graceful" if graceful_first(observed.main) else "managed"
 
 
-# ---- opening Claude (§5.7; docs/mac/PLAN.md §1.4) ----
+# ---- opening Claude ----
 
 def launch_target(ctx):
     """Claude's bundle id, read from the installed Claude.app (what `open -b` opens); None when Claude is
@@ -333,7 +332,7 @@ def _undo_line(ctx):
     return f"Restore {previous['label']}'s sign-in" if previous else "Put the sign-in Claude had before back"
 
 
-# ---- preflight (§5.3) ----
+# ---- preflight ----
 
 @dataclass
 class Inspection:
@@ -404,7 +403,7 @@ def restore_profile(ctx, account_id, tx) -> dict:
     return found[1]
 
 
-# ---- the jobs (§5.4): what every job that stops Claude has in common ----
+# ---- the jobs: what every job that stops Claude has in common ----
 
 class _Stages:
     """Drives the wait, stop and settle steps from the stop ladder's progress calls. A ladder callback must
@@ -674,10 +673,14 @@ class ClaudeJob(Operation):
         return True
 
     def _point_of_no_return(self, message):
-        """The last cancellation point: from here the job finishes or puts everything back."""
+        """The last cancellation point and the last look at Claude, right before the job writes the sign-in
+        files: Claude must still be closed. From here the job finishes or puts everything back."""
         self.set_phase("restoring", message, cancellable=False)
         with self._guard():
             self.checkpoint()
+            current = observe(self.ctx)
+            if current.desktop or current.code or current.unknown:
+                raise DeckError("Claude started again. Nothing was changed.", "busy")
 
     def _undo(self, exc):
         """A write failed: the transaction puts the files back, Claude reopens as it was and the job ends."""
@@ -702,7 +705,7 @@ class ClaudeJob(Operation):
     # ---- S4 save the sign-in Claude holds ----
     def _save_current(self, *, required=False, label=None):
         """Saves the sign-in Claude is leaving, under the health gate. A signed-in account that is not saved yet is
-        saved as a new one, so a switch never loses a sign-in (§9.4). `required` (capture, finish-login): anything
+        saved as a new one, so a switch never loses a sign-in. `required` (capture, finish-login): anything
         but a healthy sign-in fails the job."""
         ctx, claude, manifest = self.ctx, self.ctx.claude, self.manifest
         required = required or self.confirmed.get("saves_outgoing", False)
@@ -935,7 +938,7 @@ class ClaudeJob(Operation):
 
 
 class ClaudeSwitch(ClaudeJob):
-    """The switch of PLAN §5.4: prepare, stop, save the outgoing sign-in, restore the target's, carry the session
+    """The switch: prepare, stop, save the outgoing sign-in, restore the target's, carry the session
     list over, reopen Claude and verify that it signed in as the target."""
 
     purpose = "switch"
@@ -1189,7 +1192,8 @@ class CancelLogin(_Enrolled):
 
 
 class Recover(ClaudeJob):
-    """Puts the sign-in files back to what they were before a switch whose transaction never finished."""
+    """Settles every Claude Desktop switch whose record never closed (the steps of recovery.py): the sign-in
+    Claude holds now is saved, then the account it had before the switch is written back whole."""
 
     purpose = "recover"
 
@@ -1202,64 +1206,39 @@ class Recover(ClaudeJob):
     def _body(self):
         ctx = self.ctx
         self._prepare()
-        pending = self._load_pending()
-        involves_claude = any(tx.doc.get("provider") not in ("codex", "muse") for tx in pending)
-        if involves_claude:
-            self._stop()
-        else:
-            for step_id in ("wait", "stop", "settle"):
-                self.note("Claude isn't involved.", step_id=step_id, status="skipped")
+        self._stop()
         self._point_of_no_return("Putting the previous sign-in back…")
-        kept_sessions = False
         with self.step("restore", phase="restoring", message="Putting the previous sign-in back…", cancellable=False):
-            for tx in pending:
-                kept_sessions = self._recover_one(tx) or kept_sessions
-            self.manifest.set("recovered", len(pending)).set("config_keys_after", config_keys(ctx.claude))
-        if involves_claude and self.was_running:
+            sentences = recovery.press(ctx.engine, "claude", self._recover_one)
+            self.manifest.set("recovered", len(sentences)).set("config_keys_after", config_keys(ctx.claude))
+        if self.was_running:
             self._open()
         else:
-            self.note("Claude was not running." if involves_claude else "Claude isn't involved.", step_id="launch",
-                      status="skipped")
+            self.note("Claude was not running.", step_id="launch", status="skipped")
         with self.step("report"):
-            self.report["summary"] = "Your previous sign-in is back." + (
-                " Code sessions started since were kept." if kept_sessions else "") + (
-                " Claude was reopened." if involves_claude and self.was_running and self.opened else "")
+            self.report["summary"] = recovery.summary(sentences) + (
+                " Claude was reopened." if self.was_running and self.opened else "")
 
-    def _load_pending(self):
-        ctx, found = self.ctx, []
-        for key in list(ctx.engine.recovery):
-            try:
-                found.append(FileTransaction.load(ctx.vault, ctx.engine.roots(), key))
-            except DeckError:
-                raise DeckError("A recovery backup could not be read. Your encrypted backups were retained.",
-                                "recovery") from None
-        return found
-
-    def _recover_one(self, tx) -> bool:
-        """Puts one interrupted transaction right. True when Code sessions created since were kept."""
+    def _recover_one(self, tx) -> str:
+        """Settles one record; returns a sentence for the report. An undo that never finished is not
+        replayed: its bytes are from the middle of a recovery, and settling the switch it was undoing
+        writes the right account whichever record comes first."""
         ctx = self.ctx
-        if tx.doc.get("provider") == "codex":
-            if ctx.procs.codex_consumers() or ctx.procs.codex_daemon():
-                raise DeckError("Close your Codex sessions, then try again.", "busy")
-            tx.rollback()
-            return False
-        if tx.doc.get("provider") == "muse":
-            from .switch_muse import reads_held, undo
-            with reads_held(ctx):
-                undo(ctx, tx)
-            return False
+        if tx.doc.get("purpose") == "recover":
+            tx.close()
+            return recovery.NOTHING_TO_UNDO
         outgoing = tx.doc.get("outgoing_id")
         if not outgoing or ctx.store.account(outgoing) is None:
-            tx.rollback()
-            return False
+            tx.rollback()        # no saved account to go back to: the files as they were, if nothing changed them
+            return "Claude's sign-in files are back as they were."
         self._keep_live_tokens()
         undo = self._new_transaction(status="prepared")
         restore_profile(ctx, outgoing, undo)
         undo.commit()
         status = self._roll_back_sessions(tx)
-        tx.doc["status"] = status
-        tx.save()
-        return status == "preserved_newer_sessions"
+        tx.close(status)
+        return "Your previous sign-in is back." + (
+            " Code sessions started since were kept." if status == "preserved_newer_sessions" else "")
 
     def _keep_live_tokens(self):
         """The account Claude opened may have renewed its tokens since it was saved; keep that copy when it is healthy."""

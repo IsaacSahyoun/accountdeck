@@ -1,4 +1,4 @@
-"""User operations (§2.2, §3.5): switch, quit, add, capture, remove, recover and the move import run
+"""User operations: switch, quit, add, capture, remove, recover and the move import run
 one at a time on the `ad2-ops` thread and are observed as the PendingOperation and SwitchReport of
 /api/state."""
 from __future__ import annotations
@@ -26,7 +26,7 @@ DONE_SUMMARY = "Done."
 
 
 def _report_defaults():
-    """SwitchReport fields an Operation may fill through `report` (§3.5), with their values when it
+    """SwitchReport fields an Operation may fill through `report`, with their values when it
     does not. The runner sets op, kind, provider, account, label, finished, outcome and error."""
     return {"verified": None, "verified_at": None, "verify_reason": None, "stop_tier": None, "stop_ms": None,
             "helpers_self_exited": None, "stragglers": None, "summary": None, "carried": [],
@@ -75,9 +75,12 @@ class Operation:
     Fields placed in `report` (see _report_defaults) are merged into the SwitchReport; the summary
     defaults to the ending message ("Done." on success).
 
-    `token` holds the ConsentToken of this job (§4.3); it is never serialised."""
+    `token` holds the ConsentToken of this job; it is never serialised."""
 
     not_cancellable_message = "The switch is past the point of no return."
+    # True for an operation that may run next to another client's operation while that one only waits for
+    # its sessions to close (OperationRunner.submit). Such a wait can last hours.
+    beside_waits = False
 
     def __init__(self, kind, *, provider=None, account=None, label=None, consent=None, steps=(),
                  eta_seconds=None, token=None):
@@ -94,6 +97,7 @@ class Operation:
         self.waiting_on = []
         self.current_step = None
         self.report = {}
+        self.beside = False       # set by the runner: this operation runs next to a waiting one
         self.plan = None
         self.clock = time.time
         self.lock = threading.Lock()
@@ -152,10 +156,6 @@ class Operation:
         self._changed()
 
     # ---- cancellation ----
-    @property
-    def cancel_requested(self):
-        return self.cancel_event.is_set()
-
     def checkpoint(self):
         if self.cancel_event.is_set():
             raise OperationCancelled()
@@ -167,7 +167,7 @@ class Operation:
 
     # ---- observation ----
     def snapshot(self):
-        """The PendingOperation of §3.5; `plan` is added while the phase is `needs_reconfirm`."""
+        """This operation as the snapshot's `pending` shows it; `plan` is added while the phase is `needs_reconfirm`."""
         with self.lock:
             pending = {"id": self.id, "kind": self.kind, "provider": self.provider, "account": self.account,
                        "label": self.label, "phase": self.phase, "message": self.message,
@@ -229,7 +229,10 @@ class Operation:
 
 
 class OperationRunner:
-    """Runs one Operation at a time on a thread named `ad2-ops`.
+    """Runs one Operation at a time on a thread named `ad2-ops`. One more may run beside it while it only
+    waits for a client's sessions to close (phase `waiting_idle`): an operation of another client that sets
+    `beside_waits`. The waiting operation stays the one shown as pending and keeps the report slot; the
+    one beside it reports through its callbacks only.
 
     `on_change()` is called after every visible change (for the state `rev`), `on_settle(op)` after
     run() returned but before the operation is published as ended (so observers that see it finished
@@ -242,7 +245,8 @@ class OperationRunner:
         self.on_change, self.on_finish, self.on_settle, self.clock = on_change, on_finish, on_settle, clock
         self.lock = threading.Lock()
         self._current = None      # the running operation, or one left pending in needs_reconfirm
-        self._thread = None
+        self._beside = None       # the operation running next to a waiting `_current`
+        self._thread = self._beside_thread = None
         self._report = None
         self._closed = False
 
@@ -256,20 +260,31 @@ class OperationRunner:
         with self.lock:
             return self._running()
 
+    def free_for(self, provider, *, beside_waits=False):
+        """True when an operation of `provider` could start now (see `submit`)."""
+        with self.lock:
+            return self._lane(provider, beside_waits) is not None
+
     def submit(self, op):
-        """Start op and return its id; `busy` while another operation runs. An operation left in
-        `needs_reconfirm` is replaced, and the previous report is cleared."""
+        """Start op and return its id; `busy` while another operation runs, unless op may run beside that
+        one's wait (the class docstring). An operation left in `needs_reconfirm` is replaced, and the
+        previous report is cleared."""
         if op.id is not None:
             raise ValueError("an operation can be submitted once")
         with self.lock:
             if self._closed:
                 raise DeckError("AccountDeck is shutting down.", "busy")
-            if self._running():
+            lane = self._lane(op.provider, op.beside_waits)
+            if lane is None:
                 raise DeckError("Finish or cancel the current action first.", "busy")
             op.id = f"op_{int(self.clock() * 1000):x}{secrets.token_hex(3)}"
             op.started, op.clock, op._notify = self.clock(), self.clock, self._changed
+            op.beside = lane == "beside"
             thread = threading.Thread(target=self._execute, args=(op,), name="ad2-ops", daemon=True)
-            self._current, self._thread, self._report = op, thread, None
+            if op.beside:
+                self._beside, self._beside_thread = op, thread
+            else:
+                self._current, self._thread, self._report = op, thread, None
         thread.start()
         self._changed()
         return op.id
@@ -324,28 +339,41 @@ class OperationRunner:
         return dismissed
 
     def wait(self, timeout=None):
-        """Wait until the current operation and its callbacks have finished; False on timeout."""
+        """Wait until the current operation, one beside it and their callbacks have finished; False on
+        timeout."""
         with self.lock:
-            thread = self._thread
-        if thread is None:
-            return True
-        thread.join(timeout)
-        return not thread.is_alive()
+            threads = [thread for thread in (self._thread, self._beside_thread) if thread is not None]
+        for thread in threads:
+            thread.join(timeout)
+        return not any(thread.is_alive() for thread in threads)
 
     def stop(self, timeout=None):
-        """Shutdown: refuse new operations, cancel the running one while it still can be, and wait."""
+        """Shutdown: refuse new operations, cancel what runs while it still can be, and wait."""
         with self.lock:
             self._closed = True
-            op = self._current if self._running() else None
-        if op is not None:
+            running = [op for op in (self._current, self._beside) if op is not None and not op.done_event.is_set()]
+        for op in running:
             with op.lock:
                 if op.cancellable:
                     op.cancel_event.set()
         return self.wait(timeout)
 
-    # ---- the ad2-ops thread ----
+    # ---- the ad2-ops threads ----
     def _running(self):
-        return self._current is not None and not self._current.done_event.is_set()
+        return self._lane(None, False) is None
+
+    def _lane(self, provider, beside_waits):
+        """Where an operation of `provider` would run if submitted now: "main" when nothing runs, "beside"
+        when the only thing running is another client's operation in `waiting_idle` and this one may run
+        beside such a wait, else None. The caller holds the lock."""
+        current, beside = self._current, self._beside
+        if beside is not None and not beside.done_event.is_set():
+            return None
+        if current is None or current.done_event.is_set():
+            return "main"
+        if beside_waits and current.phase == "waiting_idle" and current.provider != provider:
+            return "beside"
+        return None
 
     def _execute(self, op):
         began = time.monotonic()
@@ -381,10 +409,11 @@ class OperationRunner:
                       "finished": self.clock(), "outcome": outcome, "error": error}
             report["summary"] = report["summary"] or message
         with self.lock:
-            if report is not None or op.cancel_event.is_set():    # a cancelled prompt does not linger
-                self._current = None
-            if report is not None:
-                self._report = report
+            if not op.beside:
+                if report is not None or op.cancel_event.is_set():    # a cancelled prompt does not linger
+                    self._current = None
+                if report is not None:
+                    self._report = report
             op.done_event.set()
         ms = round((time.monotonic() - began) * 1000)
         if phase == "failed":

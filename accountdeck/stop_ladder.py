@@ -1,9 +1,9 @@
-"""Quitting Claude Desktop for a job (PLAN §4.6): exactly one stop attempt, every signal within consent.
+"""Quitting Claude Desktop for a job: exactly one stop attempt, every signal within consent.
 
 T0   gate, no signals: re-snapshot; refuse unknown rows, 0 or > 40 desktop rows and self-stops; ask
      again ("reconfirm") when processes appeared that the user did not confirm; in "idle" mode wait
      until every Code session has been idle for `idle_hold` seconds.
-T1a  graceful (docs/mac/PLAN.md §1.3): SIGTERM to the verified Electron main, which runs app.quit(); if
+T1a  graceful: SIGTERM to the verified Electron main, which runs app.quit(); if
      Claude is still running `terminate_wait` s after its readyForQuit marker (or after `graceful_wait` s),
      the same job continues with T2.
 T2   managed: terminate the main process, give the helpers `helper_self_exit` s to exit on their own,
@@ -18,8 +18,10 @@ from dataclasses import dataclass, field
 import re
 import time
 
+from . import waiting
 from .config import SafetyViolation
 from .core import DeckError
+from .operations import OperationCancelled
 from .platform import facts_mac
 from .procs import MAX_DESKTOP_ROWS, READY_FOR_QUIT, ProcessInfo, ProcessSet, desktop_main
 
@@ -85,12 +87,14 @@ class StopLadder:
 
     # ---- T0 ----
     def _gate(self, token, plan_set, cancel, progress):
-        """(desktop rows, Code rows) to stop, or the StopResult that ends the job without a signal."""
+        """(desktop rows, Code rows) to stop, or the StopResult that ends the job without a signal. In "idle"
+        mode it waits until every Code session is idle (waiting.until_idle, so not past the confirmation)."""
         if token is None:
             return StopResult(False, "manual", detail=MANUAL_MESSAGE)
         idle_state: dict = {}
         confirmed = set(plan_set.pairs)
-        while True:
+
+        def look():
             kinds = self.procs.classify(self.procs.snapshot())
             desktop, code = kinds["claude_desktop"], kinds["claude_code"]
             if kinds["claude_unknown"]:
@@ -103,26 +107,32 @@ class StopLadder:
                 return StopResult(False, "aborted", detail=SELF_PROTECT_MESSAGE)
             if set(ProcessSet.of(desktop + code).pairs) - confirmed:
                 return StopResult(False, "reconfirm", detail=RECONFIRM_MESSAGE)
-            if token.mode != "idle":
-                break
-            report = self.activity.report(self.paths, self.procs, now=time.time(),
-                                          idle_hold_s=self.timings.idle_hold, state=idle_state)
-            if report.all_idle:
-                break
-            self.waiting_on = [{"pid": s.pid, "name": s.name, "status": s.status} for s in report.blockers]
-            progress("wait", _waiting_detail(report.blockers))
+            if token.mode == "idle":
+                report = self.activity.report(self.paths, self.procs, now=time.time(),
+                                              idle_hold_s=self.timings.idle_hold, state=idle_state)
+                if not report.all_idle:
+                    self.waiting_on = [{"pid": s.pid, "name": s.name, "status": s.status} for s in report.blockers]
+                    progress("wait", _waiting_detail(report.blockers))
+                    return None
+            return desktop, code
+
+        def pause():
             if cancel.wait(self.timings.idle_poll):
-                return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
-        self.waiting_on = []
-        if cancel.is_set():
+                raise OperationCancelled()
+        try:
+            found = waiting.until_idle(token, "Claude", look, pause)
+        except OperationCancelled:
             return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
-        return desktop, code
+        self.waiting_on = []
+        if not isinstance(found, StopResult) and cancel.is_set():
+            return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
+        return found
 
     # ---- T1a / T2 ----
     def _stop(self, token, desktop, code, cancel, progress) -> StopResult:
         main = desktop_main(desktop)
         tier = "managed"
-        if graceful_first(self.paths, self.procs, main):
+        if graceful_first(main):
             if cancel.is_set():
                 return StopResult(False, "cancelled", detail=CANCELLED_MESSAGE)
             progress("stop", CLOSE_DETAIL)
@@ -246,9 +256,9 @@ class StopLadder:
         return lines[:MAX_MARKERS]
 
 
-def graceful_first(paths, procs, main) -> bool:
-    """Whether the stop starts with T1a: whenever there is a main process to send SIGTERM to (PLAN §1.3).
-    (`paths` and `procs` are kept for switch_claude's stop-tier preview, which passes them.)"""
+def graceful_first(main) -> bool:
+    """Whether the stop starts with T1a: whenever there is a main process to send SIGTERM to. The plan's
+    stop-tier preview (switch_claude) asks the same question."""
     return main is not None
 
 

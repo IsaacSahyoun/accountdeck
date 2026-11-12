@@ -1,11 +1,11 @@
-"""Codex adapter (§5.11, A8, A9): token state, read-only and refresh probes through a private
+"""Codex adapter: token state, read-only and refresh probes through a private
 app-server helper, the tri-state active identity, and auth.json swaps.
 
 The helper runs in a throw-away CODEX_HOME under the data folder and is spawned only through the
-process controller (§4.1). A read-only probe gets a blank refresh token, so it can never rotate the
+process controller. A read-only probe gets a blank refresh token, so it can never rotate the
 refresh token the official client holds; refresh mode is reserved for accounts AccountDeck 2 owns.
 
-Only the file store, ~/.codex/auth.json, is swapped (docs/mac/PLAN.md §1.8, §8). Config leaves
+Only the file store, ~/.codex/auth.json, is swapped. Config leaves
 `codex_exe` unset live, so the CLI is found at run time (facts_mac.codex_exe: PATH, the ~/.local/bin
 launcher resolved to its package binary, the package, then the CLI inside ChatGPT.app). A config.toml
 that keeps the sign-in in the Keychain ("keyring" or "auto") fails closed with a message saying how to
@@ -107,7 +107,7 @@ def backoff(failures, rng=random.random):
 
 
 def refresh_due(ts, *, owner, last_attempt, now, failures=0, rng=random.random):
-    """Whether AccountDeck 2 should renew a saved Codex sign-in now (A8): only accounts it owns,
+    """Whether AccountDeck 2 should renew a saved Codex sign-in now: only accounts it owns,
     only when the access token has ≤ 48 h left (or cannot be read and the last refresh is ≥ 5 days
     old), and never sooner than max(6 h, backoff) after the previous attempt."""
     if owner != "v2":
@@ -132,6 +132,31 @@ def identity_key(profile):
 def freshness(profile):
     """Comparable freshness of a saved auth.json for Vault.put_guarded: the access-token expiry."""
     return token_state(profile, 0).exp
+
+
+def stash(path, before, quarantine, provider, ref) -> bool:
+    """After a renewed login could not be saved: True once the helper's file `path` holds nothing worth
+    keeping (no file, the unchanged login `before`, or one now handed to `quarantine`), so its folder can be
+    deleted rather than left unencrypted. Shared by Codex and Muse."""
+    try:
+        raw = Path(path).read_bytes()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        if json.loads(raw) == before:
+            return True
+    except ValueError:
+        pass
+    if quarantine is None:
+        return False
+    try:
+        quarantine(raw)
+    except Exception:
+        return False
+    diagnostics.log(provider + ".kept_for_review", "warning", account=ref)
+    return True
 
 
 def fingerprint(profile):
@@ -187,7 +212,7 @@ def classify_rpc_error(error):
 
 
 class RPC:
-    """One Codex app-server over stdio in `home`, spawned through `procs.spawn_helper` (§4.1).
+    """One Codex app-server over stdio in `home`, spawned through `procs.spawn_helper`.
 
     close() closes stdin and waits `grace` seconds for the helper to exit on its own (30 s in
     refresh mode, so a rotation in flight can finish writing auth.json; 3 s read-only) before it
@@ -198,7 +223,7 @@ class RPC:
         self.seq = 0
         self.messages = queue.Queue()
         self.notifications = []
-        self.process = procs.spawn_helper(list(command) + ["app-server", "--stdio"], cwd=str(home),
+        self.process = procs.spawn_helper(list(command) + ["app-server", "--stdio"], home=home, cwd=str(home),
                                           env={"CODEX_HOME": str(home)}, stdin=PIPE, stdout=PIPE,
                                           stderr=DEVNULL, text=True, encoding="utf-8")
         self.thread = threading.Thread(target=self._read, daemon=True)
@@ -312,7 +337,7 @@ class Codex:
 
     def executable(self):
         """The Codex CLI to run, or None when it is not installed: `paths.codex_exe` when configured
-        (synthetic paths), else the native binary facts_mac.codex_exe finds now (PLAN §1.8)."""
+        (synthetic paths), else the native binary facts_mac.codex_exe finds now."""
         found = self.paths.codex_exe
         if found is None:
             try:
@@ -409,15 +434,15 @@ class Codex:
             atomic_write(path / "auth.json", json_bytes(value))
 
     def usage(self, profile, *, mode="read_only", owner="v2", persist=None, quarantine=None, account=None):
-        """One probe of a saved auth.json through a private app-server (§5.11). Provider failures
+        """One probe of a saved auth.json through a private app-server. Provider failures
         come back in the Reading; local ones (not installed, a refused refresh, a rotation that
         could not be stored) raise DeckError.
 
         read_only (always for the active account): blank refresh token, account/read{refreshToken:
         false}. refresh (owner "v2" only): the intact profile and {refreshToken: true}; a rotated
-        auth.json goes to `persist` (e.g. Vault.put_guarded), an unreadable one to `quarantine`
-        (e.g. Vault.quarantine), and the helper folder is deleted only after that succeeded; a
-        "conflict" answer from `persist` raises DeckError "identity" and keeps the folder."""
+        auth.json goes to `persist` (Vault.put_guarded with `expected=profile`, the copy the renewal
+        started from). One that cannot be read or that `persist` did not store goes to `quarantine`
+        (Vault.quarantine), and the helper folder is deleted only after one of the two holds it."""
         if mode not in MODES:
             raise ValueError(f"unknown Codex probe mode: {mode}")
         refresh = mode == "refresh"
@@ -444,9 +469,11 @@ class Codex:
                 reading = self._failed(exc, refresh, tokens, profile, now)
             finally:
                 if refresh:
-                    keep = True
-                    settled = self._settle(work, profile, identity, persist, quarantine, ref)
-                    keep = False
+                    try:
+                        settled = self._settle(work, profile, identity, persist, quarantine, ref)
+                    except BaseException:
+                        keep = not stash(work / "auth.json", profile, quarantine, "codex", ref)
+                        raise
             if refresh:
                 reading = replace(reading, meta={**reading.meta, **settled})
         finally:
@@ -481,7 +508,7 @@ class Codex:
             return rates, used
 
     def _failed(self, exc, refresh, tokens, profile, now):
-        """The Reading for a failed probe, applying the §5.11 rules for 401-class answers."""
+        """The Reading for a failed probe, with what a 401-class answer means for the saved sign-in."""
         auth_error = exc.kind in ("unauthorized", "needs_attention", "refresh_rejected")
         meta = {"mode": "refresh" if refresh else "read_only"}
         if not refresh and auth_error and (tokens.remaining is None or tokens.remaining < ACCESS_EXPIRY_MARGIN):
@@ -498,9 +525,9 @@ class Codex:
 
     def _settle(self, work, before, identity, persist, quarantine, ref):
         """Hands a refresh probe's auth.json to `persist` when the helper rotated it, or its raw
-        bytes to `quarantine` when it cannot be read. Returns meta for the Reading. Both callbacks
-        raise when they could not store the copy; that, like a "conflict" answer from `persist`,
-        keeps the helper folder."""
+        bytes to `quarantine` when it cannot be read or `persist` kept its own copy. Returns meta for the
+        Reading. A copy for another account, or a "conflict" from `persist`, raises DeckError, and usage()
+        hands the copy to `quarantine` (stash)."""
         path = Path(work) / "auth.json"
         try:
             latest = read_json(path)
@@ -523,18 +550,25 @@ class Codex:
             diagnostics.log("codex.conflict", "warning", account=ref)
             raise DeckError("Codex renewed this sign-in, but the saved copy belongs to another account. "
                             "The new copy was kept for review.", "identity")
-        stored = stored if isinstance(stored, str) else None      # e.g. put_guarded's "accepted" / "kept"
+        stored = stored if isinstance(stored, str) else None      # put_guarded's "accepted" / "kept"
         diagnostics.log("codex.rotation", account=ref, fp_before=fp_before, fp_after=fp_after, stored=stored)
-        return {"rotated": True, "fp_before": fp_before, "fp_after": fp_after, "stored": stored}
+        meta = {"rotated": True, "fp_before": fp_before, "fp_after": fp_after, "stored": stored}
+        if stored == "kept":
+            # The vault holds another copy than the one this renewal started from, yet Codex issued this
+            # one: an expiry does not say which is newer, so it is never dropped.
+            if quarantine is None:
+                raise DeckError("Codex renewed this sign-in, but the new copy could not be stored.", "vault")
+            meta["needs_review"] = quarantine(self.quarantine(path))
+        return meta
 
     @staticmethod
     def quarantine(path):
-        """The raw bytes of an unreadable credential file, for Vault.quarantine (A9)."""
+        """The raw bytes of an unreadable credential file, for Vault.quarantine."""
         return Path(path).read_bytes()
 
     def restore(self, profile, tx):
         """Writes a saved auth.json through `tx`. Waiting for consumers, the daemon and verification
-        are the engine's steps (§5.5); this refuses non-file stores and incomplete profiles."""
+        are the engine's steps; this refuses non-file stores and incomplete profiles."""
         self.validate_store()
         self.identity(profile)
         tx.write(self.codex_home / "auth.json", json_bytes(profile))

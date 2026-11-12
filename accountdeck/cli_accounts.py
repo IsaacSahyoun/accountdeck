@@ -64,6 +64,16 @@ class CLIAccounts:
         self.owner_retry.pop(fp, None)
         return found
 
+    def whose(self, credentials):
+        """The accountUuid a login belongs to, or None when nobody can say. A saved account's confirmed
+        token answers without the network (so it still answers after a restart); else `owner` asks."""
+        fp = fingerprint(credentials)
+        for row in self.store.accounts():
+            saved = self._record(row["id"]) if row["provider"] == "claude_cli" else None
+            if saved and saved.get("fingerprint") == fp and saved.get("verified") == fp:
+                return saved["identity"]
+        return self.owner(credentials)
+
     def confirm(self, key, saved, *, active):
         """False when the login filed under this account belongs to another one. An inactive account
         then loses that login (`_drop_foreign`), so its readings and switches never use it."""
@@ -243,6 +253,21 @@ class CLIAccounts:
             self.engine.bump()
             return key
 
+    def file_live(self, live, *, source):
+        """Saves a live login under the account `.claude.json` names once that account is known to own its
+        token: the token is the one already saved there, or the provider confirms it (Claude Code writes
+        the token and the account name to different files at different times). Returns (the account id, or
+        None when it was not saved; the owner the provider named, or None)."""
+        old = self.store.find("claude_cli", live["identity"])
+        previous = self._record(old["id"]) if old else None
+        unchanged = bool(previous) and previous.get("fingerprint") == live["fingerprint"]
+        found = None if unchanged else self.owner(live["credentials"])
+        if not unchanged and found != live["identity"]:
+            return None, found
+        if found == live["identity"]:
+            live["verified"] = live["fingerprint"]
+        return self.save(live, source=source), found
+
     def _prefetch_owner(self):
         """Asks the provider about a new live token before `mirror` takes the mutex, so that network
         call never blocks the terminal reads; the locked pass then answers from `owners`."""
@@ -294,14 +319,9 @@ class CLIAccounts:
                 previous = self._record(old["id"]) if old else None
                 if not previous or any(previous.get(k) != live.get(k) for k in
                                        ("fingerprint", "credentials", "oauthAccount")):
-                    # A new token is saved only once the provider confirms whose it is: Claude Code
-                    # writes the token and the account name to different files at different times.
                     unchanged = bool(previous) and previous.get("fingerprint") == live["fingerprint"]
-                    found = None if unchanged else self.owner(live["credentials"])
-                    if unchanged or found == live["identity"]:
-                        if found == live["identity"]:
-                            live["verified"] = live["fingerprint"]
-                        key = self.save(live, source="mirror")
+                    key, found = self.file_live(live, source="mirror")
+                    if key is not None:
                         self._deferred = None
                         diagnostics.log("cli.mirror_saved", acct=diagnostics.account_ref(key),
                                         reason="new" if not old else "updated" if unchanged else "rotated")
