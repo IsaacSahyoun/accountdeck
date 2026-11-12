@@ -404,6 +404,33 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(sorted(done), ["codex-0", "codex-1", "codex-2"])
         self.assertEqual(max(most), 1)
 
+    def test_waiting_helper_reads_leave_workers_for_the_other_clients(self):
+        """Consider 5. Codex and Muse reads run one at a time per client. The ones that wait their turn must not
+        each hold one of the three workers, or nothing else is read until the first one ends."""
+        release, ran = threading.Event(), []
+
+        def run(key):
+            if key.startswith(("codex", "muse")):
+                release.wait(10)
+            ran.append(key)
+            return "ok"
+
+        for client in ("codex", "muse"):
+            with self.subTest(client=client):
+                release.clear()
+                scheduler = RefreshScheduler(run)
+                self.addCleanup(scheduler.shutdown)
+                self.addCleanup(release.set)
+                slow = [Target(f"{client}-{n}", client, f"id-{n}") for n in range(3)]
+                scheduler.tick(slow, 1000.0, lambda: 1000.0)
+                time.sleep(0.2)                               # the first helper read is running, the other two are due
+                scheduler.tick(slow + [Target(f"claude-with-{client}", "claude", "person")], 1000.0, lambda: 1000.0)
+                deadline = time.monotonic() + 3
+                while f"claude-with-{client}" not in ran and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertIn(f"claude-with-{client}", ran, f"three {client} reads held all three workers")
+                release.set()
+
 
 class RetryAfterTest(unittest.TestCase):
     def test_what_a_retry_after_header_asks_for(self):
