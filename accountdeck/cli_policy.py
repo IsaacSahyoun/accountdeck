@@ -29,14 +29,10 @@ def number(value):
 
 
 def considered(account, settings):
-    windows = account.get("windows") or {}
-    if isinstance(windows, list):
-        five = next((w for w in windows if w.get("kind") == "session"), {})
-        weekly = next((w for w in windows if w.get("kind") == "weekly"), {})
-        models = {w.get("model") or w.get("label", "").removesuffix(" weekly"): w for w in windows if w.get("kind") == "model"}
-    else:
-        five, weekly = windows.get("five_hour", {}), windows.get("weekly", {})
-        models = windows.get("models", {})
+    windows = account.get("windows") or []
+    five = next((w for w in windows if w.get("kind") == "session"), {})
+    weekly = next((w for w in windows if w.get("kind") == "weekly"), {})
+    models = {w.get("model") or w.get("label", "").removesuffix(" weekly"): w for w in windows if w.get("kind") == "model"}
     values = [("5-hour", 0 if five.get("started") is False else number(five.get("used")), five),
               ("weekly", number(weekly.get("used")), weekly)]
     pinned = settings.get("pinned_model", "").casefold()
@@ -73,7 +69,7 @@ def forecast(readings, now, horizon):
 
 
 def reset(window):
-    return number(window.get("resets_at", window.get("reset")))
+    return number(window.get("reset"))
 
 
 def duration(seconds):
@@ -95,9 +91,7 @@ def evaluate(accounts, settings, history, now):
         known = all(used is not None for _, used, _ in values)
         room = min(threshold - used for _, used, _ in values) if known else None
         weekly = values[1][2]
-        age = account.get("reading_age")
-        if age is None and number(account.get("last_good_at")) is not None:
-            age = max(0, now - account["last_good_at"])
+        age = max(0, now - account["last_good_at"]) if number(account.get("last_good_at")) is not None else None
         skip, past, stale = None, False, False
         if account.get("active"):
             skip = "in use by your terminals"
@@ -105,7 +99,7 @@ def evaluate(accounts, settings, history, now):
             skip = "left out"
         elif account.get("health", "ok") != "ok":
             skip = "needs sign-in"
-        elif number(age) is None:
+        elif age is None:
             skip = "reading unavailable"
         elif not known:
             skip = "weekly reading unknown" if values[1][1] is None else "reading incomplete"
