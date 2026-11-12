@@ -37,7 +37,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 
 from . import config, diagnostics
 from .config import SafetyViolation
@@ -508,9 +507,6 @@ class ProcessController(abc.ABC):
     def claude_desktop_main(self) -> ProcessInfo | None:
         return desktop_main(self.claude_desktop())
 
-    def claude_code_sessions(self) -> list[ProcessInfo]:
-        return self.classify(self.snapshot())["claude_code"]
-
     def claude_foreign(self) -> list[ProcessInfo]:
         return self.classify(self.snapshot())["claude_foreign"]
 
@@ -747,27 +743,6 @@ class FakeProcessController(ProcessController):
                 self.add_row(name, path=helper, family=family, parent=main.pid)
             self._helper_count = helpers
             return main
-
-    def add_code_session(self, name: str = "Code session", status: str = "busy", *, parent: int | None = None,
-                         version: str = "2.1.284", status_age_s: float = 60.0, entrypoint: str = "claude-desktop",
-                         registry: bool = True) -> ProcessInfo:
-        """A Code-tab `claude` under the desktop main (or `parent`) with its sessions-registry row."""
-        with self._lock:
-            if parent is None:
-                main = desktop_main(self.classify(list(self._table.values()))["claude_desktop"])
-                if main is None:
-                    raise ValueError("add_claude_desktop() first")
-                parent = main.pid
-            path = Path(self.paths.claude_profile) / "claude-code" / version / "claude"
-            row = self.add_row("claude", path=path, parent=parent)
-            if registry:
-                now_ms = int(time.time() * 1000)
-                self._write_session(row.pid, {
-                    "pid": row.pid, "sessionId": str(uuid.uuid4()), "cwd": str(self.paths.home), "startedAt": now_ms,
-                    "procStart": str(row.ctime), "version": version, "kind": "interactive", "entrypoint": entrypoint,
-                    "name": name, "status": status, "updatedAt": now_ms,
-                    "statusUpdatedAt": int((time.time() - status_age_s) * 1000)})
-            return row
 
     def add_foreign_claude(self) -> ProcessInfo:
         """Claude Code in a terminal, as the native installer runs it (named by its version)."""

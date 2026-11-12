@@ -171,20 +171,6 @@ class Vault:
                 return generation["n"], profile
         return None
 
-    def restore_generation(self, key, n):
-        """Make generation n current; the newer generations each move one slot older. Returns the
-        promoted digest."""
-        with self.lock:
-            source = self._slot(key, n)
-            if not source.exists():
-                raise DeckError("That saved sign-in is no longer available.", "vault")
-            if n:
-                staged = self._file(key, ".restore")
-                self._copy(source, staged)      # the shift below overwrites slot n
-                self._shift(key, n)
-                os.replace(staged, self._file(key))
-            return _blob_digest(self._file(key).read_bytes())
-
     def put_guarded(self, key, incoming, source, identity_of, freshness_of, *, expected=None):
         """Freshness-guarded overwrite for rotating credentials (Codex, A9).
 

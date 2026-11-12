@@ -56,7 +56,6 @@ CHROME_HINT = "If Chrome is open, close it first: the Claude in Chrome connector
 ADD_HINT = ("Sign in with the account you intend to add; a browser already signed into another Claude "
             "account can approve the wrong one.")
 INCIDENT_WARNING = "Claude is reporting problems; sign-in checks may fail. Verification will keep retrying."
-SAFETY_MESSAGES = (SELF_PROTECT_MESSAGE, UNKNOWN_MESSAGE, TOO_MANY_MESSAGE)
 LAUNCH_FAILURES = ("system", "not_installed")         # DeckError codes of a launch macOS refused
 
 

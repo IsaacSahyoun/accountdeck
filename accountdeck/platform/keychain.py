@@ -56,7 +56,6 @@ from .. import config
 from ..config import SafetyViolation
 from ..core import DeckError
 
-SECURITY = "/usr/bin/security"
 TIMEOUT = 30.0          # seconds: an access dialog blocks security until someone answers it
 RC_LOCKED = 36          # keychain locked, user interaction not allowed, or access denied
 RC_MISSING = 44         # "The specified item could not be found in the keychain."

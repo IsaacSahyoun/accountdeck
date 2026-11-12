@@ -218,11 +218,6 @@ class ChromiumCryptoMac(ChromiumCrypto):
                 self._key, self._failure = _CbcKey(derive_mac_key(password)), None
             return self._key
 
-    def forget(self) -> None:
-        """Drops the remembered key or failure; the next use reads the Keychain again."""
-        with self._lock:
-            self._key = self._failure = None
-
     def _password(self) -> str:
         """Electron's lookup: the first account that has the item wins; any error other than "no such
         item" stops the lookup (Electron does not fall back either). Safety refusals propagate."""

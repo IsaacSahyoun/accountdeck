@@ -152,10 +152,6 @@ class Operation:
         self._changed()
 
     # ---- cancellation ----
-    @property
-    def cancel_requested(self):
-        return self.cancel_event.is_set()
-
     def checkpoint(self):
         if self.cancel_event.is_set():
             raise OperationCancelled()
