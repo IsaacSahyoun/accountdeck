@@ -408,9 +408,11 @@ class ReviewFindingsTest(EngineCase):
         live = read_json(self.auth)
         live["providers"]["meta"].update(refresh_token="side-renewed", expires_at=int(time.time()) + 7200)
         atomic_write(self.auth, json_bytes(live))
-        newest = engine.vault.get(main["id"])
+        saved = engine.vault.get(main["id"])
+        newest = json.loads(json.dumps(saved))
         newest["providers"]["meta"].update(refresh_token="main-renewed", expires_at=int(time.time()) + 7200)
-        engine.vault.put_guarded(main["id"], newest, "probe", identity_key, lambda d: d["providers"]["meta"]["expires_at"])
+        # stored the way a usage read stores a renewal: against the copy it renewed from
+        self.assertEqual(engine.accounts._put_muse(main["id"], newest, "probe", expected=saved), "accepted")
         engine.recovery = recover_transactions(engine.vault)
         plan = self.plan("recover")
         engine.action("recover", {"provider": "muse", "plan_id": plan["plan_id"], "consent": "now"})
