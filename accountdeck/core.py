@@ -97,6 +97,9 @@ PREV_TTL = 2 * 3600      # how long a guarded overwrite keeps the displaced copy
 _ORPHAN_TTL = 3600       # temporary files an interrupted atomic_write left behind
 _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,159}")
 _SINGLE_COPY = ("transaction-", "quarantine-")
+SET_ASIDE = "set-aside-"
+OPEN_STATUSES = ("prepared", "verifying", "conflict")     # a switch record that still waits for recovery
+RECORD_TTL = 30 * 86400                                   # closed and set-aside records are kept this long
 
 
 def _blob_digest(blob):
@@ -222,6 +225,14 @@ class Vault:
                 stamp += 1
             name = f"quarantine-{key}-{stamp}"
             atomic_write(self._file(name), self.protect(bytes(raw_bytes)))
+        return name
+
+    def set_aside(self, key):
+        """Moves a record out of its key, bytes unchanged, to `set-aside-<key>`: a switch record that
+        cannot be read or applied stops counting as pending, and what it holds is kept. Returns the new key."""
+        name = SET_ASIDE + key
+        with self.lock:
+            os.replace(self._file(key), self._file(name))
         return name
 
     def prune(self, now=None):
@@ -707,7 +718,11 @@ class FileTransaction:
         self.vault.put(self.key, self.doc, generation=False)
 
     def commit(self):
-        self.doc["status"] = "complete"
+        self.close("complete")
+
+    def close(self, status="rolled_back"):
+        """Marks the record finished without touching a file: the caller put the files right itself."""
+        self.doc["status"] = status
         self.save()
 
     def rollback(self):
@@ -732,17 +747,24 @@ class FileTransaction:
 
 
 def recover_transactions(vault):
-    """The keys of transactions a switch left unfinished (prepared, verifying or conflict), which the
-    Recover action puts right; finished ones older than 30 days are deleted. DeckError("vault") when a
-    record cannot be read (the caller treats that as a pending recovery too)."""
-    pending = []
+    """The keys of the records a switch left open, which the Recover action settles (recovery.press). A
+    record that cannot be read is listed too: Recover sets it aside. Closed records and set-aside ones
+    older than RECORD_TTL are deleted."""
+    pending, old = [], time.time() - RECORD_TTL
     for path in vault.root.glob("transaction-*" + VAULT_SUFFIX):
         key = path.name.removesuffix(VAULT_SUFFIX)
         if not _KEY.fullmatch(key):
             continue
-        doc = vault.get(key)
-        if doc.get("status") in ("prepared", "conflict", "verifying"):
+        try:
+            doc = vault.get(key)
+        except DeckError:
             pending.append(key)
-        elif doc.get("at", time.time()) < time.time() - 30 * _DAY:
+            continue
+        if doc.get("status") in OPEN_STATUSES:
+            pending.append(key)
+        elif doc.get("at", time.time()) < old:
+            path.unlink()
+    for path in vault.root.glob(SET_ASIDE + "*" + VAULT_SUFFIX):
+        if path.stat().st_mtime < old:
             path.unlink()
     return pending

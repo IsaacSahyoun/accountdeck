@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import uuid
 
 from tests import support
@@ -206,21 +207,151 @@ class TerminalSwitchTest(DeckCase):
         self.assert_consistent("claude_cli", self.identity(self.outgoing["id"]))
         self.assertEqual(self.pending_records(), [])
 
-    def test_one_press_of_recover_settles_a_switch_the_app_died_in(self):
-        real = switch_cli.CLITransaction.commit
-        switch_cli.CLITransaction.commit = lambda tx: (_ for _ in ()).throw(Crash())
-        undo = switch_cli.CLITransaction.rollback
-        switch_cli.CLITransaction.rollback = lambda tx: None       # a dead app undoes nothing
-        self.addCleanup(setattr, switch_cli.CLITransaction, "commit", real)
-        self.addCleanup(setattr, switch_cli.CLITransaction, "rollback", undo)
-        with self.assertRaises(Crash):
-            switch_cli.perform(self.service, self.target["id"])
-        switch_cli.CLITransaction.commit, switch_cli.CLITransaction.rollback = real, undo
-        self.assertEqual(len(self.pending_records()), 1)
-        switching.dispatch(self.engine, "recover", {})
+
+class TerminalInterruptedSwitchTest(DeckCase):
+    """Act on 1. The app dies at each step of a terminal switch, alone or while Claude Code changes its own
+    login. After at most one press of Recover the account name and the login token belong to one account,
+    AccountDeck reports that account, no saved login is filed under another account, and nothing waits."""
+
+    STEPS = ("after the login is written", "after the account name is written", "after the check")
+
+    def setUp(self):
+        super().setUp()
+        self.service = self.engine.cli
+        self.outgoing, self.target = self.active("claude_cli"), self.spare("claude_cli")
+        self.third = next(a for a in self.rows("claude_cli") if a["id"] not in (self.outgoing["id"], self.target["id"])
+                          and a.get("health", "ok") == "ok" and not a.get("excluded"))
+
+    def die(self, step):
+        """Runs a switch to the target that dies at `step`: nothing after it runs, the undo included."""
+        store = self.service.adapter.store
+
+        def then_die(real):
+            def call(*args, **kwargs):
+                real(*args, **kwargs)
+                raise Crash()
+            return call
+        seam = {self.STEPS[0]: (store, "write", then_die(store.write)),
+                self.STEPS[1]: (switch_cli, "write_account", then_die(switch_cli.write_account)),
+                self.STEPS[2]: (switch_cli.CLITransaction, "commit", lambda tx: (_ for _ in ()).throw(Crash()))}[step]
+        with mock.patch.object(*seam), mock.patch.object(switch_cli, "settle", side_effect=Crash()):
+            with self.assertRaises(Crash):
+                switch_cli.perform(self.service, self.target["id"])
+
+    def claude_code_signs_in_as(self, key):
+        saved = self.vault.get(key)
+        Path(self.paths.claude_cli_credentials).write_text(json.dumps(saved["credentials"]))
+        config = json.loads(Path(self.paths.claude_user_config).read_text())
+        config["oauthAccount"] = saved["oauthAccount"]
+        Path(self.paths.claude_user_config).write_text(json.dumps(config))
+
+    def press_recover_once(self):
+        if self.pending_records():
+            switching.dispatch(self.engine, "recover", {})
+
+    def assert_settled(self, expected=None):
+        self.assertEqual(self.pending_records(), [], "a record still waits after one press of Recover")
+        self.assert_consistent("claude_cli", expected and self.identity(expected["id"]))
+        for row in self.rows("claude_cli"):      # no saved login is filed under another account's name
+            saved = self.vault.get(row["id"])["credentials"]
+            if (saved or {}).get("claudeAiOauth", {}).get("accessToken"):
+                self.assertEqual(self.service.adapter.resolve_account(saved)["accountUuid"], self.identity(row["id"]))
+        other = next(a for a in self.rows("claude_cli") if not a["active"] and a.get("health", "ok") == "ok")
+        self.assertEqual(switch_cli.plan(self.engine, other["id"])["blockers"], [])
+
+    def test_the_app_dies_at_each_step(self):
+        for step in self.STEPS:
+            with self.subTest(step=step):
+                self.setUp()
+                self.die(step)
+                self.press_recover_once()
+                self.assert_settled(self.outgoing)
+
+    def test_the_app_dies_at_each_step_and_claude_code_renews_its_login(self):
+        for step in self.STEPS:
+            with self.subTest(step=step):
+                self.setUp()
+                self.die(step)
+                support.claude_code_renews(self.engine)
+                renewed = json.loads(Path(self.paths.claude_cli_credentials).read_text())["claudeAiOauth"]["refreshToken"]
+                self.press_recover_once()
+                self.assert_settled(self.outgoing)
+                # The renewed login is the only one that still works, so it is the one kept for the target.
+                self.assertEqual(self.vault.get(self.target["id"])["credentials"]["claudeAiOauth"]["refreshToken"], renewed)
+
+    def test_the_app_dies_at_each_step_and_someone_signs_in_to_another_account(self):
+        for step in self.STEPS:
+            with self.subTest(step=step):
+                self.setUp()
+                self.die(step)
+                self.claude_code_signs_in_as(self.third["id"])
+                self.press_recover_once()
+                self.assert_settled(self.third)
+
+    def test_a_record_the_shipped_app_left_is_settled_after_a_renewal(self):
+        """The proven dead end, built from the 2.0.0 record format: the swap is on disk, the record is open,
+        and Claude Code renewed the login before anyone pressed Recover."""
+        target, live = self.vault.get(self.target["id"]), json.loads(Path(self.paths.claude_cli_credentials).read_text())
+        config = json.loads(Path(self.paths.claude_user_config).read_text())
+        tx = switch_cli.CLITransaction(self.service)
+        tx.doc["oauth_change"] = {"present": True, "file_present": True, "before": config["oauthAccount"],
+                                  "after": target["oauthAccount"]}
+        self.service.adapter.store.write(tx, {**live, **target["credentials"]})
+        config["oauthAccount"] = target["oauthAccount"]
+        Path(self.paths.claude_user_config).write_text(json.dumps(config))
+        support.claude_code_renews(self.engine)
+        self.press_recover_once()
+        self.assert_settled()
+
+    def test_recover_works_while_the_provider_cannot_say_whose_login_is_live(self):
+        self.die(self.STEPS[1])
+        support.claude_code_renews(self.engine)
+        displaced = json.loads(Path(self.paths.claude_cli_credentials).read_text())["claudeAiOauth"]["refreshToken"]
+        answer = self.service.adapter.resolve_account
+        self.service.adapter.resolve_account = mock.Mock(side_effect=DeckError("offline", "network"))
+        self.press_recover_once()
+        self.service.adapter.resolve_account = answer
+        self.assert_settled(self.outgoing)
+        kept = [self.vault.protect(path.read_bytes(), decrypt=True) for path in self.vault.root.glob("quarantine-cli-recover-*")]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(json.loads(kept[0])["claudeAiOauth"]["refreshToken"], displaced)
+
+    def test_a_switch_that_fails_before_it_writes_leaves_no_record(self):
+        store = self.service.adapter.store
+        with mock.patch.object(store, "write", side_effect=DeckError("Claude Code's login lock changed. Try again.", "busy")):
+            with self.assertRaises(DeckError):
+                switch_cli.perform(self.service, self.target["id"])
+        self.assert_settled(self.outgoing)
+
+    def test_a_record_nobody_can_read_is_set_aside_by_one_press(self):
+        key = "transaction-" + "0" * 32
+        self.vault.path(key).write_bytes(b"not a vault record")
+        self.assertEqual(self.pending_records(), [key])
+        self.press_recover_once()
+        self.assert_settled(self.outgoing)
+        self.assertEqual(self.vault.path("set-aside-" + key).read_bytes(), b"not a vault record")
+        self.assertIn("set the record aside", self.engine.snapshot()["notices"][-1]["message"])
+
+    def test_a_record_that_cannot_be_applied_is_set_aside_by_one_press(self):
+        self.die(self.STEPS[1])
+        Path(self.paths.claude_cli_credentials).write_text("{not json")       # the live login cannot be read at all
+        key = self.pending_records()[0]
+        self.press_recover_once()
         self.assertEqual(self.pending_records(), [])
-        self.assert_consistent("claude_cli")
-        self.assertEqual(switch_cli.plan(self.engine, self.spare("claude_cli")["id"])["blockers"], [])
+        self.assertTrue(self.vault.path("set-aside-" + key).exists())
+        self.assertIn("set that switch's record aside", self.engine.snapshot()["notices"][-1]["message"])
+
+    def test_a_login_that_belongs_to_someone_else_is_never_filed_under_the_outgoing_account(self):
+        """Consider 9: the name still says the outgoing account while the token is already the third one's."""
+        other = self.vault.get(self.third["id"])["credentials"]
+        other["claudeAiOauth"]["refreshToken"] += "-renewed"          # a token the vault has not seen yet
+        Path(self.paths.claude_cli_credentials).write_text(json.dumps(other))
+        with self.assertRaises(DeckError) as raised:
+            switch_cli.perform(self.service, self.target["id"])
+        self.assertEqual(raised.exception.code, "identity")
+        saved = self.vault.get(self.outgoing["id"])["credentials"]
+        self.assertEqual(self.service.adapter.resolve_account(saved)["accountUuid"], self.identity(self.outgoing["id"]))
+        self.assertEqual(self.pending_records(), [])
 
 
 class TerminalAutoSwitchTest(DeckCase):

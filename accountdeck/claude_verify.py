@@ -343,10 +343,8 @@ class BackgroundVerifier:
         """A switch that opened the wrong account stays undoable: its transaction is pending again."""
         engine = self.ctx.engine
         try:
-            tx = FileTransaction.load(self.ctx.vault, engine.roots(), self.tx_key)
-            tx.doc["status"] = "verifying"
-            tx.save()
-            engine.recovery = recover_transactions(self.ctx.vault)
-        except DeckError:
-            engine.recovery = ["unreadable"]
+            FileTransaction.load(self.ctx.vault, engine.roots(), self.tx_key).close("verifying")
+        except DeckError as exc:
+            diagnostics.log("verify.record_unreadable", lvl="warning", code=exc.code)
+        engine.recovery = recover_transactions(self.ctx.vault)
         engine.bump()

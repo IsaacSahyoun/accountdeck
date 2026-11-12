@@ -1,79 +1,65 @@
 """Terminal login swap (the credentials file, or on macOS Claude Code's keychain item). Never launches,
-stops or signals a process."""
+stops or signals a process.
+
+Claude Code keeps the login token and the name of the account it belongs to in two places, and renews the
+token whenever it runs. So a switch is judged by who owns the login that is live afterwards, never by
+whether its bytes are the ones written, and the two parts are always written together."""
 import copy
 
-from . import cli_auto, diagnostics
+from . import cli_auto, diagnostics, recovery
 from .cli_locks import config_lock, credential_locks
 from .cli_policy import considered
 from .rules import plan_current, plan_target
-from .core import DeckError, FileTransaction, atomic_write, json_bytes
+from .core import DeckError, FileTransaction, atomic_write, is_frozen, json_bytes
 from .operations import Operation
-from .providers.claude_cli import merge, object_file, profile, shared
+from .providers.claude_cli import fingerprint, merge, oauth, object_file, profile, scoped
 from .switching import assemble, context, register
+
+DISAGREE = "Claude Code's account and login disagree. Wait for sign-in to finish."
+UNCONFIRMED = "AccountDeck could not confirm which account Claude Code's login belongs to yet. Try again shortly."
+NOTHING_TO_UNDO = "The interrupted switch had changed nothing."
 
 
 class CLITransaction(FileTransaction):
-    """Credentials use byte ownership (the file) or value ownership (a keychain item, `keychain_changes`);
-    oauthAccount uses field ownership on rollback."""
+    """The record of one terminal switch: the login as it was before (the credentials file under `changes`,
+    or the keychain item under `keychain_changes`) and `oauth_change`, the account name before and after."""
     def __init__(self, service, key=None):
         super().__init__(service.vault, [service.paths.claude_cli_home], key)
         self.service = service
         self.doc["provider"] = "claude_cli"
 
-    def write_login(self, credentials):
-        """Writes the live login through the machine's CredStore, its before-state recorded first."""
-        self.service.adapter.store.write(self, credentials)
-
     @property
     def wrote(self):
         return bool(self.doc["changes"] or self.doc.get("keychain_changes"))
 
-    def write_account(self, target):
-        service = self.service
-        with config_lock(service.paths, timeout=service.lock_timeout) as check:
-            current = object_file(service.paths.claude_user_config, missing=True)
-            self.doc["oauth_change"] = {"present": "oauthAccount" in current,
-                                        "file_present": service.paths.claude_user_config.exists(),
-                                        "before": current.get("oauthAccount"), "after": copy.deepcopy(target)}
-            self.save()
-            current["oauthAccount"] = target
-            check()
-            atomic_write(service.paths.claude_user_config, json_bytes(current))
+    def swap(self, saved, live_credentials, name):
+        """Writes the saved profile's login and its account name, together; `name` is the account named
+        until now. The caller holds Claude Code's credential locks. MCP logins and plugin secrets belong
+        to the machine, so the live ones stay."""
+        account = account_of(saved)
+        self.doc["oauth_change"] = {"before": name, "after": copy.deepcopy(account)}
+        self.service.adapter.store.write(self, merge(saved["credentials"], live_credentials))
+        write_account(self.service, account)
 
-    def rollback(self):
-        service = self.service
-        conflict = False
-        change = self.doc.get("oauth_change")
-        if change:
-            with config_lock(service.paths, timeout=service.lock_timeout) as check:
-                try:
-                    current = object_file(service.paths.claude_user_config,
-                                          missing=change.get("file_present") is False)
-                except DeckError:
-                    conflict = True
-                else:
-                    if current.get("oauthAccount") == change["after"]:
-                        if change["present"]:
-                            current["oauthAccount"] = change["before"]
-                        else:
-                            current.pop("oauthAccount", None)
-                        check()
-                        if not current and change.get("file_present") is False:
-                            service.paths.claude_user_config.unlink(missing_ok=True)
-                        else:
-                            atomic_write(service.paths.claude_user_config, json_bytes(current))
-                    elif current.get("oauthAccount") != change["before"]:
-                        conflict = True
-        conflict |= service.adapter.store.rollback(self)
-        super().rollback()
-        if conflict:
-            self.doc["status"] = "conflict"
-            self.save()
-            raise DeckError("Claude Code changed its account after the switch. The encrypted backup was preserved.", "recovery")
+
+def account_of(saved):
+    """The `oauthAccount` entry of a saved profile."""
+    return saved.get("oauthAccount") or {"accountUuid": saved["identity"], "emailAddress": saved["email"],
+                                         "organizationUuid": saved["organizationUuid"]}
+
+
+def write_account(service, account):
+    """Names `account` in `.claude.json`, under Claude Code's own lock for that file."""
+    with config_lock(service.paths, timeout=service.lock_timeout) as check:
+        current = object_file(service.paths.claude_user_config, missing=True)
+        current["oauthAccount"] = account
+        check()
+        atomic_write(service.paths.claude_user_config, json_bytes(current))
 
 
 def perform(service, key):
-    """§6, shared by manual/automatic/Undo switches; returns the outgoing account id."""
+    """Switches Claude Code to the saved account `key` (manual, automatic and Undo switches); returns the
+    outgoing account's id."""
     service.guard()
     with service.mutex, service.key_lock(key):
         if service.enrollment:
@@ -96,61 +82,146 @@ def perform(service, key):
         try:
             with credential_locks(service.paths, timeout=service.lock_timeout, storage_write=store.storage_lock) as check:
                 service.guard()
-                # Re-read under CC's locks, then persist outgoing rotations BEFORE writing.
-                # Only the Mac store permits initial setup without an outgoing login.
-                # missing=True accepts absence, never unreadable or malformed existing data.
-                fresh_mac = store.kind == "keychain"
-                absent = False
-                try:
-                    credentials = store.read()
-                except DeckError as exc:
-                    if not fresh_mac or exc.code != "login_needed":
-                        raise
-                    credentials, absent = {}, True
-                config = object_file(service.paths.claude_user_config, missing=fresh_mac)
-                account_uuid = (config.get("oauthAccount") or {}).get("accountUuid")
-                if account_uuid == target["identity"]:
+                credentials, config = _read_live(service)
+                if (config.get("oauthAccount") or {}).get("accountUuid") == target["identity"]:
                     raise DeckError("Your terminals already use this account.", "invalid")
-                if absent and account_uuid is None:
-                    previous = None
-                else:
-                    try:
-                        outgoing = service.crosscheck(profile(credentials, config.get("oauthAccount"), service.clock()))
-                    except DeckError as exc:
-                        known = service.store.find("claude_cli", account_uuid)
-                        if exc.code != "login_needed" or known is None or known["flags"].get("health") != "needs_signin":
-                            raise
-                        previous = known["id"]  # blank revoked stub: retain the last encrypted generation
-                    else:
-                        previous = service.save(outgoing, source="sync-back")
-                composed = merge(target["credentials"], credentials)
-                expected_shared = shared(credentials)
-                account = target.get("oauthAccount") or {"accountUuid": target["identity"],
-                    "emailAddress": target["email"], "organizationUuid": target["organizationUuid"]}
-                tx.doc["oauth_change"] = {"present": "oauthAccount" in config,
-                    "file_present": service.paths.claude_user_config.exists(),
-                    "before": config.get("oauthAccount"), "after": copy.deepcopy(account)}
-                tx.save()     # encrypted account-field recovery exists before either live write
+                previous = _file_outgoing(service, credentials, config.get("oauthAccount"))
                 check()
-                tx.write_login(composed)
-                tx.write_account(account)
+                tx.swap(target, credentials, config.get("oauthAccount"))
                 check()
-            # Verify after releasing CC's locks as required. On failure reacquire before
-            # conditional rollback, so recovery cannot interleave with CC's refresh.
-            verified = service.adapter.current()
-            if (verified["identity"] != target["identity"] or verified["fingerprint"] != target["fingerprint"]
-                    or shared(store.read()) != expected_shared):
+            # Checked after Claude Code's locks are released; a failure takes them again to undo, so
+            # the undo cannot interleave with a renewal by Claude Code.
+            live = service.adapter.current()
+            if live["identity"] != target["identity"] or service.whose(live["credentials"]) != target["identity"]:
                 raise DeckError("The terminal account could not be verified.", "identity")
             tx.commit()
             service.engine.active_identity["claude_cli"] = target["identity"]
             service.engine.identity_known["claude_cli"] = True
             service.engine.bump()
             return previous
-        except BaseException:
-            if tx.wrote:
-                with credential_locks(service.paths, timeout=service.lock_timeout, storage_write=store.storage_lock):
-                    tx.rollback()
+        except BaseException as exc:
+            note = recovery.after_failure(tx, lambda _: _settle_locked(service, tx, final=False)) if tx.wrote else None
+            if note and isinstance(exc, DeckError):
+                raise DeckError(f"{exc} {note}", exc.code, exc.retry_after) from None
             raise
+
+
+def _read_live(service):
+    """(the live credentials, `.claude.json`), re-read under Claude Code's locks. Only the Mac keychain
+    store may hold no login at all (a first setup); a login that exists but cannot be read is refused."""
+    store = service.adapter.store
+    fresh_mac = store.kind == "keychain"
+    try:
+        credentials = store.read()
+    except DeckError as exc:
+        if not fresh_mac or exc.code != "login_needed":
+            raise
+        credentials = {}
+    return credentials, object_file(service.paths.claude_user_config, missing=fresh_mac)
+
+
+def _file_outgoing(service, credentials, name):
+    """Saves the login Claude Code is leaving, before it is replaced, under the account that owns it (the
+    rule of `CLIAccounts.file_live`). Returns that account's id, or None when nobody was signed in."""
+    if not credentials and name is None:
+        return None
+    try:
+        outgoing = service.crosscheck(profile(credentials, name, service.clock()))
+    except DeckError as exc:
+        known = service.store.find("claude_cli", (name or {}).get("accountUuid"))
+        if exc.code != "login_needed" or known is None or known["flags"].get("health") != "needs_signin":
+            raise
+        return known["id"]       # a signed-out stub: the account keeps its last saved login
+    previous, found = service.file_live(outgoing, source="sync-back")
+    if previous is None:
+        raise DeckError(DISAGREE if found else UNCONFIRMED, "identity" if found else "network")
+    return previous
+
+
+def _settle_locked(service, tx, *, final):
+    store = service.adapter.store
+    with credential_locks(service.paths, timeout=service.lock_timeout, storage_write=store.storage_lock):
+        return settle(service, tx, final=final)
+
+
+def settle(service, tx, *, final):
+    """Puts one unfinished terminal switch right and closes its record (the steps of recovery.py); returns
+    a sentence for the user. The caller holds the service mutex and Claude Code's credential locks.
+
+    The login that is live decides. If it is the switch's target, the outgoing account's saved login and
+    name are written together. If Claude Code signed in to another account since, or out, that stays and
+    the account name is made to match it: someone chose it in a running terminal. When nobody can say
+    whose the live login is, `final` (the Recover press) puts the outgoing account back and keeps the
+    displaced login in the vault; without `final` the record stays open."""
+    if tx.doc.get("purpose") == "recover":      # an undo that never finished: settling its switch writes the login
+        tx.close()
+        return NOTHING_TO_UNDO
+    change = tx.doc.get("oauth_change") or {}
+    target = (change.get("after") or {}).get("accountUuid")
+    credentials = service.adapter.store.read(missing=True)
+    name = object_file(service.paths.claude_user_config, missing=True).get("oauthAccount")
+    try:
+        oauth(credentials)
+    except DeckError:
+        tx.close()
+        return "Claude Code is signed out, so nothing was put back."
+    owner = service.whose(credentials)
+    if owner is None and not final:
+        raise DeckError(UNCONFIRMED, "network")
+    if owner is not None:
+        _keep(service, credentials, owner)
+    outgoing = _restorable(service, (change.get("before") or {}).get("accountUuid"))
+    if owner in (None, target) and outgoing is not None:
+        if owner is None:
+            service.vault.quarantine("cli-recover", json_bytes(scoped(credentials)))
+        fix = CLITransaction(service)
+        fix.doc["purpose"] = "recover"
+        fix.swap(outgoing, credentials, name)
+        fix.commit()
+        sentence = f"Terminals are back on {outgoing['label']}."
+    elif owner is None:
+        raise DeckError("Nobody can say whose login Claude Code holds, and the previous one is not saved.", "recovery")
+    else:
+        row = service.store.find("claude_cli", owner)
+        if (name or {}).get("accountUuid") != owner:
+            write_account(service, _account_for(service, credentials, row, owner))
+        sentence = f"Claude Code is signed in as {row['label'] if row else 'another account'}, so that login stays."
+    tx.close()
+    diagnostics.log("cli.settled", back=owner in (None, target) and outgoing is not None, owner_known=owner is not None)
+    return sentence
+
+
+def _restorable(service, identity):
+    """The saved profile of the terminal account `identity` when its login can be written back: readable,
+    healthy, on this computer, and confirmed as that account's. Else None."""
+    row = service.store.find("claude_cli", identity) if identity else None
+    saved = service._record(row["id"]) if row and not is_frozen(row) else None
+    if not saved or saved.get("health") != "ok" or not saved.get("credentials"):
+        return None
+    return saved if service.whose(saved["credentials"]) == identity else None
+
+
+def _keep(service, credentials, owner):
+    """Saves the live login under `owner`, its confirmed account, when that account's saved copy is older."""
+    row = service.store.find("claude_cli", owner)
+    saved = service._record(row["id"]) if row and not is_frozen(row) else None
+    if row is None or is_frozen(row) or (saved and saved.get("fingerprint") == fingerprint(credentials)):
+        return
+    account = account_of(saved) if saved else {"accountUuid": owner, "emailAddress": row["email"],
+                                               "organizationUuid": row["org"]}
+    live = profile(credentials, account, service.clock())
+    service.save({**live, "verified": live["fingerprint"]}, source="recover")
+
+
+def _account_for(service, credentials, row, owner):
+    """The `oauthAccount` entry that names `owner`: the saved account's own, else the provider's answer."""
+    saved = service._record(row["id"]) if row else None
+    if saved:
+        return account_of(saved)
+    try:
+        return service.adapter.resolve_account(credentials, timeout=5)
+    except DeckError:
+        return {"accountUuid": owner}
 
 
 class CLISwitch(Operation):
@@ -203,8 +274,12 @@ def plan(engine, key, purpose="switch"):
             target=None, current=None, headroom=None,
             running={"desktop": False, "sessions": [], "busy": 0, "unknown": 0, "foreign_claude": 0, "codex_consumers": []},
             pairs=(), blockers=blockers, warnings=[], tip=None,
-            will=["Restore only terminal login fields still owned by the interrupted switch. No terminal is closed."],
-            preserved=["Later application changes"], account_bound=[], invisible=None, stop_tier="not_running")
+            will=["Save the login Claude Code holds now under its own account.",
+                  "Put back the account your terminals used before the interrupted switch, login and name "
+                  "together. If you signed in to another account since, that one stays.",
+                  "Set aside a record that cannot be read or undone. No terminal is closed."],
+            preserved=["MCP logins, projects, settings and history"], account_bound=[], invisible=None,
+            stop_tier="not_running")
         planned.plan.update(confirmation_required=True, remember_available=False)
         return register(context(engine), planned)
     row = service.row(key)
@@ -236,6 +311,19 @@ def plan(engine, key, purpose="switch"):
     return register(context(engine), planned)
 
 
+def recover_pending(engine):
+    """The Recover action for terminal records (and for a record nobody can read): one press settles each."""
+    service = engine.cli
+
+    def one(loaded):
+        tx = CLITransaction(service, loaded.key)
+        tx.doc = loaded.doc
+        return settle(service, tx, final=True)
+    with service.mutex, credential_locks(service.paths, timeout=service.lock_timeout,
+                                         storage_write=service.adapter.store.storage_lock):
+        return recovery.press(engine, "claude_cli", one)
+
+
 def dispatch(engine, name, body):
     service = engine.cli
     key = body.get("id")
@@ -258,15 +346,8 @@ def dispatch(engine, name, body):
             raise DeckError("Undo is no longer available.", "invalid")
         return {"plan": plan(engine, last["from"])}
     if name == "recover":
-        with service.mutex, credential_locks(service.paths, timeout=service.lock_timeout,
-                                             storage_write=service.adapter.store.storage_lock):
-            for tx_key in engine.recovery:
-                doc = service.vault.get(tx_key)
-                if doc.get("provider") == "claude_cli":
-                    tx = CLITransaction(service, tx_key)
-                    tx.doc = doc
-                    tx.rollback()
-        engine.recovery = engine._scan_recovery()
+        for sentence in recover_pending(engine):
+            engine.notice(sentence, "good")
         return {}
     if name == "switch":
         if engine.recovery or service.enrollment:

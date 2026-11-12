@@ -233,12 +233,13 @@ def dispatch(engine, name, body):
 
 
 def _recovery_provider(engine):
-    """Whose interrupted transaction a recovery puts right first: a terminal one, then Codex, then Muse; None
-    when only Claude Desktop's are pending (its Recover job also reports an unreadable record)."""
+    """Whose interrupted switch a press of Recover settles first: a terminal one, then Codex, then Muse; None
+    when only Claude Desktop's are pending. A record nobody can read goes the terminal's way, which closes
+    no app and sets it aside (recovery.press)."""
     found = set()
     for key in engine.recovery:
         try:
             found.add(engine.vault.get(key).get("provider"))
         except DeckError:
-            continue
+            found.add("claude_cli")
     return next((provider for provider in ("claude_cli", "codex", "muse") if provider in found), None)

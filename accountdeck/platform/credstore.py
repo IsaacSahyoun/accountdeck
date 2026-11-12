@@ -142,10 +142,6 @@ class FileCredStore:
         """Writes `value` as the live login, with its before-state in `tx` (a CLITransaction) first."""
         tx.write(self.paths.claude_cli_credentials, json_bytes(value))
 
-    def rollback(self, tx) -> bool:
-        """Restores what `write` changed outside files (FileTransaction restores files); True on a conflict."""
-        return False
-
     # ---- an enrollment's isolated config folder (CLAUDE_CONFIG_DIR=<folder>) ----
     def read_enrollment(self, folder) -> dict:
         return object_file(Path(folder) / CREDENTIALS_FILE)
@@ -206,27 +202,6 @@ class KeychainCredStore(FileCredStore):
             keychain.set(service, account, text, keychain=self.keychain, replace=True)
         except keychain.KeychainError as exc:
             raise _unavailable(exc) from None
-
-    def rollback(self, tx) -> bool:
-        """Puts each changed item back while it still holds what AccountDeck wrote; an item Claude Code
-        changed since (a refresh, a new sign-in) is kept, and that is a conflict."""
-        conflict = False
-        for change in reversed(tx.doc.get("keychain_changes", [])):
-            service, account = change["service"], change["account"]
-            try:
-                current = keychain.get(service, account, keychain=self.keychain)
-                if current == change["before"]:
-                    continue
-                if current is None or digest(current.encode("utf-8")) != change["after"]:
-                    conflict = True
-                    continue
-                if change["before"] is None:
-                    keychain.delete(service, account, keychain=self.keychain)
-                else:
-                    keychain.set(service, account, change["before"], keychain=self.keychain, replace=True)
-            except keychain.KeychainError as exc:
-                raise _unavailable(exc) from None
-        return conflict
 
     def _enrollment_services(self, folder) -> tuple[str, ...]:
         """The folder's service under the text the enrollment terminal was given, and under the resolved

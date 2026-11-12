@@ -250,10 +250,7 @@ class Engine:
             diagnostics.log_exception("engine.muse_sweep_failed", exc)
 
     def _scan_recovery(self):
-        try:
-            return recover_transactions(self.vault)
-        except DeckError:      # an unreadable record still means a switch was interrupted
-            return ["unreadable"]
+        return recover_transactions(self.vault)
 
     def _restore_login(self):
         """Once after construction: an add-account sign-in that was waiting when the service last stopped
