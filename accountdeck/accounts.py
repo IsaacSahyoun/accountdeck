@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import threading
-import time
 
 from . import diagnostics, intel, readings
 from .contract import ERROR_CODES, PROVIDER_FAILURES, UNSAVED_IDS
@@ -76,29 +75,23 @@ class AccountService:
     waits up to `lock_wait` seconds for a read of it to finish. `on_change()` is called after the
     saved accounts changed (the engine moves its revision)."""
 
-    def __init__(self, store, vault, providers, settings, *, clock=time.time, observed=None,
-                 levels=lambda: {"claude": "ok", "codex": "ok"}, lock_for=None, lock_wait=30.0, on_change=None):
+    def __init__(self, store, vault, providers, settings, *, clock, observed, levels, lock_for, lock_wait, on_change):
         self.store, self.vault, self.providers, self.settings = store, vault, providers, settings
-        self.clock, self.observed, self.levels = clock, observed or {}, levels
+        self.clock, self.observed, self.levels = clock, observed, levels
         self.lock_for, self.lock_wait, self.on_change = lock_for, lock_wait, on_change
         self.unsaved = {"claude": None, "codex": None, "muse": None}
         self._identities, self._series = {}, {}
         self._series_lock = threading.Lock()
 
-    def _changed(self):
-        if self.on_change is not None:
-            self.on_change()
-
     @contextlib.contextmanager
     def _locked(self, account_id):
-        lock = self.lock_for(account_id) if self.lock_for is not None else None
-        if lock is not None and not lock.acquire(timeout=self.lock_wait):
+        lock = self.lock_for(account_id)
+        if not lock.acquire(timeout=self.lock_wait):
             raise DeckError(BUSY_ACCOUNT, "busy")
         try:
             yield
         finally:
-            if lock is not None:
-                lock.release()
+            lock.release()
 
     # ---- saving ----
     def capture(self, provider, *, label=None, claude_running=True, owner="v2") -> str:
@@ -168,7 +161,7 @@ class AccountService:
             self.unsaved[provider] = None
         diagnostics.log("capture.saved", provider=provider, acct=diagnostics.account_ref(key),
                         complete=restorable(provider, profile), new=existing is None)
-        self._changed()
+        self.on_change()
         return key
 
     def _carry_over(self, key, provider, identity):
@@ -218,7 +211,7 @@ class AccountService:
         if self.store.account(account_id) is None:
             raise DeckError("That account no longer exists.", "not_found")
         self.store.update(account_id, label=label)
-        self._changed()
+        self.on_change()
 
     def remove(self, account_id):
         account = self.store.account(account_id)
@@ -231,7 +224,7 @@ class AccountService:
             self._series.pop(account_id, None)
         self.store.event("remove", f"Removed {account['label']}.")
         diagnostics.log("account.removed", acct=diagnostics.account_ref(account_id), provider=account["provider"])
-        self._changed()
+        self.on_change()
 
     # ---- reading ----
     def read(self, account_id, *, active_identity, read_only=False) -> str:
@@ -498,16 +491,15 @@ class AccountService:
         account = self.store.find(provider, identity)
         if account is None or is_frozen(account) or not _touch_due(account, now):
             return
-        lock = self.lock_for(account["id"]) if self.lock_for is not None else None
-        if lock is not None and not lock.acquire(blocking=False):
+        lock = self.lock_for(account["id"])
+        if not lock.acquire(blocking=False):
             return
         try:
             account = self.store.account(account["id"])
             if account is not None and _touch_due(account, now):
                 self.store.update(account["id"], flags={**account["flags"], "last_active_at": now})
         finally:
-            if lock is not None:
-                lock.release()
+            lock.release()
 
     # ---- the unsaved signed-in account ----
     def sense_unsaved(self, provider, identity):
