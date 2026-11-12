@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from . import diagnostics
+from . import diagnostics, readings
 from .cli_locks import credential_locks
 from .core import DeckError, OwnerLock, is_frozen
 from .providers.claude_cli import expires, fingerprint, object_file, oauth, profile
@@ -436,11 +436,17 @@ class CLIAccounts:
             self.store.update(key, flags=dict(row["flags"], **flags), **fields)
 
     def read(self, key):
-        lock_for = getattr(self.engine.scheduler, "account_lock", None)
-        with lock_for(key) if lock_for is not None else nullcontext():
-            if is_frozen(self.store.account(key)):
+        """Reads one terminal account under its lock and records the refills the new reading shows."""
+        with self.engine.scheduler.account_lock(key):
+            before = self.store.account(key)
+            if is_frozen(before):
                 return "skipped"
-            return self._read(key)
+            outcome = self._read(key)
+            after = self.store.account(key)
+            if outcome == "ok" and after is not None:
+                # `_read` stores the reading itself, so the refill step of readings.record runs here.
+                readings.refills(self.store, key, before["last_good_usage"], after["last_good_usage"])
+            return outcome
 
     def _read(self, key):
         """Reads one terminal account's usage. Network calls (profile, renewal, usage) run outside the

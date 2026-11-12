@@ -15,7 +15,7 @@ import contextlib
 import threading
 import time
 
-from . import diagnostics, intel
+from . import diagnostics, intel, readings
 from .contract import ERROR_CODES, PROVIDER_FAILURES, UNSAVED_IDS
 from .core import DeckError, FrozenAccountError, is_frozen
 from .providers import CredentialState, OutcomeLog, Reading
@@ -170,7 +170,7 @@ class AccountService:
         """A newly saved account keeps the reading its unsaved row showed, so it never goes blank."""
         row = self.unsaved.get(provider)
         if row and row["identity"] == identity and row["usage"]:
-            self.store.observe(key, row["usage"], at=row["last_good_at"])
+            readings.record(self.store, key, row["usage"])
             self.store.update(key, last_outcome=row["last_outcome"] or "2xx")
 
     def _save_over(self, existing, provider, profile, info, source):
@@ -266,10 +266,7 @@ class AccountService:
         if plan and account["provider"] == "muse" and plan != account["plan"]:
             fields["plan"] = plan
         if reading.usage is not None:
-            for refill in intel.detect_refill(account["last_good_usage"], reading.usage):
-                self.store.record_refill(account_id, refill["window"], reset_at=refill["reset_at"],
-                                         confirmed_at=refill["confirmed_at"], previous_used=refill["previous_used"])
-            self.store.observe(account_id, reading.usage, at=reading.checked or now)
+            readings.record(self.store, account_id, reading.usage)
             flags.pop("error_since", None)
             self.store.update(account_id, flags=self._flags(account_id, flags), last_outcome="2xx",
                               paused_until=None, **fields)

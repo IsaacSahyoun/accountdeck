@@ -294,7 +294,8 @@ def sign_out(engine, provider):
 
 
 class RefillTest(unittest.TestCase):
-    """A reading taken after a limit's reset time records the refill, whichever client the account belongs to."""
+    """A reading taken after a limit's reset time records the refill, shows the limit as refilled and raises the
+    "limit refilled" alert, whichever client the account belongs to."""
 
     def refill_is_recorded(self, provider):
         engine = support.demo_engine(self, "typical")
@@ -303,15 +304,23 @@ class RefillTest(unittest.TestCase):
         before = [{"key": session, "used": 92.0, "reset": now - 120}, {"key": weekly, "used": 40.0, "reset": now + 3 * DAY}]
         after = [{"key": session, "used": 3.0, "reset": now + 5 * HOUR}, {"key": weekly, "used": 41.0, "reset": now + 3 * DAY}]
         engine.store.observe(row["id"], demo._usage(provider, demo._payload(provider, before), now - 600), at=now - 600)
-        had = len(engine.store.refills(0))
+        engine.alert_engine.hold_until = 0
+        engine._evaluate_alerts(now)                              # the first pass only notes what already holds
+        had, alerted = len(engine.store.refills(0)), {a["id"] for a in engine.store.alerts()}
         answer(engine, provider, after)
         self.assertEqual(engine._refresh(row["id"]), "ok")
         new = engine.store.refills(0)[had:]
         self.assertEqual([(r["account"], r["window"], r["previous_used"]) for r in new], [(row["id"], session, 92.0)])
         window = next(w for w in shown(engine, row["id"])["windows"] if w["id"] == session)
         self.assertEqual((window["state"], window["used"]), ("refilled", 3.0))
+        engine._evaluate_alerts(now)
+        self.assertEqual([(a["kind"], a["account"], a["window"]) for a in engine.store.alerts() if a["id"] not in alerted],
+                         [("reset_confirmed", row["id"], session)])
         self.assertEqual(engine._refresh(row["id"]), "ok")       # the same refill is not recorded twice
         self.assertEqual(len(engine.store.refills(0)), had + 1)
+
+    def test_claude_code(self):
+        self.refill_is_recorded("claude_cli")
 
     def test_claude_desktop(self):
         self.refill_is_recorded("claude")
