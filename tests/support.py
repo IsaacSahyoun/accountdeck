@@ -96,7 +96,7 @@ class WaitingOperation(Operation):
     the test releases it, as a Desktop or Codex switch does while a session stays busy."""
 
     def __init__(self, provider="codex"):
-        super().__init__("switch", provider=provider, label="stand-in", consent="when_idle",
+        super().__init__("switch", provider=provider, label="stand-in", consent="idle",
                          steps=(("wait", "Waiting for sessions to close"),))
         self.release = threading.Event()
 

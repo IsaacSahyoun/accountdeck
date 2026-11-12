@@ -162,6 +162,7 @@ class Engine:
         if self.owns_login and not self.cli.adapter.readonly_reason:
             self.cli.adopt_stashes()
             self.cli.restore_enrollment()
+        self._recovery_lock = threading.Lock()      # two operations can finish at the same moment
         self.recovery = self._scan_recovery()
         self._sweep_work()
         self.alert_engine = alerts.AlertEngine(started=clock())
@@ -1016,7 +1017,8 @@ class Engine:
 
     def _finished(self, op, report):
         """Runs on `ad2-ops` after any operation ended (`report` is None for a `needs_reconfirm`)."""
-        self.recovery = self._scan_recovery()
+        with self._recovery_lock:        # the newest look at the records is the one that stays
+            self.recovery = self._scan_recovery()
         now = self.clock()
         if report is not None:
             self._record_outcome(op, report, now)

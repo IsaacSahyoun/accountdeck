@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 
 from . import diagnostics
-from .core import DeckError, FileTransaction, atomic_write, json_bytes, recover_transactions
+from .core import OPEN_STATUSES, DeckError, FileTransaction, atomic_write, json_bytes, recover_transactions
 
 WAIT_CODES = ("busy", "read_only")        # the user can lift these and press Recover again; nothing changed
 NAMES = {"claude_cli": "Claude Code", "claude": "Claude", "codex": "Codex", "muse": "Muse"}
@@ -49,7 +49,7 @@ def press(engine, provider, settle) -> list:
     """One press of Recover for `provider`: `settle(tx)` puts one of its open records right and returns a
     sentence for the user; the sentences are returned. A refusal the user can lift (the client still runs)
     is raised with the record left open. Any other failure sets the record aside, as does a record that
-    cannot be read."""
+    cannot be read. A record that is no longer open is left alone, however old the list is."""
     sentences = []
     for key in list(engine.recovery):
         try:
@@ -60,6 +60,8 @@ def press(engine, provider, settle) -> list:
             set_aside(engine, key, UNREADABLE)
             continue
         if tx.doc.get("provider", "claude") != provider:
+            continue
+        if tx.doc.get("status") not in OPEN_STATUSES:     # it finished since the list was read: nothing to settle
             continue
         try:
             sentences.append(settle(tx))

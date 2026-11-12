@@ -98,12 +98,14 @@ class Operation:
         self.current_step = None
         self.report = {}
         self.beside = False       # set by the runner: this operation runs next to a waiting one
+        self.wait_over = False    # set by the runner once this operation leaves its wait: nothing starts beside it
         self.plan = None
         self.clock = time.time
         self.lock = threading.Lock()
         self.cancel_event = threading.Event()
         self.done_event = threading.Event()
         self._notify = None
+        self._leave_wait = None   # set by the runner: OperationRunner._leave_wait
 
     def run(self):
         raise NotImplementedError
@@ -113,6 +115,7 @@ class Operation:
     def step(self, step_id, *, phase=None, message=None, cancellable=None, eta_seconds=None):
         """Run the block as step `step_id`: active, then done (or the warning/skipped status note()
         gave it), failed on an error, skipped when cancelled or reconfirming. Entering is a checkpoint."""
+        self._moving_to(phase)
         self.checkpoint()
         step = self._step(step_id)
         with self.lock:
@@ -131,6 +134,7 @@ class Operation:
 
     def set_phase(self, phase, message=None, *, cancellable=None, eta_seconds=None):
         """Move to a running phase; the terminal phases are set when run() ends."""
+        self._moving_to(phase)
         with self.lock:
             self._apply(phase, message, cancellable, eta_seconds)
         self._changed()
@@ -154,6 +158,12 @@ class Operation:
                 raise ValueError("waiting_on is only shown in the waiting_idle phase")
             self.waiting_on = rows
         self._changed()
+
+    def _moving_to(self, phase):
+        """Before this operation leaves its wait for sessions and starts to change things, the operation
+        running beside it ends, so only one operation writes at a time."""
+        if phase not in (None, "waiting_idle") and self.phase == "waiting_idle" and self._leave_wait is not None:
+            self._leave_wait(self)
 
     # ---- cancellation ----
     def checkpoint(self):
@@ -189,7 +199,9 @@ class Operation:
             raise ValueError("the pending message must be a non-empty string")
         if phase is not None:
             self.phase = phase
-            if phase != "waiting_idle":
+            if phase == "waiting_idle":
+                self.wait_over = False
+            else:
                 self.waiting_on = []
         if message is not None:
             self.message = message
@@ -232,7 +244,8 @@ class OperationRunner:
     """Runs one Operation at a time on a thread named `ad2-ops`. One more may run beside it while it only
     waits for a client's sessions to close (phase `waiting_idle`): an operation of another client that sets
     `beside_waits`. The waiting operation stays the one shown as pending and keeps the report slot; the
-    one beside it reports through its callbacks only.
+    one beside it reports through its callbacks only. The waiting operation does not leave its wait until
+    the one beside it has ended, so two operations never change logins at the same time.
 
     `on_change()` is called after every visible change (for the state `rev`), `on_settle(op)` after
     run() returned but before the operation is published as ended (so observers that see it finished
@@ -279,6 +292,7 @@ class OperationRunner:
                 raise DeckError("Finish or cancel the current action first.", "busy")
             op.id = f"op_{int(self.clock() * 1000):x}{secrets.token_hex(3)}"
             op.started, op.clock, op._notify = self.clock(), self.clock, self._changed
+            op._leave_wait = self._leave_wait
             op.beside = lane == "beside"
             thread = threading.Thread(target=self._execute, args=(op,), name="ad2-ops", daemon=True)
             if op.beside:
@@ -362,16 +376,28 @@ class OperationRunner:
     def _running(self):
         return self._lane(None, False) is None
 
+    def _leave_wait(self, op):
+        """Called by the waiting operation `op` before it goes on: the operation beside it ends first
+        (callbacks included), and from then on none starts beside it."""
+        while True:
+            with self.lock:
+                beside, thread = self._beside, self._beside_thread
+                if beside is None or (beside.done_event.is_set() and not thread.is_alive()):
+                    op.wait_over = True
+                    return
+            beside.done_event.wait()
+            thread.join()
+
     def _lane(self, provider, beside_waits):
         """Where an operation of `provider` would run if submitted now: "main" when nothing runs, "beside"
-        when the only thing running is another client's operation in `waiting_idle` and this one may run
-        beside such a wait, else None. The caller holds the lock."""
+        when the only thing running is another client's operation still in its `waiting_idle` wait and this
+        one may run beside such a wait, else None. The caller holds the lock."""
         current, beside = self._current, self._beside
         if beside is not None and not beside.done_event.is_set():
             return None
         if current is None or current.done_event.is_set():
             return "main"
-        if beside_waits and current.phase == "waiting_idle" and current.provider != provider:
+        if beside_waits and current.phase == "waiting_idle" and not current.wait_over and current.provider != provider:
             return "beside"
         return None
 
