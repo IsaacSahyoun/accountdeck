@@ -126,9 +126,11 @@ class CLIAccounts:
             self.vault.put(key, current, generation=False)
 
     def _drop_foreign(self, key, fp):
-        """Caller holds `gate(key)`. Removes another account's login from this record (identity, label
-        and settings stay) without keeping it in an older generation, so it is never renewed or
-        swapped in; the account needs sign-in again."""
+        """Caller holds `gate(key)`. Blanks another account's login in this record's current copy (identity,
+        label and settings stay), so it is never renewed or swapped in; the account needs sign-in again.
+        The blank copy is written in place, so this write pushes nothing into an older generation. Older
+        generations saved before it are left in the vault and may still hold that login; no terminal
+        code reads them back."""
         current = self.vault.get(key)
         if current.get("fingerprint") != fp:      # replaced since it was checked; the new one is unchecked
             return
