@@ -36,7 +36,7 @@ a { color: var(--accent-text); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* Every figure, countdown and percentage keeps its width as it changes. */
-.num, time, kbd, output, .tabular { font-variant-numeric: tabular-nums; }
+time, kbd, output { font-variant-numeric: tabular-nums; }
 
 /* The macOS focus ring: accent, outside the control, following its shape. Keyboard focus only. */
 :focus-visible {
@@ -76,15 +76,6 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 .icon { width: 16px; height: 16px; }
 .icon-20 { width: 20px; height: 20px; }
-.muted { color: var(--label-2); }
-
-/* Section labels: macOS uses sentence case in small semibold secondary text. */
-.eyebrow {
-  color: var(--label-2);
-  font-size: var(--text-sm);
-  font-weight: 600;
-  line-height: 1.3;
-}
 
 kbd {
   display: inline-grid;

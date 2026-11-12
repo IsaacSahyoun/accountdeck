@@ -424,13 +424,10 @@
   AD.app = {
     get state() { return current; },
     get connection() { return connection; },
-    render, tick, boot, clockNow, setDemoShift,
+    clockNow, setDemoShift,
     demoShift: () => demoOffset,
     quit: confirmQuit,
     shortcuts: showShortcuts,
-    // For the app window's own menu (⌘R, ⌘,): the native shell can call these.
-    refresh: refreshAll,
-    toggleSettings: () => AD.settings.toggle(current),
   };
 
   if (document.getElementById('main')) {

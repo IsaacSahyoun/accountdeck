@@ -210,10 +210,6 @@ def title_runs(state, now) -> tuple[tuple[str, str], ...]:
     return (("5h ", "label"), (five, "value"), (" · ", "label"), ("wk ", "label"), (weekly, "value"))
 
 
-def title_text(state, now) -> str:
-    return "".join(text for text, _role in title_runs(state, now))
-
-
 def _number(window, display) -> str:
     """"38% used" or "62% left", as model.js formatNumber writes it."""
     used = window["used"]

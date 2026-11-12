@@ -18,7 +18,6 @@
   const STRINGS = freeze({
     app: 'AccountDeck 2',
     apps: { claude: 'Claude Desktop', codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse Code' },
-    provider: { claude: 'Claude', codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse' },
 
     shell: {
       version: 'AccountDeck {version}', updated: 'Updated {age} ago', updatedNow: 'Updated just now',
@@ -64,12 +63,12 @@
       fableRoom: '{label} room', fableFallback: 'Fable 5.1 weekly', noFable: 'No readings yet',
       noFableLine: 'They appear after a Fable 5.1 message in Claude Code.',
       leaderLine: '{n}% left · resets {clock}', tie: 'Tied for the most room', fableTag: 'Most Fable room',
-      left: '{n}% left', notReported: 'not reported', show: 'Show {label} in the list', rank: '{n}',
+      left: '{n}% left', notReported: 'not reported', show: 'Show {label} in the list',
     },
 
     accounts: {
       title: 'Claude Code accounts', count: '{n} accounts', countOne: '1 account',
-      sub: 'Every open terminal follows the account in use.', add: 'Add Account', sortLabel: 'Sort accounts',
+      sub: 'Every open terminal follows the account in use.', add: 'Add Account',
       sorts: {
         room: 'Most room left', fable: 'Most Fable 5.1 room', weekly: 'Most weekly room',
         session: 'Most 5-hour room', reset: 'Soonest weekly reset', manual: 'My order',
@@ -108,7 +107,7 @@
     button: {
       switchIdle: 'Switch When Claude Is Idle', switchNow: 'Switch Now', switchAnyway: 'Switch Now Anyway',
       continueIdle: 'Continue When Claude Is Idle', continueNow: 'Continue Now', continueAnyway: 'Continue Anyway',
-      cancel: 'Cancel', done: 'Done', close: 'Close', hide: 'Hide', progress: 'Show Progress', review: 'Review…',
+      cancel: 'Cancel', done: 'Done', hide: 'Hide', progress: 'Show Progress', review: 'Review…',
       retry: 'Try Again', viewReport: 'Show Report', explain: 'Explain Last Switch', recover: 'Recover…',
       refresh: 'Refresh', resume: 'Resume Checks', dismiss: 'Dismiss', reset: 'Reset', quit: 'Quit',
       endCodex: 'End Session', waitCodex: 'Wait for Them to Finish', importPC: 'Import from PC…',
@@ -125,7 +124,7 @@
       sessionsOne: '1 Code session is open: {names}. Switching will end it.',
       running: 'Running now', will: 'What will happen', stays: 'What stays with you', bound: 'Tied to each account',
       headsUp: 'Heads-up', rowNow: 'Now', rowAfter: 'After', remember: "Don't ask again when Claude is idle",
-      blocked: 'This cannot start yet.', unsavedHint: 'You can switch to it after the next switch away from it.',
+      blocked: 'This cannot start yet.',
       consumers: '{n} Codex sessions are running. Switch when they finish, or end them one by one.',
       museConsumers: '{n} Muse sessions are open. The switch waits until you close them.',
       progressTitle: 'Working…',

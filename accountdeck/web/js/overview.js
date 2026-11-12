@@ -279,5 +279,5 @@
     return true;
   }
 
-  AD.overview = { render, resetPick };
+  AD.overview = { render };
 })();

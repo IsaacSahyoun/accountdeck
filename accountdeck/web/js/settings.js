@@ -446,5 +446,5 @@
     if (isOpen()) draw(false);
   }
 
-  AD.settings = { open, close, toggle, isOpen, render };
+  AD.settings = { open, close, toggle, render };
 })();

@@ -28,7 +28,6 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-ROOT = Path(__file__).resolve().parent
 STARTUP_WAIT = 30.0        # a starting copy may wait on a Keychain prompt before it serves
 # Loopback requests must never be routed through a system or environment proxy.
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))

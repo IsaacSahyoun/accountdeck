@@ -108,6 +108,6 @@
     return mode;
   }
 
-  AD.theme = { init, get, set, cycle, reducedMotion };
+  AD.theme = { init, get, cycle, reducedMotion };
   init();
 })();
