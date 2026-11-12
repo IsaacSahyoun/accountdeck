@@ -458,17 +458,11 @@ class CLIAccounts:
             self.store.update(key, flags=dict(row["flags"], **flags), **fields)
 
     def read(self, key):
-        """Reads one terminal account under its lock and records the refills the new reading shows."""
+        """Reads one terminal account under its lock."""
         with self.engine.scheduler.account_lock(key):
-            before = self.store.account(key)
-            if is_frozen(before):
+            if is_frozen(self.store.account(key)):
                 return "skipped"
-            outcome = self._read(key)
-            after = self.store.account(key)
-            if outcome == "ok" and after is not None:
-                # `_read` stores the reading itself, so the refill step of readings.record runs here.
-                readings.refills(self.store, key, before["last_good_usage"], after["last_good_usage"])
-            return outcome
+            return self._read(key)
 
     def _read(self, key):
         """Reads one terminal account's usage. Network calls (profile, renewal, usage) run outside the
@@ -513,7 +507,7 @@ class CLIAccounts:
                 data = self.adapter.usage(credentials)
                 note["http"] = "2xx"
                 with self.mutex:
-                    self.store.observe(key, data, at=now)
+                    readings.record(self.store, key, data)
                     self._settle_read(key, flags, credential_state="live" if active else "fresh", last_outcome="2xx",
                                       paused_until=None, expires_at=expires(credentials))
                 self.engine.observed["claude_cli"].record(key, "2xx", at=now)

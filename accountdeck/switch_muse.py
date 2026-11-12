@@ -15,7 +15,7 @@ import tempfile
 import time
 import urllib.parse
 
-from . import recovery
+from . import readings, recovery
 from .contract import UNSAVED_IDS
 from .core import DeckError, atomic_write, is_frozen, json_bytes
 from .engine import muse_consumers
@@ -186,7 +186,7 @@ class MuseSwitch(FileSwitch):
         ctx.accounts.keep_live_muse(self.account, self.target["identity"])
         verified = self.confirmed(reading, "Muse could not report usage right now; the local sign-in matches.")
         if reading.usage is not None:
-            ctx.store.observe(self.account, reading.usage, at=reading.checked or ctx.clock())
+            readings.record(ctx.store, self.account, reading.usage)
         return verified
 
 

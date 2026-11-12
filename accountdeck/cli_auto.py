@@ -101,7 +101,8 @@ def tick(engine):
             engine.store.add_alert({"kind": "limit_reached", "level": "warning", "account": None, "window": None,
                                     "title": "All terminal accounts are low", "message": result["reason"], "at": engine.clock()})
         diagnostics.log("cli.all_low")
-    for key in result["refresh"]:          # candidates whose room is known but too old to switch on
+    # Accounts the rule wants read again: candidates too old to switch to, or the one in use after its limit refilled.
+    for key in result["refresh"]:
         engine.scheduler.request(key, engine.clock())
     if result["action"] != "switch":
         return
