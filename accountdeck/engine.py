@@ -146,7 +146,7 @@ class Engine:
         self._status_threads = []
         self._counts = {}
         self.notices, self._notice_ids = [], itertools.count(1)
-        self.plans, self.login, self.holds = {}, None, set()
+        self.plans, self.login = {}, None
         self.active_identity = {name: None for name in self.providers}
         self.identity_known = {name: False for name in self.providers}
         self.background_verifiers = []
@@ -224,17 +224,6 @@ class Engine:
         result = {"op": self.runner.submit(op)}
         self.bump()
         return result
-
-    def hold_readings(self, reason):
-        """No usage reads start, and `ready` stays false, until every hold is released."""
-        with self.lock:
-            self.holds.add(reason)
-        self.bump()
-
-    def release_readings(self, reason):
-        with self.lock:
-            self.holds.discard(reason)
-        self.bump()
 
     def roots(self):
         return [self.paths.claude_profile, self.paths.codex_home, self.paths.claude_projects, self.paths.muse_config]
@@ -454,7 +443,7 @@ class Engine:
         rows = self.store.accounts()
         self._counts = self._count_accounts(rows)
         self.scheduler.set_paused(bool(self.prefs.get("refresh_paused")))
-        if not self.holds and self.scheduler.tick(self.targets(now, rows), now, self.clock):
+        if self.scheduler.tick(self.targets(now, rows), now, self.clock):
             self.bump()
 
     def _phase(self, name, fn, *args, event="engine.phase_failed", **kwargs):
@@ -683,7 +672,6 @@ class Engine:
         with self.lock:
             notices = [dict(n) for n in self.notices if n["sticky"] or now - n["at"] <= NOTICE_TTL]
             login = self._public_login()
-            holds = bool(self.holds)
         providers = {}
         for name in self.providers:
             providers[name] = {
@@ -696,7 +684,7 @@ class Engine:
         providers["claude_cli"].update(autoswitch=cli_auto.state(self), enrollment=copy.deepcopy(self.cli.phase),
                                         readonly_reason=self.cli.adapter.readonly_reason)
         raw = {"app": "accountdeck2", "version": __version__, "rev": rev, "mode": self.mode, "safe_mode": safe_mode(),
-               "ready": not holds and self._ready(rows, now), "read_only": self.read_only, "settings": settings,
+               "ready": self._ready(rows, now), "read_only": self.read_only, "settings": settings,
                "providers": providers, "accounts": accounts, "pending": pending, "report": runner["report"],
                "login": login, "recovery": {"pending": bool(self.recovery), "count": len(self.recovery)},
                "notices": notices, "alerts": self.store.alerts(), "banners": self._banners(status, machine, rows),

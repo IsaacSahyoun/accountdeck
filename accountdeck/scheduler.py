@@ -1,7 +1,7 @@
 """When to read each account's usage (PLAN §6.9): the cadence table, reset-boundary reads, backoff,
 the per-identity request governor, staggered refresh-all and the refresh worker pool.
 
-The planning is pure (`base_interval`, `RefreshScheduler.next_time`, `RequestGovernor.delay`) and
+The planning is pure (`base_interval`, `interval`, `RequestGovernor.delay`) and
 driven by the engine's tick with an injectable clock; only `RefreshScheduler.tick` starts work, on a
 pool of three `ad2-refresh` threads (or inline, for tests) with at most one Codex probe and one Muse
 helper at a time, and never two reads of one account at once.
@@ -136,12 +136,6 @@ class RefreshScheduler:
         self.provider_pause = {name: False for name in ("claude", "codex", "claude_cli", "muse")}
 
     # ---- planning ----
-    def next_time(self, target: Target, now: float) -> float:
-        """When `target` is due next, from its plan (a first sighting is due now)."""
-        with self._lock:
-            plan = self._plans.get(target.id)
-            return now if plan is None else plan.next
-
     def _schedule(self, target: Target, plan: _Plan, after: float) -> None:
         wait = interval(target, plan.failures) * (1 - JITTER + 2 * JITTER * self.rng())
         due = after + wait
@@ -330,10 +324,6 @@ class RefreshScheduler:
 
     def resume_provider(self, provider):
         self.provider_pause[provider] = False
-
-    @property
-    def paused(self) -> bool:
-        return self._paused
 
     def shutdown(self) -> None:
         if self._pool is not None:

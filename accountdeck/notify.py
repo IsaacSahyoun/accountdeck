@@ -25,7 +25,6 @@ GAP = {"page": 60.0, "desktop": 20.0}
 # Desktop notifications carry the kinds that are on by default for browser notifications (§7.14).
 KINDS = {"page": frozenset(ALERT_KINDS),
          "desktop": frozenset({"reset_confirmed", "limit_reached", "credential_expired", "switch_result"})}
-SINKS = tuple(GAP)
 
 
 @dataclass(frozen=True)

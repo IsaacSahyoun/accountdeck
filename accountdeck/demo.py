@@ -57,8 +57,6 @@ DEFAULT_WINDOWS = {"claude": (("five_hour", 8.0, 10800.0), ("seven_day", 20.0, 4
                    "claude_cli": (("five_hour", 8.0, 10800.0), ("seven_day", 20.0, 400000.0)),
                    "codex": (("codex:primary", 10.0, 10000.0), ("codex:secondary", 15.0, 300000.0)),
                    "muse": (("muse:window", 8.0, 10000.0), ("muse:weekly", 20.0, 300000.0))}
-CODEX_THREADS = ("Refactor the billing module", "Fix the flaky importer test", "Explain the release checklist")
-SESSION_KEYS = ("pid", "status", "kind", "entrypoint", "name", "cwd", "updatedAt", "statusUpdatedAt", "procStart", "version")
 
 
 class DemoClock:

@@ -892,38 +892,6 @@ def start_import(engine, body):
     return {**started, "result": copy.deepcopy(op.result)}
 
 
-def last_result(engine, bundle_id=None):
-    """The newest import (or that bundle's) as _entry_public shows it, also once dismissed; or None."""
-    found = [item for item in _ledger(engine).entries() if bundle_id is None or item.get("bundle_id") == bundle_id]
-    return _entry_public(found[-1]) if found else None
-
-
-def import_from_file(engine, path, passphrase, *, timeout=None) -> dict:
-    """For the automated setup (run.py): imports the bundle at `path`; returns the result
-    ({"bundle_id", "kind", "at", "complete", "code", "counts", "failures", "message"}). With an Engine it
-    runs ImportBundle and waits for it (`timeout` seconds, None = no limit); anything else must offer
-    `action(name, body)` (the server's EngineAPI) and answers within IMPORT_WAIT. Read the passphrase from
-    stdin or a private file, never argv. A partial import returns its result (complete False, no code,
-    failures listed). DeckError when the bundle does not open, a hand-over is refused, nothing was recorded
-    or the import is still running."""
-    from .engine import Engine          # engine imports this module: imported on use
-    if isinstance(engine, Engine):
-        engine._own_the_login()
-        op = ImportBundle(engine, str(path), passphrase)
-        engine.submit(op)
-        if not op.wait(timeout):
-            raise DeckError("The import is still running. Check the dashboard for its code.", "busy")
-        if op.result is None:
-            report = engine.runner.report() or {}
-            error = report.get("error") or {}
-            raise DeckError(error.get("message") or "The import did not finish.", error.get("code") or "invalid")
-        return copy.deepcopy(op.result)
-    answer = engine.action(IMPORT_KIND, {"path": str(path), "passphrase": passphrase}) or {}
-    if answer.get("result") is None:
-        raise DeckError("The import is still running or did not finish. Check the dashboard.", "busy")
-    return answer["result"]
-
-
 # ---- history ----
 
 def _copy_history(store, key, account, now):

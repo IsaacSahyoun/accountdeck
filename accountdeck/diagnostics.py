@@ -7,7 +7,6 @@ never labels, bodies or raw errors.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -166,25 +165,8 @@ def frames(exc: BaseException, limit: int = FRAMES) -> list[str]:
     return found
 
 
-@contextlib.contextmanager
-def timer(ev: str, /, **fields):
-    """Logs `ev` with its duration as `ms`; fields added to the yielded dict are logged too.
-    An escaping exception is logged as a warning with its class name and re-raised."""
-    started = time.perf_counter()
-    try:
-        yield fields
-    except BaseException as exc:
-        _emit(ev, "warning", {**fields, "ms": _elapsed_ms(started), "error_type": type(exc).__name__})
-        raise
-    _emit(ev, "info", {**fields, "ms": _elapsed_ms(started)})
-
-
 def _emit(ev: str, lvl: str, fields: dict) -> None:
     _logger.log(LEVELS.get(lvl, logging.INFO), ev, extra={"fields": fields})
-
-
-def _elapsed_ms(started: float) -> int:
-    return round((time.perf_counter() - started) * 1000)
 
 
 def tail(n: int = 200) -> list[str]:

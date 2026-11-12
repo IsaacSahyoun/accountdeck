@@ -191,16 +191,6 @@ def muse_auth(email, *, storage="file", now=None, lifetime=3600, refresh_token=N
     return {"schema_version": 2, "providers": {"meta": meta}}
 
 
-def muse_usage_payload(window=8.0, weekly=40.0, *, now=None, tier="Muse Code Max Usage", reason=None):
-    """What `muse usage --json` prints: a 5-hour window and the weekly allowance."""
-    now_ms = int((time.time() if now is None else now) * 1000)
-    allowance = {"tier": tier, "window": {"usedPercent": window, "resetsAtMs": now_ms + 2 * 3600 * 1000},
-                 "weekly": {"usedPercent": weekly, "resetsAtMs": now_ms + 3 * 86400 * 1000}}
-    if reason:
-        allowance["reason"] = reason
-    return {"allowance": allowance, "asOfMs": now_ms, "source": "mint"}
-
-
 def _renew_muse_auth(path, doc, now):
     meta = doc["providers"]["meta"]
     meta.update(access_token="synthetic-muse-access-" + secrets.token_hex(12),
@@ -536,12 +526,6 @@ def write_cookies(path, key, now, cookies, *, meta_version=24):
     AES-128-CBC under the 16-byte `key`, with the sha256(host) prefix from `meta_version` 24, and expire
     30 days after `now`."""
     atomic_write(path, _cookie_database(now, cookies, lambda plaintext: seal_cbc(key, plaintext), meta_version))
-
-
-def empty_cookie_db(meta_version=24):
-    """The bytes of an empty Chromium cookie database at `meta_version`, standing in for the one Claude
-    Desktop creates on its first launch (the schema donor of claude_portable.from_portable)."""
-    return _cookie_database(0, (), None, meta_version)
 
 
 def _cookie_database(now, cookies, seal, meta_version):

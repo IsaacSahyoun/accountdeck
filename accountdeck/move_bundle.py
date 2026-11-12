@@ -52,7 +52,7 @@ __all__ = [
     "BundleError", "WrongPassphrase", "CorruptBundle", "UnsupportedVersion", "WrongKind",
     "BundleTooLarge", "InvalidPayload", "NotABundle",
     "BundleKeys", "BundleHeader",
-    "seal", "open_bundle", "peek_header", "validate_payload", "canonical_json",
+    "seal", "open_bundle", "validate_payload", "canonical_json",
     "confirm_code", "code_for_imported", "read_bundle",
 ]
 
@@ -170,7 +170,7 @@ class BundleKeys:
 @dataclass(frozen=True)
 class BundleHeader:
     """The parsed header. `account_ids` (every account in the payload) and `keys` are filled in by
-    open_bundle; peek_header leaves them empty."""
+    open_bundle."""
     format_version: int
     bundle_id: str
     kind: str
@@ -184,10 +184,6 @@ class BundleHeader:
     account_ids: frozenset = frozenset()
     keys: BundleKeys | None = field(default=None, repr=False, compare=False)
 
-    def to_json(self):
-        """The public fields, for the UI and logs (no key material)."""
-        return {"format_version": self.format_version, "bundle_id": self.bundle_id, "kind": self.kind,
-                "created": self.created, "accounts": len(self.account_ids)}
 
 
 # ---- seal and open ----
@@ -228,12 +224,6 @@ def open_bundle(data, passphrase, *, expect_kind=None, min_scrypt_n=SCRYPT_MIN_N
     ids = frozenset(account["id"] for account in payload["accounts"])
     keys = BundleKeys(_hkdf(master, _INFO_CONFIRM, _KEY_LEN))
     return replace(header, account_ids=ids, keys=keys), payload
-
-
-def peek_header(data, *, min_scrypt_n=SCRYPT_MIN_N, max_bytes=MAX_BUNDLE_BYTES):
-    """The header without the passphrase (kind, created, bundle id) for a preview; nothing in it
-    is secret. Same checks as open_bundle up to decryption."""
-    return _parse(data, min_scrypt_n=min_scrypt_n, max_bytes=max_bytes)[0]
 
 
 def canonical_json(value):
