@@ -208,8 +208,7 @@
       testButton: 'Send Test', testSent: 'Test notification sent.',
       mac: 'Mac notifications are off',
       macOff: 'macOS is blocking notifications from AccountDeck 2. Choose Turn On Notifications… in its menu bar item, or allow them in System Settings › Notifications.',
-      menuBar: 'Show in the menu bar', menuBarHint: 'The menu bar item shows the terminal room left. Click it for every account.',
-      login: 'Open at login', loginHint: 'Listed in System Settings › General › Login Items, where you can also turn it off.',
+      loginHint: 'Listed in System Settings › General › Login Items, where you can also turn it off.',
       pause: 'Pause usage checks', pauseHint: 'Background usage readings stop until you turn this back on.',
       importPC: 'Import accounts from your PC', importPCHint: 'Open an encrypted .adeck bundle exported by AccountDeck 2 on Windows.',
       shortcuts: 'Keyboard shortcuts', shortcutsButton: 'Show…', diagnostics: 'Diagnostics', diagnosticsButton: 'Show…',
@@ -279,14 +278,13 @@
     status_icon: 'Show in the menu bar',
     status_icon_hint: 'The menu bar item shows the terminal room left. Click it for every account.',
     start_on_login: 'Open at login',
-    quit_hint: 'Quit Claude from its menu and try again.',
     reopen_hint: 'Reopen AccountDeck 2 from Applications.',
     open_hint: 'Open AccountDeck 2 from Applications.',
     closed_hint: 'Open it again from Applications to see your accounts.',
     system_error: "macOS didn't allow that. Try again.",
   });
   // Server labels that are allowed to replace the built-in copy (the rest stay the page's own).
-  const SERVER_LABELS = new Set(['quit_hint', 'reopen_hint', 'open_hint', 'closed_hint', 'system_error', 'status_icon_hint']);
+  const SERVER_LABELS = new Set(['reopen_hint', 'open_hint', 'closed_hint', 'system_error', 'status_icon_hint']);
   let platform = { features: {}, labels: {}, notifications: null };
   // The app's own window (a WKWebView) names itself in the user agent. It has no browser
   // notifications; Mac notifications come from the menu bar item instead.

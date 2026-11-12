@@ -727,6 +727,25 @@ class EveryClientRowsTest(DashboardTestCase):
         self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1, 1])
 
 
+class SettingsDrawTest(DashboardTestCase):
+    def test_every_settings_tab_draws_its_own_words_with_a_clean_console(self):
+        self.show(fixtures.example_state("typical", now=time.time()))
+        self.browser.click("document.getElementById('open-settings')")
+        self.browser.wait("document.getElementById('settings').open", "Settings")
+        tabs = "document.querySelectorAll('#settings-tabs [role=tab]')"
+        names = self.browser.js(f"[...{tabs}].map((t) => t.textContent.trim())")
+        self.assertEqual(names, ["General", "Auto-Switch", "Notifications", "Menu Bar & Login", "Advanced", "About"])
+        words = {}
+        for index, name in enumerate(names):
+            self.browser.click(f"{tabs}[{index}]")
+            self.browser.wait(f"document.getElementById('settings-pane-title').textContent === {json.dumps(name)}", name)
+            words[name] = self.browser.js("document.getElementById('settings-body').textContent")
+        self.assertIn("Use weekly allowance before it resets", words["Auto-Switch"])
+        for label in ("Show in the menu bar", "Open at login", "Listed in System Settings"):
+            self.assertIn(label, words["Menu Bar & Login"])
+        self.assertEqual(self.browser.problems, [])
+
+
 class InstallerScriptsTest(unittest.TestCase):
     """install.sh and uninstall.sh are read here, never run: they call launchctl on the real login session."""
 
