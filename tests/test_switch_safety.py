@@ -637,6 +637,19 @@ class DesktopInterruptedSwitchTest(DeckCase):
         self.assertTrue(self.vault.path("set-aside-" + tx.key).exists())
         self.assertIn("could not undo an interrupted Claude switch", self.engine.snapshot()["notices"][-1]["message"])
 
+    def test_a_switch_stops_when_claude_starts_again_before_the_write(self):
+        """Consider 1."""
+        saved = switch_claude.ClaudeJob._save_current
+
+        def then_claude_starts(job, **kwargs):
+            profile = saved(job, **kwargs)
+            self.procs.add_claude_desktop()
+            return profile
+        with mock.patch.object(switch_claude.ClaudeJob, "_save_current", then_claude_starts):
+            report = self.act("claude", "switch", self.target["id"])
+        self.assertEqual(report["outcome"], "failed")
+        self.assert_settled(self.outgoing)
+
 
 class MuseSwitchTest(DeckCase):
     def setUp(self):

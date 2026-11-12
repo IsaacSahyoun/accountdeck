@@ -673,10 +673,14 @@ class ClaudeJob(Operation):
         return True
 
     def _point_of_no_return(self, message):
-        """The last cancellation point: from here the job finishes or puts everything back."""
+        """The last cancellation point and the last look at Claude, right before the job writes the sign-in
+        files: Claude must still be closed. From here the job finishes or puts everything back."""
         self.set_phase("restoring", message, cancellable=False)
         with self._guard():
             self.checkpoint()
+            current = observe(self.ctx)
+            if current.desktop or current.code or current.unknown:
+                raise DeckError("Claude started again. Nothing was changed.", "busy")
 
     def _undo(self, exc):
         """A write failed: the transaction puts the files back, Claude reopens as it was and the job ends."""
