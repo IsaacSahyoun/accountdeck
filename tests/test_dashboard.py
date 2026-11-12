@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import struct
@@ -23,6 +24,7 @@ from accountdeck.core import DeckError
 from accountdeck.server import Server
 
 WAIT = 15.0
+ROOT = Path(__file__).resolve().parent.parent
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -723,6 +725,22 @@ class EveryClientRowsTest(DashboardTestCase):
         self.browser.press("Enter")
         self.assertEqual(self.posted(server), [("switch-plan", {"id": desktop[1]["id"]})])
         self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1, 1])
+
+
+class InstallerScriptsTest(unittest.TestCase):
+    """install.sh and uninstall.sh are read here, never run: they call launchctl on the real login session."""
+
+    def test_both_scripts_parse(self):
+        for name in ("install.sh", "uninstall.sh"):
+            with self.subTest(script=name):
+                checked = subprocess.run(["/bin/bash", "-n", str(ROOT / name)], capture_output=True, text=True)
+                self.assertEqual((checked.returncode, checked.stderr), (0, ""))
+
+    def test_uninstall_keeps_open_at_login_until_the_app_has_quit(self):
+        text = (ROOT / "uninstall.sh").read_text()
+        refused = text.index("is running. Choose Quit")
+        self.assertGreater(text.index('rm -f "$agent"'), text.index("done", refused),
+                           "the Open at login file is removed before the wait for the app to quit")
 
 
 if __name__ == "__main__":
