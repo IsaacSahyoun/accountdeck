@@ -462,6 +462,30 @@ class ReviewFindingsTest(EngineCase):
                                           "META_TOKEN": "y"}):
             self.assertTrue({"TBH_AUTH_BASE_URL", "MUSE_CUSTOM_HEADERS", "META_TOKEN"} <= set(cleared_env()))
 
+    REDIRECTS = {"TBH_AUTH_BASE_URL": "https://elsewhere.test", "TBH_CA_CERTIFICATE": "/nonexistent",
+                 "MUSE_CUSTOM_HEADERS": "x", "META_TOKEN": "y"}
+
+    def test_no_muse_helper_is_started_with_a_sign_in_redirect(self):
+        """Consider 7: each helper is really started with the redirects set in AccountDeck's own environment.
+        The stand-in Muse refuses to run when one reaches it."""
+        engine = self.make()
+        engine.tick()
+        muse = engine.providers["muse"]
+        with mock.patch.dict(os.environ, self.REDIRECTS):
+            with self.subTest(helper="a usage check of the signed-in account"):
+                reading = muse.usage(live=True)
+                self.assertIsNone(reading.error)
+                self.assertIsNotNone(reading.usage)
+            with self.subTest(helper="a usage check of a saved account"):
+                reading = muse.usage(muse_auth("side@example.test"), persist=lambda doc: "accepted")
+                self.assertIsNone(reading.error)
+                self.assertIsNotNone(reading.usage)
+            with self.subTest(helper="a sign-in"):
+                self.act("add")
+                login = engine.snapshot()["login"]
+                self.assertIsNotNone(login, engine.snapshot()["report"])
+                self.assertEqual(login["url"], "https://auth.meta.com/oauth/device/?code=SYNT-HETC")
+
     def test_a_renewal_the_vault_refuses_is_kept_for_review(self):
         self.make()
         kept = []
