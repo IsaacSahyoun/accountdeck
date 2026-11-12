@@ -81,7 +81,10 @@ def state(engine):
 
 
 def tick(engine):
-    if (not engine.owns_login or not engine.identity_known.get("claude_cli") or engine.runner.busy
+    """Acts on the policy's decision. Another client's switch that only waits for its sessions to close does
+    not stop it (such a wait can last hours); any other running operation does."""
+    if (not engine.owns_login or not engine.identity_known.get("claude_cli")
+            or not engine.runner.free_for("claude_cli", beside_waits=True)
             or engine.cli.enrollment or engine.recovery or engine.cli.adapter.readonly_reason
             or engine.prefs.get("refresh_paused")):
         return

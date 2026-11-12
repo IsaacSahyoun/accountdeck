@@ -16,7 +16,7 @@ from tests import support
 
 from accountdeck import cli_auto, switch_claude, switch_cli, switching
 from accountdeck.core import DeckError, FileTransaction, Vault, read_json, recover_transactions
-from accountdeck.operations import Operation
+from accountdeck.operations import Operation, OperationRunner
 from accountdeck.providers import codex as codex_module
 from accountdeck.providers.fake import test_cipher, unsigned_jwt
 from accountdeck.providers.muse import identity_key as muse_identity
@@ -29,13 +29,13 @@ class Crash(BaseException):
 class Waiting(Operation):
     """Another operation sitting in its wait for sessions to close, until the test releases it."""
 
-    def __init__(self, provider):
+    def __init__(self, provider, phase="waiting_idle"):
         super().__init__("switch", provider=provider, label="stand-in", consent="idle",
                          steps=(("wait", "Waiting for sessions to close"),))
-        self.release = threading.Event()
+        self.release, self.sits_in = threading.Event(), phase
 
     def run(self):
-        with self.step("wait", phase="waiting_idle", message="Waiting for sessions to close…", cancellable=True):
+        with self.step("wait", phase=self.sits_in, message="Waiting for sessions to close…", cancellable=True):
             while not self.release.wait(0.05):
                 self.checkpoint()
 
@@ -381,11 +381,130 @@ class TerminalAutoSwitchTest(DeckCase):
         running.release.set()
         self.assertTrue(running.wait(10))
 
+    def start(self, operation):
+        self.addCleanup(operation.release.set)
+        self.engine.submit(operation)
+        self.wait_for_phase(operation.sits_in)
+        return operation
+
+    def tick_until_switched(self, seconds=5):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            cli_auto.tick(self.engine)
+            time.sleep(0.1)
+            if support.terminal_on_disk(self.engine)["name"] != self.identity(self.active_row["id"]):
+                return True
+        return False
+
+    def test_it_acts_while_each_other_client_waits_for_its_sessions(self):
+        """Act on 4, for a Desktop, a Codex and a Muse wait."""
+        for provider in ("claude", "codex", "muse"):
+            with self.subTest(waiting=provider):
+                self.setUp()
+                waiting = self.start(Waiting(provider))
+                self.assertTrue(self.tick_until_switched(), "the terminal stayed on the account at 97%")
+                self.assertTrue(self.engine.runner.wait(0.5) is False, "the other client's wait ended")
+                pending = self.engine.snapshot()["pending"]
+                self.assertEqual((pending["id"], pending["phase"]), (waiting.id, "waiting_idle"))
+                self.assert_consistent("claude_cli")
+                waiting.release.set()
+                self.assertTrue(waiting.wait(10))
+                self.assertEqual(self.engine.snapshot()["report"]["op"], waiting.id)
+
+    def test_it_stands_down_while_another_client_writes(self):
+        for phase in ("saving", "restoring", "verifying"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.start(Waiting("codex", phase))
+                self.assertFalse(self.tick_until_switched(0.6))
+
+    def test_the_switch_it_made_during_a_wait_can_be_undone_during_that_wait(self):
+        """The reverse of the state above: Undo is a manual terminal switch, and it must not wait for hours."""
+        self.start(Waiting("codex"))
+        self.assertTrue(self.tick_until_switched())
+        deadline = time.monotonic() + 5
+        while not self.engine.store.setting("cli_history", {}).get("last") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        plan = self.engine.action("cli-undo", {"provider": "claude_cli"})["plan"]
+        self.assertEqual(plan["blockers"], [])
+        self.engine.action("switch", {"id": self.active_row["id"], "provider": "claude_cli", "plan_id": plan["plan_id"]})
+        deadline = time.monotonic() + 5
+        while support.terminal_on_disk(self.engine)["name"] != self.identity(self.active_row["id"]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assert_consistent("claude_cli", self.identity(self.active_row["id"]))
+        self.assertEqual(self.engine.snapshot()["pending"]["phase"], "waiting_idle")
+
+    def test_it_acts_during_a_real_codex_wait_and_that_switch_still_finishes(self):
+        side = self.add_codex_account()
+        sessions = self.procs.codex_consumers()
+        self.act("codex", "switch", side, consent="idle", wait=False)
+        self.wait_for_phase("waiting_idle")
+        self.assertTrue(self.tick_until_switched())
+        self.assertEqual(self.engine.snapshot()["pending"]["phase"], "waiting_idle")
+        for row in sessions:
+            self.procs.exit_process(row.pid)
+        self.assertTrue(self.engine.runner.wait(60))
+        self.assertEqual(self.engine.snapshot()["report"]["outcome"], "success")
+        self.assert_consistent("codex", self.identity(side))
+
     def test_it_stands_down_while_a_record_waits_for_recovery(self):
         self.engine.recovery = ["transaction-" + "0" * 32]
         cli_auto.tick(self.engine)
         self.assertFalse(self.engine.runner.busy)
         self.assertEqual(self.active("claude_cli")["id"], self.active_row["id"])
+
+
+class RunnerLanesTest(unittest.TestCase):
+    """The operation runner: one operation at a time, plus one beside another client's wait."""
+
+    class Beside(Waiting):
+        beside_waits = True
+
+    def setUp(self):
+        self.runner = OperationRunner()
+        self.addCleanup(self.runner.stop, 5)
+
+    def start(self, operation):
+        self.addCleanup(operation.release.set)
+        self.runner.submit(operation)
+        deadline = time.monotonic() + 5
+        while operation.phase != operation.sits_in and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return operation
+
+    def refused(self, operation):
+        with self.assertRaises(DeckError) as raised:
+            self.runner.submit(operation)
+        return raised.exception.code
+
+    def test_only_an_operation_that_may_run_beside_a_wait_does(self):
+        self.start(Waiting("codex"))
+        self.assertEqual(self.refused(Waiting("muse")), "busy")
+        beside = self.start(self.Beside("claude_cli"))
+        self.assertEqual(self.runner.pending()["provider"], "codex", "the waiting operation is the one shown")
+        self.assertEqual(self.refused(self.Beside("claude_cli")), "busy", "one beside at a time")
+        beside.release.set()
+        self.assertTrue(beside.wait(5))
+        self.assertIsNone(self.runner.report(), "the waiting operation's report slot is its own")
+
+    def test_nothing_runs_beside_a_client_of_its_own_or_a_write(self):
+        self.start(Waiting("claude_cli"))
+        self.assertEqual(self.refused(self.Beside("claude_cli")), "busy")
+        self.runner.current.release.set()
+        self.assertTrue(self.runner.wait(5))
+        self.start(Waiting("codex", "restoring"))
+        self.assertEqual(self.refused(self.Beside("claude_cli")), "busy")
+
+    def test_the_runner_stays_busy_until_the_operation_beside_ends(self):
+        waiting = self.start(Waiting("codex"))
+        beside = self.start(self.Beside("claude_cli"))
+        waiting.release.set()
+        self.assertTrue(waiting.wait(5))
+        self.assertTrue(self.runner.busy)
+        self.assertEqual(self.refused(Waiting("muse")), "busy")
+        beside.release.set()
+        self.assertTrue(self.runner.wait(5))
+        self.assertFalse(self.runner.busy)
 
 
 class CodexSwitchTest(DeckCase):

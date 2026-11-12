@@ -225,6 +225,10 @@ def _account_for(service, credentials, row, owner):
 
 
 class CLISwitch(Operation):
+    """A terminal switch as an operation: manual, automatic or Undo. It changes only Claude Code's own
+    files and closes nothing, so it may run while another client's switch waits for its sessions."""
+    beside_waits = True
+
     def __init__(self, engine, key, *, kind="manual", reason=""):
         row = engine.cli.row(key)
         super().__init__("switch", provider="claude_cli", account=key, label=row["label"], consent="now",
@@ -240,6 +244,9 @@ class CLISwitch(Operation):
                 previous = perform(self.engine.cli, self.account)
             except BaseException as exc:
                 manifest.set("verification.result", "failed").set("error_type", type(exc).__name__).finish()
+                if self.beside and self.auto_kind == "manual" and isinstance(exc, DeckError):
+                    # Beside a wait this operation has no report of its own, so the failure is said here.
+                    self.engine.notice(f"Terminals were not switched to {self.label}. {exc}", "warning")
                 raise
             now = self.engine.clock()
             with cli_auto.history(self.engine) as history:
@@ -290,7 +297,7 @@ def plan(engine, key, purpose="switch"):
     blockers = []
     try:
         service.guard()
-        if service.enrollment or engine.runner.busy or engine.recovery:
+        if service.enrollment or not engine.runner.free_for("claude_cli", beside_waits=True) or engine.recovery:
             raise DeckError("Finish the current operation or recovery first.", "busy")
         if row["flags"].get("health") == "needs_signin":
             raise DeckError("Sign in again before switching to this account.", "reauth_required")
