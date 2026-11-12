@@ -14,7 +14,7 @@ import uuid
 
 from tests import support
 
-from accountdeck import cli_auto, switch_cli, switching
+from accountdeck import cli_auto, switch_claude, switch_cli, switching
 from accountdeck.core import DeckError, FileTransaction, Vault, read_json, recover_transactions
 from accountdeck.operations import Operation
 from accountdeck.providers import codex as codex_module
@@ -566,7 +566,6 @@ class DesktopSwitchTest(DeckCase):
         self.assert_consistent("claude", self.identity(self.target["id"]))
 
     def test_one_press_of_recover_settles_a_switch_the_app_died_in(self):
-        from accountdeck import switch_claude
         self.close_claude()
         tx = FileTransaction(self.vault, self.engine.roots())
         tx.doc.update(provider="claude", purpose="switch", outgoing_id=self.outgoing["id"], target_id=self.target["id"])
@@ -578,6 +577,65 @@ class DesktopSwitchTest(DeckCase):
         self.assertEqual(report["outcome"], "success", report)
         self.assertEqual(self.pending_records(), [])
         self.assert_consistent("claude", self.identity(self.outgoing["id"]))
+
+
+class DesktopInterruptedSwitchTest(DeckCase):
+    """Act on 1 for Claude Desktop: one press of Recover after the app died at each step of a switch."""
+
+    def setUp(self):
+        super().setUp()
+        self.outgoing, self.target = self.active("claude"), self.spare("claude")
+        self.ctx = switching.context(self.engine)
+        self.close_claude()
+
+    def die_after_the_login_is_written(self, status="prepared"):
+        tx = FileTransaction(self.vault, self.engine.roots())
+        tx.doc.update(provider="claude", purpose="switch", outgoing_id=self.outgoing["id"], target_id=self.target["id"])
+        tx.save()
+        switch_claude.restore_profile(self.ctx, self.target["id"], tx)
+        tx.close(status)
+        return tx
+
+    def assert_settled(self, expected):
+        self.assertEqual(self.pending_records(), [], "a record still waits after one press of Recover")
+        self.assert_consistent("claude", self.identity(expected["id"]))
+        self.assertEqual(self.plan("claude", "switch", self.spare("claude")["id"])["blockers"], [])
+
+    def test_the_app_dies_at_each_step(self):
+        for status in ("prepared", "verifying", "conflict"):       # written; Claude reopened; a failed undo
+            with self.subTest(status=status):
+                self.setUp()
+                self.die_after_the_login_is_written(status)
+                self.pending_records()
+                self.assertEqual(self.act("claude", "recover")["outcome"], "success")
+                self.assert_settled(self.outgoing)
+
+    def test_a_recovery_that_died_is_not_replayed_over_the_right_account(self):
+        """Consider 10: the first Recover wrote the old login back and died before it closed its records."""
+        tx = self.die_after_the_login_is_written()
+        first = FileTransaction(self.vault, self.engine.roots())
+        first.doc.update(provider="claude", purpose="recover", outgoing_id=None)
+        first.save()
+        switch_claude.restore_profile(self.ctx, self.outgoing["id"], first)
+        for order in ([tx.key, first.key], [first.key, tx.key]):
+            with self.subTest(switch_record_first=order[0] == tx.key):
+                tx.close("prepared")
+                first.close("prepared")
+                self.engine.recovery = order
+                self.assertEqual(self.act("claude", "recover")["outcome"], "success")
+                self.assert_settled(self.outgoing)
+
+    def test_a_record_that_cannot_be_applied_is_set_aside_by_one_press(self):
+        tx = self.die_after_the_login_is_written()
+        tx.doc["outgoing_id"] = None                   # nobody saved to go back to, and the files changed since
+        tx.save()
+        config = Path(self.paths.claude_profile) / "config.json"
+        config.write_text(json.dumps({**json.loads(config.read_text()), "userThemeMode": "dark"}))
+        self.pending_records()
+        self.act("claude", "recover")
+        self.assertEqual(self.pending_records(), [])
+        self.assertTrue(self.vault.path("set-aside-" + tx.key).exists())
+        self.assertIn("could not undo an interrupted Claude switch", self.engine.snapshot()["notices"][-1]["message"])
 
 
 class MuseSwitchTest(DeckCase):
