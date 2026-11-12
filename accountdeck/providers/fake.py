@@ -219,16 +219,9 @@ def build_fake_home(paths, *, claude_identity, claude_org, codex_identity, cooki
                     sessions=(), codex_exp_offset=9 * 86400, claude_exp_offset=8 * 3600, now=None,
                     password=SAFE_STORAGE_PASSWORD, meta_version=24, muse_email=None, muse_storage="file"):
     """Writes a complete synthetic Claude Desktop and Codex installation into a Paths.synthetic tree
-    and returns {"paths", "claude", "codex", "codex_exe", "sessions"}.
-
-    Claude (macOS format): config.json with the token caches as base64("v10" +
-    AES-128-CBC) under PBKDF2(`password`), a Chromium cookie database in the profile folder at
-    `meta_version` (unless `cookies` is false), a Code session with its transcript,
-    claude_desktop_config.json with two MCP servers, registry rows for `sessions` (dicts with at least
-    "pid") and main.log. Codex: auth.json with unsigned JWTs, config.toml, session_index.jsonl, daemon
-    settings and `paths.codex_exe` as a synthetic app-server script. Muse: auth.json for `muse_email` (when
-    given) in `muse_storage` mode, and `paths.muse_exe` as a synthetic muse binary. The same `password`
-    again keeps profiles captured in between restorable."""
+    and returns {"paths", "claude", "codex", "codex_exe", "sessions"} (see _fake_claude and _fake_codex).
+    Muse: auth.json for `muse_email` (when given) in `muse_storage` mode, and `paths.muse_exe` as a
+    synthetic muse binary."""
     if getattr(paths, "mode", None) != "synthetic" or getattr(paths, "temp_root", None) is None:
         raise SafetyViolation("build_fake_home writes only into Paths.synthetic trees.")
     root = Path(paths.temp_root).resolve()
@@ -240,30 +233,47 @@ def build_fake_home(paths, *, claude_identity, claude_org, codex_identity, cooki
     for value in (claude_identity, claude_org):
         uuid.UUID(value)
     now = time.time() if now is None else now
+    claude, rows = _fake_claude(paths, claude_identity, claude_org, now, cookies=cookies, sessions=sessions,
+                                menu_bar_enabled=menu_bar_enabled, exp_offset=claude_exp_offset, password=password,
+                                meta_version=meta_version)
+    codex = _fake_codex(paths, codex_identity, now, exp_offset=codex_exp_offset)
+    codex_exe = _write_codex_stub(Path(paths.codex_exe), paths.python_exe) if paths.codex_exe else None
+    muse_exe = _write_stub(Path(paths.muse_exe), paths.python_exe, STUB_MUSE) if paths.muse_exe else None
+    if muse_email:
+        atomic_write(Path(paths.muse_config) / "auth.json", json_bytes(muse_auth(muse_email, storage=muse_storage, now=now)))
+    return {"paths": paths, "codex_exe": codex_exe, "muse_exe": muse_exe, "sessions": rows, "claude": claude, "codex": codex}
+
+
+def _fake_claude(paths, identity, org, now, *, cookies, sessions, menu_bar_enabled, exp_offset, password, meta_version):
+    """Claude Desktop in its macOS format: config.json with the token caches as base64("v10" + AES-128-CBC)
+    under PBKDF2(`password`), a Chromium cookie database in the profile folder at `meta_version` (unless
+    `cookies` is false), a Code session with its transcript, claude_desktop_config.json with two MCP
+    servers, registry rows for `sessions` (dicts with at least "pid") and main.log. The same `password`
+    again keeps profiles captured in between restorable. Returns (the "claude" facts, the registry rows)."""
     ms = int(now * 1000)
     profile_dir = Path(paths.claude_profile)
     project = Path(paths.home) / "projects" / "synthetic"
 
     key = derive_mac_key(password)
-    expires_at = now + claude_exp_offset
-    cache = {f"acct:{claude_identity}|{CLAUDE_CLIENT_ID}:{claude_org}:https://api.anthropic.com:{CLAUDE_SCOPES}": {
+    expires_at = now + exp_offset
+    cache = {f"acct:{identity}|{CLAUDE_CLIENT_ID}:{org}:https://api.anthropic.com:{CLAUDE_SCOPES}": {
         "token": "synthetic-access-" + secrets.token_hex(12), "refreshToken": "synthetic-refresh-" + secrets.token_hex(12),
         "expiresAt": int(expires_at * 1000)}}
     atomic_write(profile_dir / "config.json", json_bytes({
-        "locale": "en-US", "userThemeMode": "system", "lastKnownAccountUuid": claude_identity,
+        "locale": "en-US", "userThemeMode": "system", "lastKnownAccountUuid": identity,
         "oauth:tokenCache": encrypt_v10(key, b"{}"), "oauth:tokenCacheV2": encrypt_v10(key, json_bytes(cache))}))
     for name in DEFAULT_SCOPE.cookie_files:
         (profile_dir / name).unlink(missing_ok=True)
     if cookies:
         write_cookies(profile_dir / DEFAULT_SCOPE.cookie_files[0], key, now, [
             (".claude.ai", "sessionKey", "synthetic-session-" + secrets.token_hex(12)),
-            (".claude.ai", "lastActiveOrg", claude_org),
+            (".claude.ai", "lastActiveOrg", org),
             (".claude.ai", "anthropic-device-id", str(uuid.uuid4())),
             (".claude.ai", "cf_clearance", "synthetic-clearance-" + secrets.token_hex(6)),
             (".example.test", "sessionKey", "synthetic-foreign-cookie")], meta_version=meta_version)
 
     local, cli = uuid.uuid4(), uuid.uuid4()
-    atomic_write(profile_dir / "claude-code-sessions" / claude_identity / claude_org / f"local_{local}.json", json_bytes({
+    atomic_write(profile_dir / "claude-code-sessions" / identity / org / f"local_{local}.json", json_bytes({
         "sessionId": f"local_{local}", "cliSessionId": str(cli), "cwd": str(project), "originCwd": str(project),
         "createdAt": ms, "lastActivityAt": ms, "model": "claude-sonnet-4-5", "isArchived": False,
         "title": "Synthetic session", "permissionMode": "default"}))
@@ -286,31 +296,29 @@ def build_fake_home(paths, *, claude_identity, claude_org, codex_identity, cooki
     if not log.exists():
         atomic_write(log, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)).encode()
                      + b" [info] Synthetic Claude Desktop log\n")
+    return {"identity": identity, "org": org, "email": f"claude-{identity[:8]}@example.test", "plan": "max",
+            "profile_dir": profile_dir, "password": password, "key": key, "expires_at": expires_at,
+            "local_session": f"local_{local}", "cli_session": str(cli)}, rows
 
+
+def _fake_codex(paths, identity, now, *, exp_offset):
+    """Codex: auth.json with unsigned JWTs, config.toml, session_index.jsonl and the daemon settings.
+    Returns the "codex" facts."""
     codex_home = Path(paths.codex_home)
-    codex_email = f"codex-{codex_identity[:8]}@example.test"
-    exp = int(now + codex_exp_offset)
-    claims = {AUTH_CLAIMS: {"chatgpt_account_id": codex_identity, "chatgpt_plan_type": "plus"}}
+    email = f"codex-{identity[:8]}@example.test"
+    exp = int(now + exp_offset)
+    claims = {AUTH_CLAIMS: {"chatgpt_account_id": identity, "chatgpt_plan_type": "plus"}}
     atomic_write(codex_home / "auth.json", json_bytes({
         "OPENAI_API_KEY": None,
-        "tokens": {"id_token": unsigned_jwt({**claims, "email": codex_email, "exp": exp}),
+        "tokens": {"id_token": unsigned_jwt({**claims, "email": email, "exp": exp}),
                    "access_token": unsigned_jwt({**claims, "exp": exp}),
-                   "refresh_token": "synthetic-refresh-" + secrets.token_hex(12), "account_id": codex_identity},
+                   "refresh_token": "synthetic-refresh-" + secrets.token_hex(12), "account_id": identity},
         "last_refresh": _iso(now)}))
     atomic_write(codex_home / "config.toml", b'cli_auth_credentials_store = "file"\n')
     atomic_write(codex_home / "session_index.jsonl", json_bytes(
         {"id": str(uuid.uuid4()), "thread_name": "Synthetic thread", "updated_at": _iso(now)}) + b"\n")
     atomic_write(codex_home / "app-server-daemon" / "settings.json", json_bytes({"shutdownGraceSeconds": 60}))
-    codex_exe = _write_codex_stub(Path(paths.codex_exe), paths.python_exe) if paths.codex_exe else None
-    muse_exe = _write_stub(Path(paths.muse_exe), paths.python_exe, STUB_MUSE) if paths.muse_exe else None
-    if muse_email:
-        atomic_write(Path(paths.muse_config) / "auth.json", json_bytes(muse_auth(muse_email, storage=muse_storage, now=now)))
-
-    return {"paths": paths, "codex_exe": codex_exe, "muse_exe": muse_exe, "sessions": rows,
-            "claude": {"identity": claude_identity, "org": claude_org, "email": f"claude-{claude_identity[:8]}@example.test",
-                       "plan": "max", "profile_dir": profile_dir, "password": password, "key": key,
-                       "expires_at": expires_at, "local_session": f"local_{local}", "cli_session": str(cli)},
-            "codex": {"identity": codex_identity, "email": codex_email, "plan": "plus", "home": codex_home, "exp": exp}}
+    return {"identity": identity, "email": email, "plan": "plus", "home": codex_home, "exp": exp}
 
 
 STUB_APP_SERVER = r'''"""Synthetic Codex app-server for AccountDeck tests and demos: JSON-RPC over stdio, no network."""
