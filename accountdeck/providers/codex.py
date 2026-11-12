@@ -223,7 +223,7 @@ class RPC:
         self.seq = 0
         self.messages = queue.Queue()
         self.notifications = []
-        self.process = procs.spawn_helper(list(command) + ["app-server", "--stdio"], cwd=str(home),
+        self.process = procs.spawn_helper(list(command) + ["app-server", "--stdio"], home=home, cwd=str(home),
                                           env={"CODEX_HOME": str(home)}, stdin=PIPE, stdout=PIPE,
                                           stderr=DEVNULL, text=True, encoding="utf-8")
         self.thread = threading.Thread(target=self._read, daemon=True)

@@ -21,7 +21,7 @@ from accountdeck import diagnostics
 from accountdeck.config import Paths, Timings
 from accountdeck.core import DeckError, FileTransaction, Vault, atomic_write, json_bytes, read_json, recover_transactions
 from accountdeck.engine import Engine
-from accountdeck.procs import FakeProcessController, process_name
+from accountdeck.procs import FakeProcessController, helper_running, process_name
 from accountdeck.providers import muse as muse_module
 from accountdeck.providers.fake import (STUB_MUSE, FakeClaude, FakeCodex, _write_stub, build_fake_home, muse_auth,
                                         test_cipher)
@@ -475,9 +475,59 @@ class ReviewFindingsTest(EngineCase):
         engine = self.make()
         left = Path(self.paths.data_dir) / "work" / "muse-probe-left" / "muse" / "auth.json"
         atomic_write(left, json_bytes(muse_auth("side@example.test")))
-        engine._sweep_muse()
+        engine._sweep_work()
         self.assertFalse(left.parent.parent.exists())
         self.assertTrue(list((Path(self.paths.data_dir) / "vault").glob("quarantine-muse-leftover-*")))
+
+    def helper_homes(self):
+        """Records, for each helper started from now on, the private folder it was noted in (None: no note)
+        and whether the note already says the helper runs."""
+        seen, original = [], self.procs.spawn_helper
+
+        def spawn(args, *, home=None, **options):
+            process = original(args, home=home, **options)
+            seen.append((home, home is not None and helper_running(home)))
+            return process
+        patcher = mock.patch.object(self.procs, "spawn_helper", spawn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return seen
+
+    def test_a_usage_check_of_a_saved_account_notes_its_helper_in_its_private_folder(self):
+        engine = self.make()
+        seen = self.helper_homes()
+        engine.providers["muse"].usage(muse_auth("side@example.test"), persist=lambda doc: "accepted")
+        work = Path(self.paths.data_dir) / "work"
+        self.assertEqual([(Path(home).parent, Path(home).name[:11], running) for home, running in seen],
+                         [(work, "muse-probe-", True)])
+
+    def test_a_usage_check_of_the_signed_in_account_writes_no_note_into_muses_own_folder(self):
+        engine = self.make()
+        seen = self.helper_homes()
+        engine.providers["muse"].usage(live=True)
+        self.assertEqual(seen, [(None, False)])
+        config = Path(self.paths.muse_config)
+        self.assertEqual([path.name for folder in (config, config.parent) for path in folder.glob(".helper")], [])
+
+    def test_the_start_up_cleanup_leaves_a_sign_in_that_is_still_running_alone(self):
+        engine = self.make()
+        engine.tick()
+        seen = self.helper_homes()
+        self.act("add")
+        home = next((Path(self.paths.data_dir) / "work").glob("muse-login-*"))
+        self.assertEqual(seen, [(home, True)])
+        engine._sweep_work()                    # what the next start would do if AccountDeck had died here
+        self.assertTrue(home.exists(), "the folder a running sign-in writes its login to was deleted")
+        approve = home / "muse" / "stub-approve"
+        approve.parent.mkdir(parents=True, exist_ok=True)
+        approve.write_text("side@example.test", encoding="utf-8")
+        for _ in range(100):
+            if not approve.exists():
+                break
+            time.sleep(0.05)
+        report = self.act("finish-login")["report"]
+        self.assertEqual(report["outcome"], "success", report)
+        self.assertIsNotNone(self.saved("side@example.test"))
 
     def test_only_muse_codes_own_binary_counts_as_a_session(self):
         self.make()

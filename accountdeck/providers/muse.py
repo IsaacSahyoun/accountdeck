@@ -49,7 +49,6 @@ FILE_BACKEND = {"TBH_CREDENTIAL_BACKEND": "file"}
 # variable that could send its sign-in elsewhere (TBH_AUTH_BASE_URL, TBH_CA_CERTIFICATE, MUSE_CUSTOM_HEADERS...).
 CLEARED_PREFIXES = ("TBH_", "MUSE_", "META_")
 CLEARED_NAMES = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME")
-WORK_PREFIXES = ("muse-probe-", "muse-login-")
 TOKEN_KEYS = ("access_token", "refresh_token", "api_key")
 NOT_INSTALLED_MESSAGE = "Install Muse Code and sign in once, then try again."
 SIGN_IN_MESSAGE = "Sign in to Muse first, or add an account here."
@@ -337,6 +336,7 @@ class Muse:
         # read ends when Muse itself exits.
         with tempfile.TemporaryFile(dir=self.workspace) as stdout, tempfile.TemporaryFile(dir=self.workspace) as stderr:
             process = self.procs.spawn_helper(self.command() + ["usage", "--json"], cwd=str(self.workspace),
+                                              home=config_home if isolated else None,   # never Muse's own folder
                                               env=self._env(config_home, file_mode=file_mode, isolated=isolated),
                                               remove_env=cleared_env(), stdin=DEVNULL, stdout=stdout, stderr=stderr)
             try:
@@ -398,22 +398,6 @@ class Muse:
             return {"rotated": True, "stored": "kept", "needs_review": record}
         diagnostics.log("muse.renewed", account=ref, stored=stored if isinstance(stored, str) else None)
         return {"rotated": True, "stored": stored if isinstance(stored, str) else None}
-
-    def sweep(self, quarantine):
-        """Deletes the private folders an earlier run left behind (a crash during a usage read or a sign-in),
-        handing any sign-in in them to `quarantine` (Vault.quarantine) first. Run only before any read starts."""
-        try:
-            folders = [entry for entry in self.workspace.iterdir() if entry.name.startswith(WORK_PREFIXES)]
-        except FileNotFoundError:
-            return 0
-        for folder in folders:
-            auth = folder / "muse" / "auth.json"
-            if auth.is_file():
-                quarantine("muse-leftover", auth.read_bytes())
-            facts_mac.remove_work_directory(folder, self.workspace)
-        if folders:
-            diagnostics.log("muse.swept", "warning", count=len(folders))
-        return len(folders)
 
     # ---- switching ----
     def restore(self, profile, tx):

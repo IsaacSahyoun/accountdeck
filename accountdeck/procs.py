@@ -97,6 +97,7 @@ DAEMON_STOP_MARGIN = 15.0             # beyond shutdownGraceSeconds for `codex a
 DAEMON_EXIT_WAIT = 10.0
 DAEMON_START_WAIT = 30.0
 REMEMBERED_LIMIT = 256
+HELPER_MARK = ".helper"         # in a helper's private folder: "<pid> <start time>" of the process using it
 
 CONSENT_MESSAGE = "AccountDeck did not get permission to stop this process, so it left it alone. Nothing was changed."
 CHANGED_MESSAGE = "The process changed since you confirmed, so AccountDeck left it alone. Nothing was changed."
@@ -127,6 +128,27 @@ def process_name(path: str | None, fallback: str = "") -> str:
 def is_code_child_path(path) -> bool:
     """True for Claude Desktop's bundled Claude Code (…/Claude/claude-code/<version>/claude)."""
     return bool(path) and CODE_CHILD_PATH.search(str(path)) is not None
+
+
+def mark_helper_home(folder, pid, ctime) -> None:
+    """Notes in `folder` that process `pid`, started at `ctime`, is using it. A note that cannot be written
+    is only logged: the helper already runs."""
+    if not ctime:
+        return
+    try:
+        (Path(folder) / HELPER_MARK).write_text(f"{pid} {ctime}")
+    except OSError as exc:
+        diagnostics.log("procs.helper_mark_failed", "warning", error=type(exc).__name__)
+
+
+def helper_running(folder) -> bool:
+    """True while the helper noted in `folder` still runs: the same pid, started at the same moment. False
+    when the folder has no note."""
+    try:
+        pid, ctime = (int(part) for part in (Path(folder) / HELPER_MARK).read_text().split())
+    except (OSError, ValueError):
+        return False
+    return libproc.creation_time(pid) == ctime
 
 
 def _is_code_child(row) -> bool:
@@ -575,11 +597,15 @@ class ProcessController(abc.ABC):
         self._remember(self.owned, process.pid)
         return process
 
-    def spawn_helper(self, args, **options) -> subprocess.Popen:
-        """A background helper (Codex RPC) without API keys in its environment."""
+    def spawn_helper(self, args, *, home=None, **options) -> subprocess.Popen:
+        """A background helper (a Codex app-server, Muse) without API keys in its environment. `home` is the
+        private folder it was handed a login in: the process is noted there, so the cleanup at the next
+        start (workfolders.sweep) leaves the folder alone while this helper still runs."""
         options.update(strip_api_keys=True)
         process = self.spawn(args, **options)
         self._remember(self.helpers, process.pid)
+        if home is not None:
+            mark_helper_home(home, process.pid, self.helpers.get(process.pid))
         return process
 
     def find_claude_cli(self):

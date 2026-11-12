@@ -5,6 +5,7 @@ import dataclasses
 import json
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -16,10 +17,12 @@ from tests import support
 
 from accountdeck import cli_auto, switch_claude, switch_cli, switching
 from accountdeck.claude_verify import Verdict, Verifier
+from accountdeck.config import Paths
 from accountdeck.core import DeckError, FileTransaction, Vault, read_json, recover_transactions
 from accountdeck.operations import Operation, OperationRunner
+from accountdeck.procs import FakeProcessController, helper_running
 from accountdeck.providers import codex as codex_module, fake as fake_module
-from accountdeck.providers.fake import test_cipher, unsigned_jwt
+from accountdeck.providers.fake import build_fake_home, muse_auth, test_cipher, unsigned_jwt
 from accountdeck.providers.muse import identity_key as muse_identity
 
 
@@ -998,6 +1001,190 @@ class MuseInterruptedSwitchTest(DeckCase):
         self.assertTrue(self.vault.path("set-aside-" + tx.key).exists())
         self.assertIn("could not undo an interrupted Muse switch", self.engine.snapshot()["notices"][-1]["message"])
         self.assertEqual(self.plan("muse", "capture")["blockers"], [])
+
+
+class LeftoverFoldersTest(DeckCase):
+    """Consider 3: one cleanup at start of the private folders helpers ran in, for every client that has them.
+    A login found in one is never lost and never left in plain text, and a folder is left alone while its
+    helper still runs."""
+
+    # folder name prefix -> (client, where its login is inside the folder)
+    KINDS = {"probe-": ("codex", "auth.json"), "login-": ("codex", "auth.json"),
+             "muse-probe-": ("muse", "muse/auth.json"), "muse-login-": ("muse", "muse/auth.json")}
+
+    def setUp(self):
+        super().setUp()
+        self.work = Path(self.paths.data_dir) / "work"
+        self.now = self.engine.clock()
+
+    def leave(self, prefix, login):
+        """The folder a crash left: `login` (a document, or raw bytes) where that kind of helper keeps it."""
+        folder = self.work / (prefix + "left")
+        path = folder / self.KINDS[prefix][1]
+        path.parent.mkdir(parents=True)
+        path.write_bytes(login if isinstance(login, bytes) else json.dumps(login).encode())
+        return folder
+
+    def stranger(self, client):
+        """A complete login of an account that is not saved here."""
+        if client == "codex":
+            return codex_login("nobody@example.test", now=self.now, refresh="synthetic-refresh-nobody")
+        return muse_auth("nobody@example.test", now=self.now)
+
+    def kept_for_review(self, key):
+        return sorted(path.name for path in self.vault.root.glob(f"quarantine-{key}-*"))
+
+    def all_kept_for_review(self):
+        return sorted(path.name for path in self.vault.root.glob("quarantine-*"))
+
+    def sweep(self):
+        self.engine._sweep_work()
+
+    # ---- Codex ----
+    def renewed(self, saved, *, lifetime):
+        login = json.loads(json.dumps(saved))
+        login["tokens"]["refresh_token"] = "synthetic-refresh-renewed"
+        login["tokens"]["access_token"] = unsigned_jwt(
+            {**codex_module.jwt_claims(saved["tokens"]["access_token"]), "exp": int(self.now) + lifetime})
+        return login
+
+    def test_a_codex_login_renewed_before_the_crash_is_saved_under_its_account(self):
+        for prefix in ("probe-", "login-"):
+            with self.subTest(folder=prefix):
+                side = self.add_codex_account(email=f"{prefix}side@example.test", now=self.now, lifetime=3600)
+                folder = self.leave(prefix, self.renewed(self.vault.get(side), lifetime=10 * 86400))
+                self.sweep()
+                self.assertEqual(self.vault.get(side)["tokens"]["refresh_token"], "synthetic-refresh-renewed")
+                self.assertFalse(folder.exists(), "the plain-text copy is still on disk")
+                self.assertEqual(self.all_kept_for_review(), [])
+
+    def test_a_codex_login_the_vault_cannot_call_newer_is_kept_for_review_under_its_account(self):
+        side = self.add_codex_account(now=self.now, lifetime=3600)
+        folder = self.leave("probe-", self.renewed(self.vault.get(side), lifetime=3600))
+        self.sweep()
+        self.assertEqual(self.vault.get(side)["tokens"]["refresh_token"], "synthetic-refresh-side")
+        self.assertEqual(len(self.kept_for_review(side)), 1, "the renewed login was thrown away")
+        self.assertFalse(folder.exists())
+
+    def test_a_codex_copy_that_was_given_no_refresh_token_is_just_deleted(self):
+        side = self.add_codex_account(now=self.now)
+        blank = self.vault.get(side)
+        blank["tokens"]["refresh_token"] = ""           # what a read-only usage check is handed
+        folder = self.leave("probe-", blank)
+        self.sweep()
+        self.assertEqual(self.vault.get(side)["tokens"]["refresh_token"], "synthetic-refresh-side")
+        self.assertEqual(self.all_kept_for_review(), [])
+        self.assertFalse(folder.exists())
+
+    # ---- Muse ----
+    def test_a_muse_copy_equal_to_the_saved_one_is_just_deleted(self):
+        spare = self.spare("muse")
+        folder = self.leave("muse-probe-", self.vault.get(spare["id"]))
+        self.sweep()
+        self.assertEqual(self.all_kept_for_review(), [])
+        self.assertFalse(folder.exists())
+
+    def test_a_muse_login_that_differs_from_the_saved_one_is_kept_for_review_under_its_account(self):
+        spare = self.spare("muse")
+        saved = self.vault.get(spare["id"])
+        other = json.loads(json.dumps(saved))
+        other["providers"]["meta"]["access_token"] = "synthetic-muse-access-renewed"
+        folder = self.leave("muse-probe-", other)
+        self.sweep()
+        self.assertEqual(self.vault.get(spare["id"]), saved, "a copy of unknown age replaced the saved login")
+        self.assertEqual(len(self.kept_for_review(spare["id"])), 1, "the other login was thrown away")
+        self.assertFalse(folder.exists())
+
+    def test_a_muse_copy_whose_refresh_token_was_blanked_is_just_deleted(self):
+        spare = self.spare("muse")
+        blank = self.vault.get(spare["id"])
+        blank["providers"]["meta"]["refresh_token"] = ""    # what a check gets when another AccountDeck owns the logins
+        folder = self.leave("muse-probe-", blank)
+        self.sweep()
+        self.assertEqual(self.all_kept_for_review(), [])
+        self.assertFalse(folder.exists())
+
+    # ---- every kind of folder ----
+    def test_a_login_of_no_saved_account_is_kept_for_review(self):
+        for prefix, (client, _) in self.KINDS.items():
+            with self.subTest(folder=prefix):
+                before = self.kept_for_review(client + "-leftover")
+                folder = self.leave(prefix, self.stranger(client))
+                self.sweep()
+                self.assertEqual(len(self.kept_for_review(client + "-leftover")), len(before) + 1)
+                self.assertFalse(folder.exists(), "the plain-text copy is still on disk")
+
+    def test_a_login_that_cannot_be_read_is_kept_for_review(self):
+        for prefix, (client, _) in self.KINDS.items():
+            with self.subTest(folder=prefix):
+                before = self.kept_for_review(client + "-leftover")
+                folder = self.leave(prefix, b"\x00 not json")
+                self.sweep()
+                self.assertEqual(len(self.kept_for_review(client + "-leftover")), len(before) + 1)
+                self.assertFalse(folder.exists())
+
+    def test_a_folder_is_left_alone_while_its_helper_still_runs_and_cleaned_once_it_is_gone(self):
+        for prefix, (client, _) in self.KINDS.items():
+            with self.subTest(folder=prefix):
+                before = self.all_kept_for_review()
+                folder = self.leave(prefix, self.stranger(client))
+                helper = self.procs.spawn_helper([sys.executable, "-c", "import time; time.sleep(120)"], home=folder)
+                self.addCleanup(helper.wait)
+                self.addCleanup(helper.kill)
+                self.sweep()
+                self.assertTrue((folder / self.KINDS[prefix][1]).exists(), "the folder of a running helper was deleted")
+                self.assertEqual(self.all_kept_for_review(), before)
+                helper.kill()
+                helper.wait()
+                self.sweep()
+                self.assertFalse(folder.exists())
+                self.assertEqual(len(self.all_kept_for_review()), len(before) + 1)
+
+    def test_a_leftover_copy_of_claudes_cookies_is_deleted(self):
+        folder = self.work / "cookies-left"
+        folder.mkdir(parents=True)
+        (folder / "Cookies").write_bytes(b"synthetic")
+        self.sweep()
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.all_kept_for_review(), [])
+
+    def test_anything_else_in_the_work_folder_is_left_alone(self):
+        other = self.work / "something-else"
+        other.mkdir(parents=True)
+        (other / "auth.json").write_bytes(b"{}")
+        self.sweep()
+        self.assertTrue((other / "auth.json").exists())
+
+    def test_a_login_that_could_not_be_stored_stays_where_it_is(self):
+        folder = self.leave("probe-", self.stranger("codex"))
+        with mock.patch.object(Vault, "quarantine", side_effect=DeckError("The vault is locked.", "vault")):
+            self.sweep()
+        self.assertTrue((folder / "auth.json").exists(), "the only copy of a login was deleted")
+
+
+class CodexHelperFolderTest(unittest.TestCase):
+    """Consider 3: the real Codex adapter, with the stand-in app-server, notes its helper in the private folder
+    it gives it, so the cleanup at the next start can tell the folder is in use."""
+
+    def test_a_usage_check_notes_its_helper_in_its_private_folder(self):
+        root = Path(tempfile.mkdtemp(prefix="ad-switch-safety-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        paths = Paths.synthetic(root)
+        build_fake_home(paths, claude_identity=str(uuid.uuid4()), claude_org=str(uuid.uuid4()),
+                        codex_identity=str(uuid.uuid4()))
+        procs = FakeProcessController(paths)
+        seen, original = [], procs.spawn_helper
+
+        def spawn(args, *, home=None, **options):
+            process = original(args, home=home, **options)
+            seen.append((Path(home).parent, Path(home).name[:6], helper_running(home)))
+            return process
+        with mock.patch.object(procs, "spawn_helper", spawn):
+            reading = codex_module.Codex(paths, procs).usage(read_json(Path(paths.codex_home) / "auth.json"),
+                                                             mode="refresh", persist=lambda auth: "accepted")
+        self.assertIsNotNone(reading.usage, reading.error)
+        self.assertEqual(seen, [(Path(paths.data_dir) / "work", "probe-", True)])
+        self.assertEqual(list((Path(paths.data_dir) / "work").glob("probe-*")), [])
 
 
 class StoredCopiesTest(unittest.TestCase):

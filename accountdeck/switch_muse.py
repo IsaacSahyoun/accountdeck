@@ -317,7 +317,7 @@ class Enrollment:
             env = {"XDG_CONFIG_HOME": str(self.home), "HOME": str(ctx.paths.home), **FILE_BACKEND,
                    "XDG_DATA_HOME": str(self.home / "data"), "XDG_STATE_HOME": str(self.home / "state"),
                    "XDG_CACHE_HOME": str(self.home / "cache")}
-            self.process = ctx.procs.spawn_helper(ctx.muse.command() + ["login"], cwd=str(self.home), env=env,
+            self.process = ctx.procs.spawn_helper(ctx.muse.command() + ["login"], home=self.home, cwd=str(self.home), env=env,
                                                   remove_env=cleared_env(), stdin=DEVNULL, stdout=PIPE, stderr=DEVNULL,
                                                   text=True, encoding="utf-8")
             self.output = LoginOutput(self.process.stdout)
