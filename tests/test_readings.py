@@ -73,6 +73,8 @@ ROWS = {
     "Gamma's week ends sooner, my order Beta first": ([beta(), gamma()], {},
                                                      {"cli_order": "manual", "cli_manual_order": ["beta", "gamma"]}, {}),
     "Undo pressed 5 s ago": ([beta()], UNDONE, {}, {}),
+    "Undo pressed 5 s ago, Alpha needs sign-in": ([beta()], UNDONE, {}, {"health": "needs_signin"}),
+    "Undo pressed 5 s ago, Alpha is marked out": ([beta()], UNDONE, {}, {"out": True}),
     "Manual choice 2 h 5 s ago": ([beta()], {"manual_at": NOW - 2 * HOUR - 5}, {}, {}),
     "Early switch 1 h ago": ([beta()], {"early_at": NOW - HOUR}, {}, {}),
     "Every account was low before": ([beta()], {"exhausted": True}, {}, {}),
@@ -124,8 +126,10 @@ def table():
     return {row: " ".join(code(decide(row, column)) for column in COLUMNS) for row in ROWS}
 
 
-# The answers at the starting commit (1c1787b), apart from one fixed bug. A 5-hour window that ended 40 s ago used
+# The answers at the starting commit (1c1787b), apart from two fixed bugs. A 5-hour window that ended 40 s ago used
 # to count with its old number (Tb, Ob at 96% and up). Now it is waited for (hW) and the weekly limit decides.
+# A manual choice or Undo in the last 2 hours used to hold only the early switch. Now it holds the threshold
+# switch too (hm where the two manual rows had Tb), but not an account that ran out or needs sign-in.
 # 5-hour % used:
 #                                                      20                96                99                100
 # 5-hour reset (in 4 h, in 4 min, 40 s ago), each with weekly 30 then 96:
@@ -145,7 +149,9 @@ EXPECTED = {
     "Gamma's week ends sooner":                        ".. Tg .. Tg .. Tg Tg Tg hr Tg hW Tg Tg Tg hr Tg hW Tg Og Og Og Og hW Tg",
     "Gamma's week ends sooner, most room first":       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
     "Gamma's week ends sooner, my order Beta first":   ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Undo pressed 5 s ago":                            "hm Tb hm Tb hm Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Undo pressed 5 s ago":                            "hm hm hm hm hm hm hm hm hr hm hW hm hm hm hr hm hW hm Ob Ob Ob Ob hW hm",
+    "Undo pressed 5 s ago, Alpha needs sign-in":       "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
+    "Undo pressed 5 s ago, Alpha is marked out":       "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
     "Manual choice 2 h 5 s ago":                       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
     "Early switch 1 h ago":                            "he Tb he Tb he Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
     "Every account was low before":                    ".. Rb .. Rb .. Rb Rb Rb hr Rb hW Rb Rb Rb hr Rb hW Rb Rb Rb Rb Rb hW Rb",
@@ -161,13 +167,13 @@ EXPECTED = {
     "Beta's week ends in 12 h":                        "Eb Tb Eb Tb Eb Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
     "Beta's week ends in 12 h, 85% used":              ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
     "Beta's week ends in 12 h, left 10 min ago":       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Beta's week ends in 12 h, manual choice 5 s ago": "hm Tb hm Tb hm Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Beta's week ends in 12 h, manual choice 5 s ago": "hm hm hm hm hm hm hm hm hr hm hW hm hm hm hr hm hW hm Ob Ob Ob Ob hW hm",
     "Beta's week ends in 12 h, early switch 1 h ago":  "he Tb he Tb he Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
 }
 
 
 class AutoSwitchTableTest(unittest.TestCase):
-    """Every decision of `cli_policy.evaluate` for 32 situations times 24 readings of the account in use."""
+    """Every decision of `cli_policy.evaluate` for 34 situations times 24 readings of the account in use."""
     maxDiff = None
 
     def test_the_decision_table(self):

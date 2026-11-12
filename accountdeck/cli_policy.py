@@ -15,8 +15,9 @@
 - a window of the account in use whose reset time has passed has refilled, so its last number is not
   acted on: the windows still running decide, and when none of them asks for a switch the rule holds
   and asks for a new reading of that account (`refresh`);
-- the optional early switch spends weekly allowance that expires within 24 hours, at most every 2
-  hours and never within 2 hours of a manual choice.
+- a manual choice, Undo included, is held for 2 hours against the threshold and the early switch. It is
+  not held against an account that ran out or needs sign-in;
+- the optional early switch spends weekly allowance that expires within 24 hours, at most every 2 hours.
 """
 from datetime import datetime
 from functools import cmp_to_key
@@ -90,6 +91,7 @@ def duration(seconds):
 # Once every account is past the threshold, each is used up to the ceiling rather than idling
 # there: the active account stays until it reaches it, and a target needs this much room below it.
 DRAIN_CEILING, DRAIN_ROOM = 99, 2
+MANUAL_HOLD = "Your manual choice is held for 2 hours"
 
 
 def evaluate(accounts, settings, history, now):
@@ -170,6 +172,9 @@ def evaluate(accounts, settings, history, now):
         result["hold"] = "Usage updates after your next message in Claude Code"
         return result
     trigger = "login" if login else "out" if out else "threshold" if over else None
+    # The user's own choice, Undo included, outranks the threshold and the early switch for 2 hours. It does not
+    # outrank an account that ran out or needs sign-in: staying there would stop their work.
+    manual = now - history.get("manual_at", -1e20) < 2 * HOUR
     eligible = [row for row in rows if row["skip"] is None]
     if not trigger and refilled:
         result.update(hold=f"{active['label']}'s {refilled[0]} limit has refilled. Waiting for its new reading.",
@@ -179,6 +184,9 @@ def evaluate(accounts, settings, history, now):
         five_reset = reset(active["values"][0][2])
         if not out and not login and over and all(label == "5-hour" for label, _, _ in over) and five_reset is not None and five_reset - now <= 600:
             result["hold"] = f"{active['label']} refills in {duration(five_reset - now)} — staying"
+            return result
+        if trigger == "threshold" and manual:
+            result["hold"] = MANUAL_HOLD
             return result
         stale = [row for row in rows if row["stale"]]
         if not eligible and stale:
@@ -229,8 +237,8 @@ def evaluate(accounts, settings, history, now):
     if now - early_at < 2 * HOUR:
         result["hold"] = "An early switch happened less than 2 hours ago"
         return result
-    if now - history.get("manual_at", -1e20) < 2 * HOUR:
-        result["hold"] = "Your manual choice is held for 2 hours"
+    if manual:
+        result["hold"] = MANUAL_HOLD
         return result
     active_reset = active["weekly_reset"]
     early = [row for row in eligible if row["weekly_reset"] is not None and active_reset is not None
