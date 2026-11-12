@@ -589,6 +589,27 @@ class MoveImportTest(unittest.TestCase):
         settings = engine.settings()
         self.assertEqual((settings["cli_autoswitch"], settings["cli_threshold"]), (True, 90))
 
+    def test_an_import_names_the_settings_it_changes(self):
+        """Noted 13. The PC's settings replace this Mac's. The preview and the result say which ones change."""
+        engine = support.demo_engine(self, "typical")
+        engine.update_settings({"cli_autoswitch": False})
+        body = write_bundle(self, engine, {"cli_autoswitch": True, "cli_threshold": 90, "sort": "stable"})
+        preview = engine.action("import-bundle-preview", body)["preview"]
+        self.assertEqual(preview["settings"], ["automatic terminal switching", "the switch point"])
+        self.assertTrue(preview["message"].endswith(
+            " 2 settings on this Mac will change to match the PC: automatic terminal switching and the switch point."),
+            preview["message"])
+        engine.action("import-bundle", body)
+        self.assertTrue(engine.runner.wait(30))
+        self.assertIn(" 2 settings now match the PC: automatic terminal switching and the switch point.",
+                      engine.snapshot()["report"]["summary"])
+        again = engine.action("import-bundle-preview", body)["preview"]       # they match now: nothing to name
+        self.assertEqual(again["settings"], [])
+        self.assertNotIn("setting", again["message"])
+
+    def test_every_setting_that_travels_has_a_name(self):
+        self.assertEqual(set(move_import.SETTING_NAMES), set(move_bundle.PORTABLE_SETTINGS))
+
 
 # ---- the example states ----
 def picks(state):
