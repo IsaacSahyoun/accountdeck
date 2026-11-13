@@ -161,9 +161,15 @@ class Operation:
 
     def _moving_to(self, phase):
         """Before this operation leaves its wait for sessions and starts to change things, the operation
-        running beside it ends, so only one operation writes at a time."""
-        if phase not in (None, "waiting_idle") and self.phase == "waiting_idle" and self._leave_wait is not None:
-            self._leave_wait(self)
+        running beside it ends, so only one operation writes at a time. That can take a while, so a cancel
+        made meanwhile, and a confirmation that ran out meanwhile, stop this operation here."""
+        if phase in (None, "waiting_idle") or self.phase != "waiting_idle" or self._leave_wait is None:
+            return
+        if self._leave_wait(self):
+            self.checkpoint()
+            if self.token is not None and time.time() >= self.token.expires:
+                raise DeckError("Your confirmation ran out while another switch was finishing. Nothing was "
+                                "changed. Switch again.", "stale_plan")
 
     # ---- cancellation ----
     def checkpoint(self):
@@ -385,13 +391,15 @@ class OperationRunner:
 
     def _leave_wait(self, op):
         """Called by the waiting operation `op` before it goes on: the operation beside it ends first
-        (callbacks included), and from then on none starts beside it."""
+        (callbacks included), and from then on none starts beside it. Returns True when it had to wait."""
+        waited = False
         while True:
             with self.lock:
                 beside, thread = self._beside, self._beside_thread
                 if beside is None or (beside.done_event.is_set() and not thread.is_alive()):
                     op.wait_over = True
-                    return
+                    return waited
+            waited = True
             beside.done_event.wait()
             thread.join()
 

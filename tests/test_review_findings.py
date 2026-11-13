@@ -68,8 +68,7 @@ class TerminalSwitchSafetyTest(unittest.TestCase):
         fired = support.once_the_login_is(self.engine, self.saved_refresh_token(self.target["id"]),
                                           lambda: support.claude_code_renews(self.engine))
         error = self.switch(self.target["id"])
-        if not fired:                      # the switch never looked again; Claude Code renews a moment later
-            support.claude_code_renews(self.engine)
+        self.assertTrue(fired, "the renewal never happened inside the switch, so this run proved nothing")
         self.assertIsNone(error, f"the switch was reported as failed: {error}")
         self.assert_one_account_everywhere(self.identity[self.target["id"]])
         self.assert_recover_clears_everything(then_switch_to=self.third["id"])
@@ -90,8 +89,7 @@ class TerminalSwitchSafetyTest(unittest.TestCase):
         fired = support.once_the_login_is(self.engine, self.saved_refresh_token(self.target["id"]),
                                           claude_code_signs_in_as_third)
         self.switch(self.target["id"])     # success or failure are both honest answers here
-        if not fired:
-            claude_code_signs_in_as_third()
+        self.assertTrue(fired, "the sign-in never happened inside the switch, so this run proved nothing")
         self.engine.recovery = self.engine._scan_recovery()
         if self.engine.recovery:
             switching.dispatch(self.engine, "recover", {})

@@ -10,12 +10,11 @@ import time
 import urllib.parse
 
 from .. import diagnostics
-from ..core import DeckError
+from ..core import MAX_PAUSE, DeckError
 from .base import OAUTH_HOST
 
 RATE_LIMIT_MARGIN = 900       # added to every Retry-After, so "Retry-After: 0" (or none) waits 15 min
 BLOCKED_RETRY = 1800
-MAX_RETRY = 3600              # the longest pause one answer can ask for; the read after it asks the provider again
 ESCALATION_COUNT = 3
 ESCALATION_SPAN = 1800
 STALE_SESSION_CODES = (b"session_stale_relogin", b"elevated_auth")
@@ -50,7 +49,7 @@ class ProviderError(DeckError):
     """A classified provider failure. `kind` is a KINDS key, `http` the status (None without a
     response), `detail` a short sanitized hint (an error type or RPC code, never a body) and `meta`
     the request diagnostics of http.request(). `retry_after` already includes RATE_LIMIT_MARGIN and is at
-    most MAX_RETRY, whatever the provider asked for."""
+    most core.MAX_PAUSE, whatever the provider asked for."""
 
     def __init__(self, kind, http=None, retry_after=None, detail=None, meta=None, *, message=None):
         if kind not in KINDS:
@@ -62,7 +61,7 @@ class ProviderError(DeckError):
         if retry_after is None:
             retry_after = {"rate_limited": RATE_LIMIT_MARGIN, "blocked": BLOCKED_RETRY}.get(kind)
         else:
-            retry_after = min(retry_after, MAX_RETRY)
+            retry_after = min(retry_after, MAX_PAUSE)
         super().__init__(message or text, code, retry_after)
         self.kind, self.http, self.detail, self.meta = kind, http, detail, meta
 

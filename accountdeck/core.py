@@ -99,6 +99,7 @@ _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,159}")
 _SINGLE_COPY = ("transaction-", "quarantine-")
 SET_ASIDE = "set-aside-"
 OPEN_STATUSES = ("prepared", "verifying", "conflict")     # a switch record that still waits for recovery
+MAX_PAUSE = 3600        # the longest an account's usage checks stay paused on a provider's word; then it is asked again
 RECORD_TTL = 30 * 86400                                   # closed and set-aside records are kept this long
 
 
@@ -413,6 +414,7 @@ class Store:
         try:
             self.db.execute("PRAGMA journal_mode=WAL")
             self._migrate()
+            self._cap_pauses()
         except BaseException:
             self.db.close()
             raise
@@ -420,6 +422,14 @@ class Store:
     def close(self):
         with self.lock:
             self.db.close()
+
+    def _cap_pauses(self):
+        """A version before MAX_PAUSE stored whatever pause a provider asked for, years included, and nothing
+        reads such an account again to correct it. No saved pause outlasts the cap."""
+        limit = self.clock() + MAX_PAUSE
+        with self.lock:
+            self.db.execute("UPDATE accounts SET paused_until=? WHERE paused_until>?", (limit, limit))
+            self.db.commit()
 
     def _migrate(self):
         """Create schema v2 in a new folder. One transaction: all or nothing. A schema-v2 database (every

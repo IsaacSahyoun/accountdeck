@@ -409,6 +409,9 @@ class Claude:
         config, journal = self._config()
         for key in scope.auth_keys:
             config.pop(key, None)
+        # The account's name comes off before its cookies change and goes back on last. A write that dies
+        # part way then reads as signed out, never as one account's name beside another account's cookies.
+        tx.write(self.base / "config.json", json_bytes(config))
         config.update({key: value for key, value in auth.items() if key in scope.auth_keys})
         network = self.cookie_dir
         for name in scope.cookie_files[1:]:
