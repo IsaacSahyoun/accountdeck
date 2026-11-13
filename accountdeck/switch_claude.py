@@ -1233,7 +1233,14 @@ class Recover(ClaudeJob):
             return "Claude's sign-in files are back as they were."
         self._keep_live_tokens()
         undo = self._new_transaction(status="prepared")
-        restore_profile(ctx, outgoing, undo)
+        try:
+            restore_profile(ctx, outgoing, undo)
+        except Exception as exc:
+            if not undo.doc["changes"]:
+                undo.close()         # nothing was written, so no undo is under way
+                raise
+            # The write stopped part way, which leaves Claude signed out. Only this record can finish it.
+            raise recovery.StillNeeded(exc, "Claude is signed out until its previous sign-in is written.") from exc
         undo.commit()
         status = self._roll_back_sessions(tx)
         tx.close(status)

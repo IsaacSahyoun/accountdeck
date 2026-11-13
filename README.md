@@ -41,6 +41,7 @@ If a client is not installed, leave its section alone.
 **Switch:** Choose **Switch…** beside a saved account and review the plan. Claude Code terminals
 follow the new login on their next message. Desktop switches may close and reopen Claude;
 save Chat and Cowork work first. Codex and Muse switches wait for their sessions to close.
+A switch that waits gives up after 30 minutes and changes nothing; confirm it again then.
 Settings, MCP definitions, plugins, projects, and transcripts stay shared.
 
 **Rename or remove:** Every saved account, for every client, has a **More** menu (the … button

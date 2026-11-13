@@ -11,6 +11,17 @@ from .diagnostics import Manifest
 from .operations import Operation
 
 
+def hold_checks(ctx, provider, client, stack):
+    """Until `stack` closes, no usage check of `provider`'s accounts runs. A check can renew a login and save
+    it, so a switch and a Recover hold every account while they read a saved login and write it."""
+    for row in ctx.engine.store.accounts():
+        if row["provider"] == provider:
+            lock = ctx.scheduler.account_lock(row["id"])
+            if not lock.acquire(timeout=ctx.timings.lock_wait):
+                raise DeckError(f"A {client} usage check is still running.", "busy")
+            stack.callback(lock.release)
+
+
 class FileSwitch(Operation):
     """A subclass gives `client`, `adapter`, `login_file()` and the steps `wait`, `save` and `verify`; it may
     give `renew` and `afterwards`."""
@@ -84,12 +95,7 @@ class FileSwitch(Operation):
     def _lock_accounts(self, stack):
         """No usage check of this client runs while `stack` lasts, and the account switched to is read again."""
         ctx = self.ctx
-        for row in ctx.engine.store.accounts():
-            if row["provider"] == self.provider:
-                lock = ctx.scheduler.account_lock(row["id"])
-                if not lock.acquire(timeout=ctx.timings.lock_wait):
-                    raise DeckError(f"A {self.client} usage check is still running.", "busy")
-                stack.callback(lock.release)
+        hold_checks(ctx, self.provider, self.client, stack)
         self.target = ctx.engine.store.account(self.account)
         if self.target is None:
             raise DeckError("That account no longer exists.", "not_found")

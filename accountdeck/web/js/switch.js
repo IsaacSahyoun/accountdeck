@@ -230,8 +230,16 @@
       return;
     }
     if (plan.purpose === 'add') awaitingLogin = true;
+    const pending = last && last.pending;
+    if (pending && pending.phase === 'waiting_idle' && pending.provider !== plan.provider) {
+      // This action runs beside another client's wait. That wait stays the pending job, and its progress
+      // view and Cancel button are not this action's: a notice says how this one went.
+      watching = null;
+      AD.dom.closeModal();
+      return;
+    }
     watching = result && result.op ? { op: result.op, at: Date.now(), seen: false } : null;
-    openProgress(last && last.pending);
+    openProgress(pending);
   }
 
   /** Desktop, Codex and Muse always review the plan. Only the terminal flow may skip review

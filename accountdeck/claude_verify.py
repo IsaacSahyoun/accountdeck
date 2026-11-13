@@ -15,7 +15,7 @@ import re
 import time
 
 from . import diagnostics
-from .core import DeckError, FileTransaction, read_json, recover_transactions
+from .core import DeckError, FileTransaction, read_json
 from .platform import facts_mac
 from .providers.errors import ProviderError
 from .sessions import valid_uuid
@@ -348,5 +348,5 @@ class BackgroundVerifier:
             FileTransaction.load(self.ctx.vault, engine.roots(), self.tx_key).close("verifying")
         except DeckError as exc:
             diagnostics.log("verify.record_unreadable", lvl="warning", code=exc.code)
-        engine.recovery = recover_transactions(self.ctx.vault)
+        engine.look_for_unfinished()
         engine.bump()

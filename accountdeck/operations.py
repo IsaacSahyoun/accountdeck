@@ -79,7 +79,7 @@ class Operation:
 
     not_cancellable_message = "The switch is past the point of no return."
     # True for an operation that may run next to another client's operation while that one only waits for
-    # its sessions to close (OperationRunner.submit). Such a wait can last hours.
+    # its sessions to close (OperationRunner.submit). Such a wait lasts until its confirmation runs out (30 minutes).
     beside_waits = False
 
     def __init__(self, kind, *, provider=None, account=None, label=None, consent=None, steps=(),
@@ -282,7 +282,8 @@ class OperationRunner:
     @property
     def quiet(self):
         """True while no operation changes anything: none runs, or the only one still waits for a client's
-        sessions to close. Such a wait can last hours, and the files it will change are untouched until then."""
+        sessions to close. Such a wait lasts until its confirmation runs out (30 minutes), and the files it
+        will change are untouched until then."""
         with self.lock:
             return self._lane(None, True) is not None
 

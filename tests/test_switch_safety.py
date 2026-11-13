@@ -336,14 +336,19 @@ class TerminalInterruptedSwitchTest(DeckCase):
         self.assertEqual(self.vault.path("set-aside-" + key).read_bytes(), b"not a vault record")
         self.assertIn("set the record aside", self.engine.snapshot()["notices"][-1]["message"])
 
-    def test_a_record_that_cannot_be_applied_is_set_aside_by_one_press(self):
+    def test_a_record_stays_while_the_live_login_cannot_be_read(self):
+        """Second review: nobody can tell whether the name and the token match, so the record is not set
+        aside. A new sign-in in Claude Code makes the login readable, and one press then settles it."""
         self.die(self.STEPS[1])
         Path(self.paths.claude_cli_credentials).write_text("{not json")       # the live login cannot be read at all
         key = self.pending_records()[0]
+        with self.assertRaises(DeckError) as raised:
+            self.press_recover_once()
+        self.assertIn("press Recover again", str(raised.exception))
+        self.assertEqual(self.pending_records(), [key])
+        self.claude_code_signs_in_as(self.third["id"])
         self.press_recover_once()
-        self.assertEqual(self.pending_records(), [])
-        self.assertTrue(self.vault.path("set-aside-" + key).exists())
-        self.assertIn("set that switch's record aside", self.engine.snapshot()["notices"][-1]["message"])
+        self.assert_settled(self.third)
 
     def test_a_login_that_belongs_to_someone_else_is_never_filed_under_the_outgoing_account(self):
         """Consider 9: the name still says the outgoing account while the token is already the third one's."""

@@ -234,6 +234,7 @@ class Vault:
         name = SET_ASIDE + key
         with self.lock:
             os.replace(self._file(key), self._file(name))
+            os.utime(self._file(name))       # kept for RECORD_TTL from now, however old the record already was
         return name
 
     def prune(self, now=None):
@@ -715,9 +716,14 @@ class FileTransaction:
         self.close("complete")
 
     def close(self, status="rolled_back"):
-        """Marks the record finished without touching a file: the caller put the files right itself."""
-        self.doc["status"] = status
-        self.save()
+        """Marks the record finished without touching a file: the caller put the files right itself. When
+        that cannot be saved, the status stays what the disk says."""
+        previous, self.doc["status"] = self.doc["status"], status
+        try:
+            self.save()
+        except BaseException:
+            self.doc["status"] = previous
+            raise
 
     def rollback(self):
         conflicts = []

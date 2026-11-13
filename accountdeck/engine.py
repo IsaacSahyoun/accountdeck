@@ -242,6 +242,12 @@ class Engine:
     def _scan_recovery(self):
         return recover_transactions(self.vault)
 
+    def look_for_unfinished(self):
+        """Reads the open switch records again. Jobs end and Recover is pressed on different threads, so the
+        look and the assignment are one step: the newest look at the records is the one that stays."""
+        with self._recovery_lock:
+            self.recovery = self._scan_recovery()
+
     def _restore_login(self):
         """Once after construction: an add-account sign-in that was waiting when the service last stopped
         (`engine.login`) is shown again. It never stops the start."""
@@ -1018,8 +1024,7 @@ class Engine:
 
     def _finished(self, op, report):
         """Runs on `ad2-ops` after any operation ended (`report` is None for a `needs_reconfirm`)."""
-        with self._recovery_lock:        # the newest look at the records is the one that stays
-            self.recovery = self._scan_recovery()
+        self.look_for_unfinished()
         now = self.clock()
         if report is not None:
             self._record_outcome(op, report, now)

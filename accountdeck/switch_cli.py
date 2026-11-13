@@ -170,7 +170,7 @@ def settle(service, tx, *, final):
     except DeckError:
         tx.close()
         return "Claude Code is signed out, so nothing was put back."
-    owner = service.whose(credentials)
+    owner = service.whose(credentials, ask_again=final)      # a Recover press: the answer decides what is written
     if owner is None and not final:
         raise DeckError(UNCONFIRMED, "network")
     if owner is not None:
@@ -194,6 +194,22 @@ def settle(service, tx, *, final):
     tx.close()
     diagnostics.log("cli.settled", back=owner in (None, target) and outgoing is not None, owner_known=owner is not None)
     return sentence
+
+
+def _whole(service) -> bool:
+    """True when Claude Code's login is known to be one account's: the account `.claude.json` names owns the
+    live token, or nobody is signed in. False when they differ, and when nobody can say."""
+    try:
+        credentials = service.adapter.store.read(missing=True)
+        name = object_file(service.paths.claude_user_config, missing=True).get("oauthAccount")
+    except (DeckError, OSError):
+        return False
+    try:
+        oauth(credentials)
+    except DeckError:
+        return True
+    owner = service.whose(credentials)
+    return owner is not None and (name or {}).get("accountUuid") == owner
 
 
 def _restorable(service, identity):
@@ -330,7 +346,13 @@ def recover_pending(engine):
     def one(loaded):
         tx = CLITransaction(service, loaded.key)
         tx.doc = loaded.doc
-        return settle(service, tx, final=True)
+        try:
+            return settle(service, tx, final=True)
+        except Exception as exc:
+            if (isinstance(exc, DeckError) and exc.code in recovery.WAIT_CODES) or _whole(service):
+                raise
+            raise recovery.StillNeeded(exc, "Claude Code's account name and login may not match yet.",
+                                       "If it keeps failing, sign in again in Claude Code first.") from exc
     with service.mutex, credential_locks(service.paths, timeout=service.lock_timeout,
                                          storage_write=service.adapter.store.storage_lock):
         return recovery.press(engine, "claude_cli", one)

@@ -13,7 +13,8 @@ four steps:
 
 `after_failure` runs those steps as soon as a switch fails, and `press` is the Recover action around them.
 A record that cannot be read or applied is set aside: kept as it is in the vault, out of the pending list,
-with a notice that says so.
+with a notice that says so. A record is never set aside while its client's login is part one account and
+part another (`StillNeeded`): settling that record again is the only thing that makes the login whole.
 """
 import base64
 from dataclasses import dataclass
@@ -36,6 +37,16 @@ UNAPPLIED = ("AccountDeck could not undo an interrupted {name} switch, so it set
              f"cleared it. {KEPT} Open {{name}} and check it shows the account you expect.")
 
 
+class StillNeeded(DeckError):
+    """A `settle` failed and the client's login is not whole, or nobody can tell. The record stays open and
+    the user is told why, so another press of Recover can finish the job."""
+
+    def __init__(self, exc, state, hint=""):
+        cause = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        super().__init__(f"Recover could not finish: {cause.rstrip('.')}. {state} The interrupted switch is still "
+                         f"waiting, so press Recover again.{' ' + hint if hint else ''}", "recovery")
+
+
 def set_aside(engine, key, message):
     """Takes a record nobody can settle out of the pending list, keeps it, and tells the user."""
     try:
@@ -56,30 +67,32 @@ class Pressed:
 def press(engine, provider, settle) -> Pressed:
     """One press of Recover for `provider`: `settle(tx)` puts one of its open records right and returns a
     sentence for the user; what was done is returned. A refusal the user can lift (the client still runs)
-    is raised with the record left open. Any other failure sets the record aside, as does a record that
-    cannot be read. The records are looked up now, not taken from `engine.recovery`, and only one that is
-    still open is settled: a list read while a switch was running never undoes that switch."""
+    and a `StillNeeded` are raised with the record left open. Any other failure sets the record aside, as
+    does a record that cannot be read. The records are looked up now, not taken from `engine.recovery`, and
+    only one that is still open is settled: a list read while a switch was running never undoes that switch."""
     done = Pressed([])
-    for key in recover_transactions(engine.vault):
-        try:
-            tx = FileTransaction.load(engine.vault, engine.roots(), key)
-        except DeckError as exc:
-            if getattr(exc, "reason", None):          # the vault key itself is unavailable: nothing can be judged
-                raise
-            set_aside(engine, key, UNREADABLE)
-            done.aside += 1
-            continue
-        if tx.doc.get("provider", "claude") != provider or tx.doc.get("status") not in OPEN_STATUSES:
-            continue
-        try:
-            done.sentences.append(settle(tx))
-        except Exception as exc:
-            if isinstance(exc, DeckError) and exc.code in WAIT_CODES:
-                raise
-            diagnostics.log_exception("recovery.unapplied", exc)
-            set_aside(engine, key, UNAPPLIED.format(name=NAMES.get(provider, "app")))
-            done.aside += 1
-    engine.recovery = recover_transactions(engine.vault)
+    try:
+        for key in recover_transactions(engine.vault):
+            try:
+                tx = FileTransaction.load(engine.vault, engine.roots(), key)
+            except DeckError as exc:
+                if getattr(exc, "reason", None):      # the vault key itself is unavailable: nothing can be judged
+                    raise
+                set_aside(engine, key, UNREADABLE)
+                done.aside += 1
+                continue
+            if tx.doc.get("provider", "claude") != provider or tx.doc.get("status") not in OPEN_STATUSES:
+                continue
+            try:
+                done.sentences.append(settle(tx))
+            except Exception as exc:
+                if isinstance(exc, StillNeeded) or (isinstance(exc, DeckError) and exc.code in WAIT_CODES):
+                    raise
+                diagnostics.log_exception("recovery.unapplied", exc)
+                set_aside(engine, key, UNAPPLIED.format(name=NAMES.get(provider, "app")))
+                done.aside += 1
+    finally:
+        engine.look_for_unfinished()
     return done
 
 

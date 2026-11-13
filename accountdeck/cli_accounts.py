@@ -44,12 +44,13 @@ class CLIAccounts:
         with self._keys_lock:
             return self._keys.setdefault(key, threading.RLock())
 
-    def owner(self, credentials):
-        """The accountUuid this token belongs to, or None when the provider cannot say right now."""
+    def owner(self, credentials, *, ask_again=False):
+        """The accountUuid this token belongs to, or None when the provider cannot say right now. A failed
+        lookup is not repeated for a minute, unless `ask_again`."""
         fp = fingerprint(credentials)
         if fp in self.owners:
             return self.owners[fp]
-        if self.clock() < self.owner_retry.get(fp, 0):
+        if not ask_again and self.clock() < self.owner_retry.get(fp, 0):
             return None
         try:
             found = self.adapter.resolve_account(credentials, timeout=5).get("accountUuid")
@@ -64,7 +65,7 @@ class CLIAccounts:
         self.owner_retry.pop(fp, None)
         return found
 
-    def whose(self, credentials):
+    def whose(self, credentials, *, ask_again=False):
         """The accountUuid a login belongs to, or None when nobody can say. A saved account's confirmed
         token answers without the network (so it still answers after a restart); else `owner` asks."""
         fp = fingerprint(credentials)
@@ -72,7 +73,7 @@ class CLIAccounts:
             saved = self._record(row["id"]) if row["provider"] == "claude_cli" else None
             if saved and saved.get("fingerprint") == fp and saved.get("verified") == fp:
                 return saved["identity"]
-        return self.owner(credentials)
+        return self.owner(credentials, ask_again=ask_again)
 
     def confirm(self, key, saved, *, active):
         """False when the login filed under this account belongs to another one. An inactive account

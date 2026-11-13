@@ -3,6 +3,7 @@
 The consumers are what the process controller classifies (ChatGPT.app, the codex processes it bundles,
 Codex CLI terminals); Codex Desktop is never signalled, and the Codex CLI is the one
 `Codex.executable()` resolves."""
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -11,7 +12,7 @@ import uuid
 from . import recovery
 from .rules import plan_current, plan_target
 from .core import DeckError, is_frozen, read_json
-from .file_switch import FileSwitch
+from .file_switch import FileSwitch, hold_checks
 from .platform import facts_mac
 from .procs import ProcessSet, unix_time
 from .providers.codex import RPC, Codex, daemon_settings, freshness, identity_key, token_state
@@ -174,7 +175,9 @@ def dispatch(engine, name, body):
             if engine.read_only:
                 raise DeckError("Codex sign-ins are read-only.", "read_only")
             client = login_file(ctx)
-            return recovery.summary(recovery.press(engine, "codex", lambda tx: recovery.put_back(ctx, tx, client)))
+            with ExitStack() as stack:
+                hold_checks(ctx, "codex", "Codex", stack)
+                return recovery.summary(recovery.press(engine, "codex", lambda tx: recovery.put_back(ctx, tx, client)))
         return submit(ctx, claimed, QuickOp("recover", recover, provider="codex", message="Recovering Codex…",
                                            step=("recover", "Restoring the previous sign-in")))
     if name in ("add", "finish-login", "cancel-login"):
