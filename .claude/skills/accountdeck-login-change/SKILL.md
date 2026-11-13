@@ -61,7 +61,7 @@ Commit locally, then run `.claude/skills/accountdeck-review/SKILL.md` on the cha
 - What you changed and the one fact it is safe because of.
 - Proof: the test that fails before and passes after, the take-the-fix-out result, the final check, each with its commit and date.
 - Not checked: nothing here runs against a real login. Name the real-Mac check that would close the gap (`accountdeck-install` has the list).
-- The commit last. Local only. Never push, and never install: the install is Isaac's call.
+- The commit last. Local only. Never push and never install without Isaac's OK: both are his call.
 
 ## Rules that do not bend
 - Fake data only. The repo's `AGENTS.md` has the list of what never to touch.

@@ -47,10 +47,10 @@ tools/verify/final_check.sh "$COPY" ~/.accountdeck/proof/<task> under-load
 - `tools/verify/` holds the proof tools. `tools/slop_scan.py` lists leftover code, and `tests/test_keep_clean.py` fails on a new item.
 
 ## How to work here
-- This repo has no remote and nothing is pushed. `main` is the newest code and the only branch. A tag marks each build that was installed, `v2.0.0` so far. `tools/verify/doctor.py` says which commit the live app runs, by `main` or by tag.
+- The repo is public on GitHub, `fernandobarnatini-debug/accountdeck`. A push needs Isaac's OK every time. `main` is the newest code and the only branch. A tag marks each build that was installed, `v2.0.0` so far. `tools/verify/doctor.py` says which commit the live app runs, by `main` or by tag.
 - To prove a change, follow `.claude/skills/verify-accountdeck/SKILL.md`. A change to the dashboard passes in both engines, and `tools/verify/look_sweep.py` shows what it did to the look.
 - A change to switching, Recover, the vault or the job runner follows `.claude/skills/accountdeck-login-change/SKILL.md`. It gets one builder and three independent reviewers.
 - A review follows `.claude/skills/accountdeck-review/SKILL.md`.
 - Every fix has a test that fails without it. `tools/verify/take_fix_out.py` checks that.
 - A test that acts while a job waits must wait for a signal that the job is held, never sleep. `watch_the_lane_wait` in `tests/test_second_review.py` is the pattern.
-- Commit locally when asked. Never push.
+- Commit locally when asked. Push only when Isaac says so.

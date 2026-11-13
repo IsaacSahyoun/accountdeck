@@ -141,8 +141,14 @@ ACCOUNTDECK_SAFE_MODE=1 "$PY" -E -s -m unittest discover -s tests -t .
 "$PY" -E -s tools/slop_scan.py
 ```
 
-The dashboard tests draw the page in a headless Chrome. They look for one in `$ACCOUNTDECK_TEST_CHROME`,
-in Playwright's download folder and in `/Applications`, and skip when there is none.
+The dashboard tests draw the page in WebKit, the engine of the app's own window. `ACCOUNTDECK_TEST_BROWSER=chrome`
+runs them in a headless Chrome instead, found in `$ACCOUNTDECK_TEST_CHROME`, in Playwright's download folder or in
+`/Applications`. A dashboard test skips when its engine is missing.
 `tools/slop_scan.py` lists code nothing uses. `PY` can select another compatible development runtime.
 To try `install.sh` or `uninstall.sh` without touching your real install, pass `--prefix DIR`:
 everything then goes below `DIR`, and `launchctl` and the Finder registration are skipped.
+
+## License
+
+MIT. See `LICENSE`. `OPEN_SOURCE.md` lists the projects that informed the design and carries the notice
+for the code adapted from one of them.
