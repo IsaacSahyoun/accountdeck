@@ -507,3 +507,24 @@ class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
         self.assertNotIn("cancel", offered, "the sheet offers to cancel the Codex wait as if it were the Undo")
         self.assertEqual(self.engine.snapshot()["pending"]["id"], waiting.id)
         self.assertEqual(self.browser.problems, [])
+
+
+class RemoveTheSignedOutAccountTest(DeckCase, test_dashboard.DashboardTestCase):
+    """Nobody is signed in to Claude Code, so no saved account is in use and the app lets any of them go. The
+    dashboard has to offer that for the account Claude Code used last too, which it still draws first."""
+
+    def test_the_account_claude_code_used_last_can_be_removed_from_its_menu_once_signed_out(self):
+        Path(self.paths.claude_cli_credentials).unlink()          # the user signed out of Claude Code
+        self.engine.sense_active()
+        last = self.active("claude_cli")
+        self.assertEqual(last["state"], "needs_signin")
+        self.browser.open(test_dashboard.serve(self, self.engine))
+        self.browser.click(test_dashboard.more(last))
+        self.browser.wait(f"{test_dashboard.MENU}.matches(':popover-open')", "the More menu")
+        remove = test_dashboard.button("Remove…", test_dashboard.MENU)
+        self.assertIsNone(self.browser.js(f"{remove}.getAttribute('aria-disabled')"), "Remove is switched off")
+        self.browser.click(remove)
+        self.browser.click(test_dashboard.button("Remove", test_dashboard.SHEET))
+        self.browser.wait(f"!{test_dashboard.row(last)}", "the row gone")
+        self.assertIsNone(self.engine.store.account(last["id"]))
+        self.assertEqual(self.browser.problems, [])

@@ -394,7 +394,7 @@ class UpkeepTest(unittest.TestCase):
         row = signed_in(engine, "claude_cli")
         engine.action("remove", {"id": row["id"]})
         self.assertTrue(engine.runner.wait(30))
-        self.assertEqual(engine.snapshot()["report"]["error"]["message"], "The account in use by your terminals cannot be removed.")
+        self.assertEqual(engine.snapshot()["report"]["error"]["message"], "The account in use by your terminals cannot be removed. Switch to another account first.")
         self.assertIsNotNone(engine.store.account(row["id"]))
 
     def test_the_signed_in_account_is_marked_as_used_once_an_hour(self):

@@ -969,7 +969,8 @@ class Engine:
                     with self.cli.gate(key):
                         # Nobody signed in to Claude Code (None) means no saved account is in use.
                         if self.cli.adapter.active_identity() == account["identity"]:
-                            raise DeckError("The account in use by your terminals cannot be removed.", "invalid")
+                            raise DeckError("The account in use by your terminals cannot be removed. Switch to another "
+                                            "account first.", "invalid")
                         self.accounts.remove(key)
                 self.scheduler.forget(key)
                 return

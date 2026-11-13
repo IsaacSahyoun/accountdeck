@@ -81,11 +81,12 @@
   }
 
   /** The More menu of a saved account. Only terminal accounts can be left out of auto-switch, and only
-   * the terminal account in use cannot be removed (the other clients stay signed in without it). */
+   * the terminal account in use cannot be removed (the other clients stay signed in without it). An account
+   * that needs sign-in is offered: once Claude Code is signed out the app lets it go, and says so if not. */
   function menuItems(account) {
     const M = T.menu;
     const cli = isTerminal(account);
-    const locked = cli && account.active;
+    const locked = cli && account.active && !A.needsSignin(account);
     return [
       cli ? { label: account.excluded ? M.include : M.leaveOut, icon: account.excluded ? 'plus-circle' : 'minus-circle',
         run: () => AD.terminal.exclude(account) } : null,
