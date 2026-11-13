@@ -88,6 +88,7 @@ def tick(engine):
             or engine.cli.enrollment or engine.recovery or engine.cli.adapter.readonly_reason
             or engine.prefs.get("refresh_paused")):
         return
+    leaving = engine.active_identity.get("claude_cli")     # the account this decision is about
     result = decision(engine)
     with history(engine) as past:
         entered = result["exhausted"] and not past.get("exhausted")
@@ -115,7 +116,7 @@ def tick(engine):
         return     # re-evaluate after the governed read, including every changed window
     from .switch_cli import CLISwitch
     try:
-        engine.submit(CLISwitch(engine, target["id"], kind=result["kind"], reason=result["reason"]))
+        engine.submit(CLISwitch(engine, target["id"], kind=result["kind"], reason=result["reason"], leaving=leaving))
         diagnostics.log("cli.decision", kind=result["kind"], acct=diagnostics.account_ref(target["id"]))
     except DeckError as exc:
         diagnostics.log("cli.deferred", code=exc.code)

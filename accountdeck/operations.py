@@ -273,6 +273,13 @@ class OperationRunner:
         with self.lock:
             return self._running()
 
+    @property
+    def quiet(self):
+        """True while no operation changes anything: none runs, or the only one still waits for a client's
+        sessions to close. Such a wait can last hours, and the files it will change are untouched until then."""
+        with self.lock:
+            return self._lane(None, True) is not None
+
     def free_for(self, provider, *, beside_waits=False):
         """True when an operation of `provider` could start now (see `submit`)."""
         with self.lock:

@@ -418,8 +418,9 @@ class Engine:
         phase = self._phase
         phase("resume", self._check_resume, now)
         phase("observe", self._observe, fresh=True)
-        if not self.runner.busy:
+        if self.runner.quiet:      # also during another client's wait: auto-switch acts then, on who is signed in now
             phase("sense", self.sense_active)
+        if not self.runner.busy:
             # A stuck enrollment must not stop every account's reads.
             phase("enrollment", self.cli.poll_enrollment, event="cli.enrollment_failed")
         phase("status", self._poll_status, now)

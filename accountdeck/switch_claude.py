@@ -1209,14 +1209,14 @@ class Recover(ClaudeJob):
         self._stop()
         self._point_of_no_return("Putting the previous sign-in back…")
         with self.step("restore", phase="restoring", message="Putting the previous sign-in back…", cancellable=False):
-            sentences = recovery.press(ctx.engine, "claude", self._recover_one)
-            self.manifest.set("recovered", len(sentences)).set("config_keys_after", config_keys(ctx.claude))
+            done = recovery.press(ctx.engine, "claude", self._recover_one)
+            self.manifest.set("recovered", len(done.sentences)).set("config_keys_after", config_keys(ctx.claude))
         if self.was_running:
             self._open()
         else:
             self.note("Claude was not running.", step_id="launch", status="skipped")
         with self.step("report"):
-            self.report["summary"] = recovery.summary(sentences) + (
+            self.report["summary"] = recovery.summary(done) + (
                 " Claude was reopened." if self.was_running and self.opened else "")
 
     def _recover_one(self, tx) -> str:

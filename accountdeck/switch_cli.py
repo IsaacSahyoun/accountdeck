@@ -11,13 +11,14 @@ from .cli_locks import config_lock, credential_locks
 from .cli_policy import considered
 from .rules import plan_current, plan_target
 from .core import DeckError, FileTransaction, atomic_write, is_frozen, json_bytes
-from .operations import Operation
+from .operations import Operation, OperationCancelled
 from .providers.claude_cli import fingerprint, merge, oauth, object_file, profile, scoped
 from .switching import assemble, context, register
 
 DISAGREE = "Claude Code's account and login disagree. Wait for sign-in to finish."
 UNCONFIRMED = "AccountDeck could not confirm which account Claude Code's login belongs to yet. Try again shortly."
 NOTHING_TO_UNDO = "The interrupted switch had changed nothing."
+CHANGED_SINCE = "Claude Code changed accounts before the automatic switch, so nothing was switched."
 
 
 class CLITransaction(FileTransaction):
@@ -57,9 +58,10 @@ def write_account(service, account):
         atomic_write(service.paths.claude_user_config, json_bytes(current))
 
 
-def perform(service, key):
+def perform(service, key, *, leaving=None):
     """Switches Claude Code to the saved account `key` (manual, automatic and Undo switches); returns the
-    outgoing account's id."""
+    outgoing account's id. An automatic switch gives `leaving`, the identity of the account it decided to
+    leave: when Claude Code names another account by the time its files are locked, nothing is switched."""
     service.guard()
     with service.mutex, service.key_lock(key):
         if service.enrollment:
@@ -83,8 +85,11 @@ def perform(service, key):
             with credential_locks(service.paths, timeout=service.lock_timeout, storage_write=store.storage_lock) as check:
                 service.guard()
                 credentials, config = _read_live(service)
-                if (config.get("oauthAccount") or {}).get("accountUuid") == target["identity"]:
+                named = (config.get("oauthAccount") or {}).get("accountUuid")
+                if named == target["identity"]:
                     raise DeckError("Your terminals already use this account.", "invalid")
+                if leaving is not None and named != leaving:
+                    raise OperationCancelled(CHANGED_SINCE)
                 previous = _file_outgoing(service, credentials, config.get("oauthAccount"))
                 check()
                 tx.swap(target, credentials, config.get("oauthAccount"))
@@ -229,11 +234,11 @@ class CLISwitch(Operation):
     files and closes nothing, so it may run while another client's switch waits for its sessions."""
     beside_waits = True
 
-    def __init__(self, engine, key, *, kind="manual", reason=""):
+    def __init__(self, engine, key, *, kind="manual", reason="", leaving=None):
         row = engine.cli.row(key)
         super().__init__("switch", provider="claude_cli", account=key, label=row["label"], consent="now",
                          steps=(("switch", "Switching the terminal login"),))
-        self.engine, self.auto_kind, self.reason = engine, kind, reason
+        self.engine, self.auto_kind, self.reason, self.leaving = engine, kind, reason, leaving
 
     def run(self):
         with self.step("switch", phase="restoring", message="Switching the terminal login…", cancellable=False):
@@ -241,7 +246,7 @@ class CLISwitch(Operation):
             manifest.set("provider", "claude_cli").set("account", diagnostics.account_ref(self.account))
             self.report["manifest"] = self.id
             try:
-                previous = perform(self.engine.cli, self.account)
+                previous = perform(self.engine.cli, self.account, leaving=self.leaving)
             except BaseException as exc:
                 manifest.set("verification.result", "failed").set("error_type", type(exc).__name__).finish()
                 if self.beside and self.auto_kind == "manual" and isinstance(exc, DeckError):
@@ -353,7 +358,7 @@ def dispatch(engine, name, body):
             raise DeckError("Undo is no longer available.", "invalid")
         return {"plan": plan(engine, last["from"])}
     if name == "recover":
-        for sentence in recover_pending(engine):
+        for sentence in recover_pending(engine).sentences:
             engine.notice(sentence, "good")
         return {}
     if name == "switch":

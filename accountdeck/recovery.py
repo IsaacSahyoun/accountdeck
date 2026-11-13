@@ -29,7 +29,8 @@ KEPT = "The record stays encrypted in AccountDeck's data folder for 30 days."
 UNREADABLE = ("AccountDeck could not read the record of an interrupted switch, so it set the record aside and "
               f"cleared it. {KEPT} Nothing in your apps was changed: open each one and check it shows the "
               "account you expect.")
-SET_ASIDE = "The interrupted switch could not be undone. Its record was set aside; see the notice."
+SET_ASIDE = "An interrupted switch could not be undone. Its record was set aside; see the notice."
+NOTHING_WAITING = "No interrupted switch was waiting."
 NOTHING_TO_UNDO = "The interrupted switch had changed nothing."
 UNAPPLIED = ("AccountDeck could not undo an interrupted {name} switch, so it set that switch's record aside and "
              f"cleared it. {KEPT} Open {{name}} and check it shows the account you expect.")
@@ -45,33 +46,41 @@ def set_aside(engine, key, message):
     engine.notice(message, "warning")
 
 
-def press(engine, provider, settle) -> list:
+@dataclass
+class Pressed:
+    """What one press of Recover did: a sentence for each record it settled, and how many it set aside."""
+    sentences: list
+    aside: int = 0
+
+
+def press(engine, provider, settle) -> Pressed:
     """One press of Recover for `provider`: `settle(tx)` puts one of its open records right and returns a
-    sentence for the user; the sentences are returned. A refusal the user can lift (the client still runs)
+    sentence for the user; what was done is returned. A refusal the user can lift (the client still runs)
     is raised with the record left open. Any other failure sets the record aside, as does a record that
-    cannot be read. A record that is no longer open is left alone, however old the list is."""
-    sentences = []
-    for key in list(engine.recovery):
+    cannot be read. The records are looked up now, not taken from `engine.recovery`, and only one that is
+    still open is settled: a list read while a switch was running never undoes that switch."""
+    done = Pressed([])
+    for key in recover_transactions(engine.vault):
         try:
             tx = FileTransaction.load(engine.vault, engine.roots(), key)
         except DeckError as exc:
             if getattr(exc, "reason", None):          # the vault key itself is unavailable: nothing can be judged
                 raise
             set_aside(engine, key, UNREADABLE)
+            done.aside += 1
             continue
-        if tx.doc.get("provider", "claude") != provider:
-            continue
-        if tx.doc.get("status") not in OPEN_STATUSES:     # it finished since the list was read: nothing to settle
+        if tx.doc.get("provider", "claude") != provider or tx.doc.get("status") not in OPEN_STATUSES:
             continue
         try:
-            sentences.append(settle(tx))
+            done.sentences.append(settle(tx))
         except Exception as exc:
             if isinstance(exc, DeckError) and exc.code in WAIT_CODES:
                 raise
             diagnostics.log_exception("recovery.unapplied", exc)
             set_aside(engine, key, UNAPPLIED.format(name=NAMES.get(provider, "app")))
+            done.aside += 1
     engine.recovery = recover_transactions(engine.vault)
-    return sentences
+    return done
 
 
 def after_failure(tx, undo):
@@ -87,9 +96,10 @@ def after_failure(tx, undo):
         return None
 
 
-def summary(sentences) -> str:
+def summary(done) -> str:
     """One line for the report of a Recover press, from what `press` returned."""
-    return " ".join(dict.fromkeys(sentences)) or SET_ASIDE
+    said = list(dict.fromkeys(done.sentences)) + ([SET_ASIDE] if done.aside else [])
+    return " ".join(said) or NOTHING_WAITING
 
 
 @dataclass(frozen=True)
@@ -147,11 +157,23 @@ def put_back(ctx, tx, client) -> str:
 
 
 def _keep_unreadable(ctx, client):
-    """The live file cannot be parsed: its bytes go to the vault before the outgoing login replaces them."""
+    """The live file cannot be parsed: its bytes go to the vault before the outgoing login replaces them. It
+    may hold the only copy of a login the client renewed, so when the bytes cannot be kept the undo stops
+    and the file stays as it is. A file the user owns but may not read is made readable first."""
+    path = client.path
     try:
-        ctx.vault.quarantine(client.provider + "-recover", client.path.read_bytes())
-    except OSError:             # it cannot even be opened, so there is nothing to keep
-        diagnostics.log("recovery.live_unreadable", "warning", provider=client.provider)
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return
+    except OSError:
+        try:
+            path.chmod(0o600)
+            raw = path.read_bytes()
+        except OSError:
+            diagnostics.log("recovery.live_unreadable", "warning", provider=client.provider)
+            raise DeckError(f"{NAMES[client.provider]}'s login file cannot be read, so it was left as it is.",
+                            "recovery") from None
+    ctx.vault.quarantine(client.provider + "-recover", raw)
 
 
 def _identity(client, data):
