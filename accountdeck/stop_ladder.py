@@ -73,10 +73,12 @@ class StopLadder:
         self.waiting_on: list[dict] = []
         self._first_signal: float | None = None
 
-    def run(self, token, plan_set: ProcessSet, *, cancel, progress) -> StopResult:
+    def run(self, token, plan_set: ProcessSet, *, cancel, progress, alone=None) -> StopResult:
+        """`alone()` is asked once every session is idle: it waits for a job running beside this one and
+        returns true when it had to (Operation.close_lane). The sessions are then looked at again."""
         self.waiting_on, self._first_signal = [], None
         log_offset = self._log_size()
-        gate = self._gate(token, plan_set, cancel, progress)
+        gate = self._gate(token, plan_set, cancel, progress, alone)
         result = gate if isinstance(gate, StopResult) else self._stop(token, *gate, cancel, progress)
         result.elapsed = 0.0 if self._first_signal is None else round(time.monotonic() - self._first_signal, 3)
         result.markers = self._markers(log_offset)
@@ -86,9 +88,10 @@ class StopLadder:
         return result
 
     # ---- T0 ----
-    def _gate(self, token, plan_set, cancel, progress):
+    def _gate(self, token, plan_set, cancel, progress, alone=None):
         """(desktop rows, Code rows) to stop, or the StopResult that ends the job without a signal. In "idle"
-        mode it waits until every Code session is idle (waiting.until_idle, so not past the confirmation)."""
+        mode it waits until every Code session is idle (waiting.until_idle, so not past the confirmation),
+        and still idle after any wait for a job beside this one: idle means idle when Claude is closed."""
         if token is None:
             return StopResult(False, "manual", detail=MANUAL_MESSAGE)
         idle_state: dict = {}
@@ -113,6 +116,8 @@ class StopLadder:
                 if not report.all_idle:
                     self.waiting_on = [{"pid": s.pid, "name": s.name, "status": s.status} for s in report.blockers]
                     progress("wait", _waiting_detail(report.blockers))
+                    return None
+                if alone is not None and alone():
                     return None
             return desktop, code
 

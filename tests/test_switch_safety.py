@@ -428,7 +428,7 @@ class TerminalAutoSwitchTest(DeckCase):
                 self.assertFalse(self.tick_until_switched(0.6))
 
     def test_the_switch_it_made_during_a_wait_can_be_undone_during_that_wait(self):
-        """The reverse of the state above: Undo is a manual terminal switch, and it must not wait for hours."""
+        """The reverse of the state above: Undo is a manual terminal switch, and it must not wait for that wait."""
         self.start(Waiting("codex"))
         self.assertTrue(self.tick_until_switched())
         deadline = time.monotonic() + 5

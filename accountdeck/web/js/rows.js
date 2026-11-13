@@ -46,12 +46,13 @@
     input.select();
   }
 
-  /** Ask first, then forget the saved account. A client stays signed in to the account it is using. */
+  /** Ask first, then forget the saved account. A client stays signed in to the account it is using. A terminal
+   *  account in use is offered here only once it is signed out, so the sheet does not say that about it. */
   function remove(account) {
     const R = T.remove;
     const app = STRINGS.apps[account.provider];
     const body = A.frozen(account) ? R.elsewhere
-      : [fill(R.body, { app }), account.active ? fill(R.inUse, { app }) : null].filter(Boolean).join(' ');
+      : [fill(R.body, { app }), account.active && !isTerminal(account) ? fill(R.inUse, { app }) : null].filter(Boolean).join(' ');
     AD.dom.openModal({ title: fill(R.title, { label: mask(account.label) }), view: 'remove', size: 'alert',
       body: el('p', { text: body }),
       actions: [AD.dom.button(STRINGS.button.cancel, () => AD.dom.closeModal(), { attrs: { 'data-autofocus': '' } }),

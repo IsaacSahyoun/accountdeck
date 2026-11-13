@@ -98,7 +98,7 @@ class TerminalSwitchSafetyTest(unittest.TestCase):
 
 
 class AutoSwitchWhileAnotherClientWaitsTest(unittest.TestCase):
-    """Act on 4. A Desktop, Codex or Muse switch can wait for hours for a session to close. The terminal
+    """Act on 4. A Desktop, Codex or Muse switch can wait up to 30 minutes for a session to close. The terminal
     auto-switch keeps working during that wait."""
 
     def test_the_terminal_auto_switch_acts_during_another_clients_wait(self):

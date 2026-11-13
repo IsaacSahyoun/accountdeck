@@ -86,14 +86,27 @@ def press(engine, provider, settle) -> Pressed:
             try:
                 done.sentences.append(settle(tx))
             except Exception as exc:
-                if isinstance(exc, StillNeeded) or (isinstance(exc, DeckError) and exc.code in WAIT_CODES):
+                if isinstance(exc, StillNeeded):
+                    _left(engine, provider, True)       # the next press goes to another client's record first
+                    raise
+                if isinstance(exc, DeckError) and exc.code in WAIT_CODES:
                     raise
                 diagnostics.log_exception("recovery.unapplied", exc)
                 set_aside(engine, key, UNAPPLIED.format(name=NAMES.get(provider, "app")))
                 done.aside += 1
     finally:
         engine.look_for_unfinished()
+    _left(engine, provider, False)
     return done
+
+
+def _left(engine, provider, still_needed):
+    """Keeps `engine.recovery_left`: the clients whose last press had to leave a record open, the one tried
+    longest ago first. switching._recovery_provider sends a press to them last, and in that order."""
+    if provider in engine.recovery_left:
+        engine.recovery_left.remove(provider)
+    if still_needed:
+        engine.recovery_left.append(provider)
 
 
 def after_failure(tx, undo):

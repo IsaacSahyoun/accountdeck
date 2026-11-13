@@ -163,6 +163,7 @@ class Engine:
             self.cli.adopt_stashes()
             self.cli.restore_enrollment()
         self._recovery_lock = threading.Lock()      # two operations can finish at the same moment
+        self.recovery_left = []     # the clients whose last Recover had to leave a record open, oldest first (recovery.press)
         self.recovery = self._scan_recovery()
         self._sweep_work()
         self.alert_engine = alerts.AlertEngine(started=clock())

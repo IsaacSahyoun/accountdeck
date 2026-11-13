@@ -233,13 +233,18 @@ def dispatch(engine, name, body):
 
 
 def _recovery_provider(engine):
-    """Whose interrupted switch a press of Recover settles first: a terminal one, then Codex, then Muse; None
-    when only Claude Desktop's are pending. A record nobody can read goes the terminal's way, which closes
-    no app and sets it aside (recovery.press)."""
+    """Whose interrupted switch a press of Recover settles: a terminal one first, then Codex, Muse and Claude
+    Desktop; None when nothing is pending. A client whose last press had to leave its record open
+    (recovery.StillNeeded) goes after the others, the one tried longest ago first, so no record keeps
+    Recover from another client's. A record nobody can read goes the terminal's way, which closes no app
+    and sets it aside (recovery.press)."""
     found = set()
     for key in engine.recovery:
         try:
-            found.add(engine.vault.get(key).get("provider"))
+            found.add(engine.vault.get(key).get("provider", "claude"))
         except DeckError:
             found.add("claude_cli")
-    return next((provider for provider in ("claude_cli", "codex", "muse") if provider in found), None)
+    left = list(engine.recovery_left)
+    waiting = [provider for provider in ("claude_cli", "codex", "muse", "claude") if provider in found]
+    waiting.sort(key=lambda provider: left.index(provider) if provider in left else -1)
+    return waiting[0] if waiting else None

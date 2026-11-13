@@ -202,14 +202,15 @@ def _whole(service) -> bool:
     try:
         credentials = service.adapter.store.read(missing=True)
         name = object_file(service.paths.claude_user_config, missing=True).get("oauthAccount")
-    except (DeckError, OSError):
+        try:
+            oauth(credentials)
+        except DeckError:
+            return True
+        owner = service.whose(credentials)
+        return owner is not None and (name or {}).get("accountUuid") == owner
+    except Exception as exc:        # whatever stopped the look, nobody can say the login is whole
+        diagnostics.log_exception("cli.whole_unknown", exc)
         return False
-    try:
-        oauth(credentials)
-    except DeckError:
-        return True
-    owner = service.whose(credentials)
-    return owner is not None and (name or {}).get("accountUuid") == owner
 
 
 def _restorable(service, identity):

@@ -702,7 +702,11 @@ class FileTransaction:
         change = {"path": str(path), "before": base64.b64encode(before).decode() if before is not None else None,
                   "after": digest(data) if data is not None else None}
         self.doc["changes"].append(change)
-        self.save()
+        try:
+            self.save()
+        except BaseException:
+            self.doc["changes"].pop()        # not on disk, so not in memory either: nothing was written
+            raise
         if data is None:
             path.unlink(missing_ok=True)
         else:

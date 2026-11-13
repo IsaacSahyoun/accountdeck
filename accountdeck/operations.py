@@ -159,6 +159,16 @@ class Operation:
             self.waiting_on = rows
         self._changed()
 
+    def close_lane(self) -> bool:
+        """Called from a wait for sessions once they all look idle: the operation running beside this one
+        ends first, and none starts beside it after. True when that took a wait. The caller then looks at
+        its sessions again, because they may have changed meanwhile."""
+        return self._leave_wait is not None and bool(self._leave_wait(self))
+
+    def reopen_lane(self):
+        """The wait for sessions goes on after all, so an operation may run beside it again."""
+        self.wait_over = False
+
     def _moving_to(self, phase):
         """Before this operation leaves its wait for sessions and starts to change things, the operation
         running beside it ends, so only one operation writes at a time. That can take a while, so a cancel

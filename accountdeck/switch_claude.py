@@ -423,6 +423,7 @@ class _Stages:
             self._begin(step_id)
         self.job.note(detail, step_id=step_id)
         if step_id == "wait":
+            self.job.reopen_lane()       # sessions are working: a terminal switch may run beside this wait
             self.job.set_waiting(self.ladder.waiting_on)
 
     def _begin(self, step_id):
@@ -613,7 +614,8 @@ class ClaudeJob(Operation):
         ladder = ctx.ladder()
         stages = _Stages(self, ladder)
         with self._guard():
-            result = ladder.run(self.token, self.plan_set, cancel=self.cancel_event, progress=stages)
+            result = ladder.run(self.token, self.plan_set, cancel=self.cancel_event, progress=stages,
+                                alone=self.close_lane)
             stages.close(result)
             self._record_stop(result)
             self._refuse(result)
@@ -1243,7 +1245,8 @@ class Recover(ClaudeJob):
                 undo.close()         # nothing was written, so no undo is under way
                 raise
             # The write stopped part way, which leaves Claude signed out. Only this record can finish it.
-            raise recovery.StillNeeded(exc, "Claude is signed out until its previous sign-in is written.") from exc
+            raise recovery.StillNeeded(exc, "Claude's previous sign-in is not written yet." + (
+                " Claude was left closed." if self.was_running else "")) from exc
         undo.commit()
         status = self._roll_back_sessions(tx)
         tx.close(status)
