@@ -1,4 +1,4 @@
-"""Provider adapters (§1.3): Claude Desktop, Claude Code (terminal), Codex and Muse Code, their HTTP and RPC
+"""Provider adapters: Claude Desktop, Claude Code (terminal), Codex and Muse Code, their HTTP and RPC
 transports, failure classification and status sources. The engine builds the adapters with make_providers()."""
 from __future__ import annotations
 

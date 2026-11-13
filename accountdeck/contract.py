@@ -91,8 +91,8 @@ FORBIDDEN_KEYS = frozenset({"identity", "org", "org_uuid", "organization_uuid", 
 # The words the dashboard uses for this Mac's places. Kept as a block of the state so the page's copy
 # comes from one place; the feature flags say what the Mac offers.
 PLATFORM_FEATURES = ("tray", "menu_bar", "taskbar_widget", "aumid", "start_on_login")
-PLATFORM_LABELS = ("system", "section", "status_icon", "status_icon_hint", "start_on_login", "quit_hint",
-                   "open_claude", "reopen_hint", "open_hint", "closed_hint", "system_error", "cwd_example")
+PLATFORM_LABELS = ("section", "status_icon", "status_icon_hint", "start_on_login", "reopen_hint", "open_hint",
+                   "closed_hint", "system_error")
 # macOS notification permission as the menu bar item sees it ("rejected": macOS refused this copy's code
 # identity, a reinstall repairs it; "unavailable": no menu bar item is running).
 NOTIFICATION_STATES = ("authorized", "provisional", "pending", "not_determined", "denied", "rejected", "unavailable")
@@ -101,14 +101,13 @@ _PLATFORM = {
     "os": "mac",
     "features": {"tray": False, "menu_bar": True, "taskbar_widget": False, "aumid": False, "start_on_login": True},
     "labels": {
-        "system": "macOS", "section": "Menu bar & startup", "status_icon": "Show AccountDeck 2 in the menu bar",
+        "section": "Menu bar & startup", "status_icon": "Show AccountDeck 2 in the menu bar",
         "status_icon_hint": "The menu bar shows the terminal room left. Click it for every account.",
-        "start_on_login": "Start at login", "quit_hint": "Quit Claude from the menu bar and try again.",
-        "open_claude": "Open it from Applications or Launchpad.",
+        "start_on_login": "Start at login",
         "reopen_hint": "Reopen AccountDeck 2 from Applications.",
         "open_hint": "Open AccountDeck 2 from Applications.",
         "closed_hint": "Open it again from Applications to see your accounts.",
-        "system_error": "macOS did not allow that. Try again.", "cwd_example": "/Users/me",
+        "system_error": "macOS did not allow that. Try again.",
     },
     "notifications": {"state": "unavailable", "settings_url": NOTIFICATION_SETTINGS_URL},
 }

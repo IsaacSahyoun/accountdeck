@@ -1,0 +1,26 @@
+# The keep list of tests/test_keep_clean.py: what tools/slop_scan.py reports and why it stays.
+# One `kind | key | reason` per line. A new scanner item with no line here fails the test.
+
+# Engine.action runs `_do_<action name>`, so these are called by name, never by a direct reference.
+unused | accountdeck/engine.py::_do_demo_clock | Engine.action calls it by name for the demo's clock control
+unused | accountdeck/engine.py::_do_refresh | Engine.action calls it by name for the Refresh button
+unused | accountdeck/engine.py::_do_rename | Engine.action calls it by name for Rename in every row's More menu
+unused | accountdeck/engine.py::_do_remove | Engine.action calls it by name for Remove in every row's More menu
+unused | accountdeck/engine.py::_do_cancel | Engine.action calls it by name for Cancel on a running job
+unused | accountdeck/engine.py::_do_dismiss | Engine.action calls it by name to dismiss a notice
+unused | accountdeck/engine.py::_do_dismiss_report | Engine.action calls it by name to dismiss a finished job's report
+unused | accountdeck/engine.py::_do_import_bundle_preview | Engine.action calls it by name for the PC move preview
+unused | accountdeck/engine.py::_do_import_bundle | Engine.action calls it by name for the PC move import
+unused | accountdeck/engine.py::_do_import_bundle_dismiss | Engine.action calls it by name to dismiss the PC move result
+unused | accountdeck/engine.py::_do_test_notification | Engine.action calls it by name for Send Test Notification
+
+# Python's http.server calls these handler methods by name.
+unused | accountdeck/server.py::do_POST | http.server calls it for every POST request
+unused | accountdeck/server.py::send_error | overrides http.server's error page so no path or version leaks
+tests-only | accountdeck/server.py::do_GET | http.server calls it for every GET request
+tests-only | accountdeck/server.py::log_message | overrides http.server's request log so nothing is printed
+
+# Controls of the fake machine that tests drive.
+tests-only | accountdeck/procs.py::set_session_status | test control of the fake process table: makes a session busy or idle
+tests-only | accountdeck/procs.py::exit_process | test control of the fake process table: ends a process
+tests-only | accountdeck/providers/http.py::unregister_test_host | undoes register_test_host, the only way a safe-mode test reaches a loopback server

@@ -166,7 +166,6 @@ def render(case, state):
     if chrome is None:
         case.skipTest(f"no headless Chrome found; set {CHROME_ENV} to run the dashboard tests")
     server = serve(case, state)
-    server.socket.listen(128)      # a short waiting line drops page files at random; that is its own test
     profile = tempfile.mkdtemp(prefix="accountdeck-test-chrome-")
     case.addCleanup(shutil.rmtree, profile, True)
     url = f"http://127.0.0.1:{server.server_port}/#token={server.token}"

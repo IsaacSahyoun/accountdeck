@@ -50,8 +50,9 @@ terminals are using cannot be removed; switch to another one first.
 
 **Auto-switch:** This applies to Claude Code only. It starts on at 95% used and needs at least
 two saved accounts. Change it in **Settings → Auto-Switch**, or turn it off. It waits for a usable
-account with a recent reading. **Leave out** excludes an account. An automatic switch has a
-10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
+account with a recent reading. Right after a 5-hour limit refills, it waits for a new reading of the
+account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
+switch has a 10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
 
 **Early switch:** **Use weekly allowance before it resets** also starts on. With it on, AccountDeck
 can move Claude Code to another account long before 95%, for example when the account in use is

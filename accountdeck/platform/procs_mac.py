@@ -52,8 +52,6 @@ TERMINAL_RUN = re.compile(r"[0-9a-f]{32}\.pid")
 SNAPSHOT_SLOW_MS = 50.0       # a snapshot slower than this is always logged
 CLI_AUTH_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
                       "CLAUDE_SECURESTORAGE_CONFIG_DIR")   # unset in the enrollment window
-PACKAGE_SUFFIXES = (".app", ".bundle", ".framework", ".plugin", ".pkg", ".mpkg", ".prefpane", ".appex", ".xpc",
-                    ".kext", ".saver")
 NOT_ALLOWED_MESSAGE = "macOS did not allow AccountDeck to control this process."
 
 
