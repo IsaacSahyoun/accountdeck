@@ -774,6 +774,11 @@ class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
     client waits for its sessions runs beside that wait. The sheet must not turn into the progress view of
     the other client's job: its Cancel button would end that wait, not the Undo."""
 
+    def the_automatic_switch_is_over(self):
+        """The switch writes its history before it ends, and the app refuses an Undo until it has ended."""
+        self.assertTrue(until(lambda: self.engine.store.setting("cli_history", {}).get("last")))
+        self.assertTrue(until(lambda: self.engine.runner.free_for("claude_cli", beside_waits=True)))
+
     def test_the_sheet_does_not_offer_to_cancel_the_other_clients_wait(self):
         self.engine.update_settings({"cli_early_switch": False})
         self.engine.sense_active()
@@ -787,7 +792,7 @@ class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
         self.engine.submit(waiting)
         self.wait_for_phase("waiting_idle")
         cli_auto.tick(self.engine)                      # the automatic switch, made beside the Codex wait
-        self.assertTrue(until(lambda: self.engine.store.setting("cli_history", {}).get("last")))
+        self.the_automatic_switch_is_over()
         self.browser.open(test_dashboard.serve(self, self.engine))
         self.browser.click("document.querySelector('[data-cli-undo]')", "the Undo button")
         self.browser.click(f"{test_dashboard.SHEET}.open && {test_dashboard.SHEET}.querySelector('[data-choice=now]')",
@@ -818,7 +823,7 @@ class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
         self.engine.submit(other)
         self.wait_for_phase("waiting_idle")
         cli_auto.tick(self.engine)
-        self.assertTrue(until(lambda: self.engine.store.setting("cli_history", {}).get("last")))
+        self.the_automatic_switch_is_over()
         self.browser.open(test_dashboard.serve(self, self.engine))
         # The page gets the Undo's answer only once it has seen the other job leave its wait.
         self.browser.js("""(() => { const post = AD.api.action; AD.api.action = async (name, body) => {

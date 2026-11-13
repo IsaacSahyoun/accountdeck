@@ -432,7 +432,9 @@ class TerminalAutoSwitchTest(DeckCase):
         self.start(Waiting("codex"))
         self.assertTrue(self.tick_until_switched())
         deadline = time.monotonic() + 5
-        while not self.engine.store.setting("cli_history", {}).get("last") and time.monotonic() < deadline:
+        # The switch writes its history before it ends, and the app refuses an Undo until it has ended.
+        while time.monotonic() < deadline and not (self.engine.store.setting("cli_history", {}).get("last")
+                                                   and self.engine.runner.free_for("claude_cli", beside_waits=True)):
             time.sleep(0.05)
         plan = self.engine.action("cli-undo", {"provider": "claude_cli"})["plan"]
         self.assertEqual(plan["blockers"], [])
