@@ -312,6 +312,36 @@ class ClaudeHasNoFiveHourLimitTest(unittest.TestCase):
         self.assertEqual((best["label"], best["reason"]), ("Beta", "Most headroom (100% left) and a fresh reading"))
 
 
+class ReadingsTheShippedVersionSavedTest(unittest.TestCase):
+    """The 2.0.0 build saved a Claude account's reading with a 5-hour limit in it. The new code opens that data
+    as it is, and until the next read that saved reading is all it knows of the account. Found by the fourth
+    review: the rule and the menu bar ignored the saved 5-hour limit while the page drew it and the best pick
+    counted the account as out."""
+
+    def test_a_saved_5_hour_limit_is_no_limit_of_a_claude_account(self):
+        from accountdeck import rules
+        engine = support.demo_engine(self, "typical")
+        now = engine.clock()
+        rows = {provider: next(r for r in engine.store.accounts() if r["provider"] == provider
+                               and r["identity"] != engine.active_identity[provider]) for provider in ("claude_cli", "claude")}
+        for row in rows.values():       # before the first state is built: the engine keeps the state it built
+            engine.store.observe(row["id"], support.shipped_reading(now, 100.0, 20.0), at=now)
+        for provider, row in rows.items():
+            with self.subTest(provider=provider):
+                self.assertEqual([w["kind"] for w in engine.store.account(row["id"])["last_good_usage"]["windows"]], ["weekly"])
+                account = shown(engine, row["id"])
+                self.assertEqual([(w["kind"], w["used"]) for w in account["windows"]], [("weekly", 20.0)])
+                self.assertEqual((account["state"], rules.eligible(account, "")), ("ok", True), account["headline"])
+
+    def test_codex_and_muse_keep_a_saved_5_hour_limit(self):
+        engine = support.demo_engine(self, "typical")
+        for provider in ("codex", "muse"):
+            with self.subTest(provider=provider):
+                row = next(r for r in engine.store.accounts() if r["provider"] == provider)
+                self.assertIn("session", [w["kind"] for w in engine.store.account(row["id"])["last_good_usage"]["windows"]])
+                self.assertIn("session", [w["kind"] for w in shown(engine, row["id"])["windows"]])
+
+
 # ---- readings, for all four clients ----
 CLIENTS = ("claude_cli", "claude", "codex", "muse")
 # For each client: the limit whose refill the test records, and one that keeps running. Claude has weekly limits only.

@@ -6,9 +6,9 @@ A Mac menu bar app in Python 3.14 with a web dashboard on `127.0.0.1`. It saves 
 The copy of this app installed on this Mac holds real logins. A dev run or a test that reaches them can sign real accounts out.
 
 - Start `run.py` only with `--demo`. Never pass `--app`, `--serve` or `--data` in a dev run.
-- Never run, edit or delete anything in `~/Library/Application Support/AccountDeck2/` or `~/Applications/AccountDeck 2.app`. That is the live app and its data.
-- Never stop the live app's process and never call its port. `tools/verify/doctor.py` prints both.
-- Never run `install.sh` or `uninstall.sh` without `--no-launch --prefix <a temp folder>`. The real install is the `accountdeck-install` skill, and it needs Isaac's OK every time.
+- Never run, edit or delete anything in `~/Library/Application Support/AccountDeck2/` or `~/Applications/AccountDeck 2.app`. That is the live app and its data. One thing there is used and never changed: the Python in `runtime/python/`, which the commands below run.
+- Never stop the live app's process and never call its port. `tools/verify/doctor.py` prints both. The one exception is the quit step of the `accountdeck-install` skill, when Isaac asks for it.
+- Never run `install.sh` without `--no-launch --prefix <a temp folder>`, or `uninstall.sh` without `--prefix <a temp folder>` (it has no `--no-launch`). Never open an app installed that way: it would run on the real logins. The real install is the `accountdeck-install` skill, and it needs Isaac's OK every time.
 - Never run `claude`, `codex`, `muse` or `security` to test something. They use the real logins.
 - Kill only processes you started, by pid. Never kill by name: `pkill -f run.py` matches the live app. A demo's temp folder (`$TMPDIR/accountdeck2-demo-*`) is yours only if your run made it.
 - Never run `rm`. Use `trash`, or let a tool remove its own temp folder.

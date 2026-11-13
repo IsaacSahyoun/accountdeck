@@ -1,75 +1,109 @@
-"""Proof run: open the real dashboard page of every demo scenario in headless Chrome and look for script
-errors and sections that failed to render. look_sweep.py does the same in the WebKit of the app's window.
+"""Proof run: open the real dashboard page of every demo scenario in headless Chrome. A page fails on a script
+error, and when its two account lists are not the demo's accounts: one left out, one drawn twice, or one in
+the wrong list. look_sweep.py takes the pictures, in the WebKit of the app's window.
 Usage: dashboard_sweep.py <python> <code copy> <chrome-headless-shell> [scenario ...]
 With ACCOUNTDECK_VERIFY_LOGS set, each page's HTML is kept in that folder."""
-import glob, http.cookiejar, json, os, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
+import html.parser, json, os, re, shutil, subprocess, sys, tempfile
 
-PY, COPY, CHROME = sys.argv[1:4]
-LOGS = os.environ.get("ACCOUNTDECK_VERIFY_LOGS")
-sys.path.insert(0, COPY)
-os.environ["ACCOUNTDECK_SAFE_MODE"] = "1"
-from accountdeck import fixtures  # noqa: E402  (names only)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from demo_run import Demo, end_on_kill  # noqa: E402
 
-scenarios = sys.argv[4:] or list(fixtures.SCENARIOS)
-tmp = tempfile.gettempdir()
-bad = 0
-for name in scenarios:
-    before = set(glob.glob(os.path.join(tmp, "accountdeck2-demo-*")))
-    proc = subprocess.Popen([PY, "-E", "-s", "run.py", "--demo", name, "--port", "0", "--no-browser"],
-                            cwd=COPY, env=dict(os.environ), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    profile = tempfile.mkdtemp(prefix="accountdeck-lead-chrome-")
+LISTS = {"accounts": ("claude_cli",), "other-accounts": ("claude", "codex", "muse")}    # the clients each list draws
+
+
+class Rows(html.parser.HTMLParser):
+    """The account rows in a page's HTML: {list id: [account id, ...]} for every `li.row` inside a list."""
+
+    def __init__(self, dom):
+        super().__init__()
+        self.open, self.rows = [], {name: [] for name in LISTS}
+        self.feed(dom)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        self.open.append((tag, attrs.get("id")))
+        inside = next((name for _tag, name in reversed(self.open) if name in LISTS), None)
+        if inside and tag == "li" and "row" in (attrs.get("class") or "").split():
+            self.rows[inside].append(attrs.get("data-id"))
+
+    def handle_endtag(self, tag):
+        for at in range(len(self.open) - 1, -1, -1):        # a tag with no end, like <input>, closes with its parent
+            if self.open[at][0] == tag:
+                del self.open[at:]
+                break
+
+
+def not_drawn(dom, accounts):
+    """What is wrong with the page's account lists, as words. Empty when each list holds its clients'
+    accounts, each one once."""
+    drawn, wrong = Rows(dom).rows, []
+    for name, clients in LISTS.items():
+        if f'id="{name}"' not in dom:
+            wrong.append(f"no #{name} list")
+        want = sorted(str(a["id"]) for a in accounts if a.get("provider") in clients)
+        got = sorted(map(str, drawn[name]))
+        if want != got:
+            labels = {str(a["id"]): a.get("label") for a in accounts}
+            missing = [labels[i] for i in want if i not in got]
+            extra = [labels.get(i, i) for i in got if got.count(i) > 1 or i not in want]
+            wrong.append(f"#{name} drew {len(got)} of {len(want)} rows" + (f", missing {missing}" if missing else "")
+                         + (f", not its own or twice {sorted(set(map(str, extra)))}" if extra else ""))
+    return wrong
+
+
+def sweep(python, copy, chrome, name, logs=None):
+    """(ok, words) for one scenario."""
     note, ok = [], True
     try:
-        line = proc.stdout.readline().strip()
-        url = line.split(": ", 1)[1]
-        origin, token = url.split("/#token=")
-        page = subprocess.run([CHROME, "--headless", "--dump-dom", "--virtual-time-budget=9000", "--enable-logging=stderr",
+        demo = Demo(python, copy, name)
+    except RuntimeError as exc:
+        return False, f"ERROR {exc}"
+    profile = tempfile.mkdtemp(prefix="accountdeck-lead-chrome-")
+    try:
+        page = subprocess.run([chrome, "--headless", "--dump-dom", "--virtual-time-budget=9000", "--enable-logging=stderr",
                                "--v=0", "--no-first-run", "--disable-gpu", "--window-size=1280,2400",
-                               f"--user-data-dir={profile}", url], capture_output=True, text=True, timeout=90)
+                               f"--user-data-dir={profile}", demo.url], capture_output=True, text=True, timeout=90)
         dom = page.stdout
-        console = [l for l in page.stderr.splitlines() if "CONSOLE" in l]
-        errors = [l for l in console if re.search(r"Uncaught|could not|Error|error|Refused|violat", l)]
+        console = [line for line in page.stderr.splitlines() if "CONSOLE" in line]
+        errors = [line for line in console if re.search(r"Uncaught|could not|Error|error|Refused|violat", line)]
         still_loading = "Loading your terminal accounts" in dom
-        sections = {s: len(re.findall(rf'id="{s}"[^>]*>(.*?)</(?:section|aside|div)>', dom, re.S) and
-                          re.search(rf'id="{s}"[^>]*>(.*?)</(?:section|aside|div)>', dom, re.S).group(1).strip())
-                    for s in ("accounts", "other-accounts", "overview", "details")}
+        demo.call("/api/session", {"token": demo.token})
+        code, body = demo.call("/api/state")
+        accounts = json.loads(body)["accounts"] if code == 200 else None
+        wrong = not_drawn(dom, accounts) if accounts is not None else [f"no state to compare with ({code})"]
         note.append(f"dom={len(dom)} console={len(console)} errors={len(errors)} still-loading={still_loading} "
-                    + " ".join(f"{k}={v}" for k, v in sections.items()))
-        ok &= len(dom) > 5000 and not errors and not still_loading
-        for l in errors[:4]:
-            note.append("\n      " + l[-300:])
-        if LOGS:
-            open(os.path.join(LOGS, f"dom-{name}.html"), "w").write(dom)
+                    + (f"rows={len(accounts)}/{len(accounts)}" if not wrong else "ROWS " + "; ".join(wrong)))
+        ok &= len(dom) > 5000 and not errors and not still_loading and not wrong
+        for line in errors[:4]:
+            note.append("\n      " + line[-300:])
+        if logs:
+            open(os.path.join(logs, f"dom-{name}.html"), "w").write(dom)
     except Exception as exc:
         ok = False
         note.append(f"ERROR {type(exc).__name__}: {exc}")
     finally:
-        try:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
-                                                 urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-            def post(path, body):
-                req = urllib.request.Request(origin + path, data=json.dumps(body).encode(), headers={
-                    "Content-Type": "application/json", "X-AccountDeck": "1", "Origin": origin})
-                try:
-                    return opener.open(req, timeout=15).status
-                except urllib.error.HTTPError as e:
-                    return e.code
-            post("/api/session", {"token": token})
-            code = post("/api/stop", {})
-            try:
-                proc.wait(timeout=15 if code == 200 else 1)
-            except subprocess.TimeoutExpired:
-                proc.kill(); proc.wait()
-        except Exception:
-            if proc.poll() is None:
-                proc.kill(); proc.wait()
-        for d in set(glob.glob(os.path.join(tmp, "accountdeck2-demo-*"))) - before:   # only this run's folder
-            shutil.rmtree(d, ignore_errors=True)
+        tail = demo.stop()
         shutil.rmtree(profile, ignore_errors=True)
-    tail = (proc.stdout.read() or "").strip()
     if "Traceback" in tail:
         ok = False
         note.append("TRACEBACK " + tail[-500:])
-    bad += not ok
-    print(f"{'ok  ' if ok else 'FAIL'} {name:20} " + " ".join(note), flush=True)
-print(f"\n{len(scenarios) - bad}/{len(scenarios)} dashboards ok")
+    return ok, " ".join(note)
+
+
+def main(python, copy, chrome, scenarios):
+    sys.path.insert(0, copy)
+    os.environ["ACCOUNTDECK_SAFE_MODE"] = "1"
+    from accountdeck import fixtures  # noqa: E402  (names only)
+    scenarios, bad = scenarios or list(fixtures.SCENARIOS), 0
+    for name in scenarios:
+        ok, words = sweep(python, copy, chrome, name, os.environ.get("ACCOUNTDECK_VERIFY_LOGS"))
+        bad += not ok
+        print(f"{'ok  ' if ok else 'FAIL'} {name:20} {words}", flush=True)
+    print(f"\n{len(scenarios) - bad}/{len(scenarios)} dashboards ok")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 4:
+        sys.exit(__doc__)
+    end_on_kill()
+    main(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:])

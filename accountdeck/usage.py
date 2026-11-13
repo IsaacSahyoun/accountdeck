@@ -69,9 +69,23 @@ def classify_key(key, value):
     return kind, label, short, model, kind in PRIMARY_KINDS
 
 
+CLAUDE_CLIENTS = frozenset({"claude", "claude_cli"})
+
+
+def saved_reading(provider, reading):
+    """A reading as the store saved it, made current. The 2.0.0 build saved a Claude account's 5-hour limit as
+    a window, and until the next read that saved reading is all the app knows of the account. It is no limit
+    any more (`claude_usage`), so it is left out here, where every saved reading is read."""
+    if provider not in CLAUDE_CLIENTS or not isinstance(reading, dict) or not isinstance(reading.get("windows"), list):
+        return reading
+    kept = [w for w in reading["windows"] if not (isinstance(w, dict) and w.get("kind") == "session")]
+    return reading if len(kept) == len(reading["windows"]) else dict(reading, windows=kept)
+
+
 def claude_usage(data, *, now=None):
     """Claude's limits are weekly. It dropped its 5-hour limit, so a number an answer still carries for one
-    stays in ``raw_windows`` and becomes no window: nothing shows it, counts it or switches on it."""
+    stays in ``raw_windows`` and becomes no window: nothing shows it, counts it or switches on it. A reading
+    saved before that goes through `saved_reading`."""
     windows, raw, structured = [], [], {}
     for key, value in data.items():
         described = classify_key(key, value)

@@ -13,7 +13,9 @@
   logs/manifest.before   a checksum of every file the reviewers may read
 
 `audit` says whether the copies are untouched, whether a file was added, and whether each answer file is
-whole. Run it before you read an answer. ACCOUNTDECK_REVIEWS moves the reviews folder, for a trial."""
+whole: over 1 KB, with its Coverage section, ending in the line "END OF REVIEW". It passes only when three
+answers are whole. Run it before you read an answer. ACCOUNTDECK_REVIEWS moves the reviews folder, for a
+trial."""
 import hashlib
 import os
 from pathlib import Path
@@ -24,6 +26,8 @@ SKILL = Path(__file__).resolve().parents[1]
 REPO = SKILL.parents[2]
 ROOT = Path(os.environ.get("ACCOUNTDECK_REVIEWS") or Path.home() / ".accountdeck" / "reviews")
 READ = ("code", "base")                     # what a reviewer reads and must leave as it is
+SEATS = 3                                   # a review is this many reviewers who each finished
+LAST_LINE = "END OF REVIEW"                 # the brief has a reviewer write it when the answer is done
 
 
 def git(*args):
@@ -98,18 +102,19 @@ def audit(name):
     changed = sorted(set(before) ^ set(after))
     print(f"copies: {len(after)} files, " + ("untouched" if not changed else f"CHANGED, this run does not count:\n  "
                                               + "\n  ".join(changed[:20])))
-    bad = bool(changed)
-    answers = sorted((folder / "out").glob("*.md"))
-    if not answers:
-        print("no answer files yet")
-    for answer in answers:
+    bad, whole_answers = bool(changed), 0
+    for answer in sorted((folder / "out").glob("*.md")):
         text = answer.read_text(encoding="utf-8", errors="replace")
-        size, whole = answer.stat().st_size, "## Coverage" in text
-        note = "ok" if size >= 1024 and whole else ("under 1 KB: likely a usage-limit message, not a review" if size < 1024
-                                                    else "no Coverage section: cut off")
+        size, ended = answer.stat().st_size, text.rstrip().endswith(LAST_LINE)
+        note = ("under 1 KB: likely a usage-limit message, not a review" if size < 1024
+                else "no Coverage section: cut off" if "## Coverage" not in text
+                else f"no last line \"{LAST_LINE}\": cut off, or its reviewer is still writing" if not ended else "ok")
         bad |= note != "ok"
+        whole_answers += note == "ok"
         print(f"{answer.name}: {size / 1024:.0f} KB, {text.count(chr(10) + '### ')} findings, {note}")
-    return 1 if bad else 0
+    if whole_answers < SEATS:
+        print(f"{whole_answers} of {SEATS} reviews are whole: this review is not done")
+    return 1 if bad or whole_answers < SEATS else 0
 
 
 if __name__ == "__main__":

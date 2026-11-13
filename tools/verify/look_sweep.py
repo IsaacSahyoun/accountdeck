@@ -16,7 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from demo_run import Demo  # noqa: E402
+from demo_run import Demo, end_on_kill  # noqa: E402
 from tests import webkit  # noqa: E402
 
 NOW = "2026-11-12T15:00:00"
@@ -116,6 +116,7 @@ def compare(a, b, out):
 
 
 if __name__ == "__main__":
+    end_on_kill()
     if len(sys.argv) >= 5 and sys.argv[1] == "shoot":
         sys.exit(shoot(sys.argv[2], sys.argv[3], Path(sys.argv[4]), sys.argv[5:]))
     if len(sys.argv) == 5 and sys.argv[1] == "compare":

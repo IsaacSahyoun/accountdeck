@@ -24,8 +24,9 @@
 #   --no-launch        do not open AccountDeck 2 at the end
 #   --start-at-login   open AccountDeck 2 when you log in (a LaunchAgent; switch it off in the dashboard)
 #   --prefix DIR       install below DIR instead of your home folder, for tests: the app, its support
-#                      folder and the LaunchAgents folder all go there, and launchctl and the Finder
-#                      registration are skipped
+#                      folder and the LaunchAgents folder all go there, launchctl and the Finder
+#                      registration are skipped, and the app is not opened. Do not open that app by hand:
+#                      it would run on your real data and logins.
 #   --downloads DIR    take the pinned files from DIR when they are there (still checked against their
 #                      SHA-256) instead of downloading them: an offline or repeated test install
 #
@@ -159,6 +160,7 @@ main() {
         mkdir -p "$prefix"
         base=$(cd "$prefix" && pwd -P)
         manage=false
+        launch=0    # an app below a prefix has no data folder of its own: opened, it would run on the real data and logins
     else
         base=${HOME:-}
         [ -n "$base" ] && [ -d "$base" ] || die "your home folder was not found."

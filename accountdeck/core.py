@@ -19,6 +19,7 @@ import uuid
 # The owner lock (flock) lives with the other macOS code; it is re-exported here for its callers
 # (run.py, cli_accounts). platform.locks imports nothing else from the package.
 from .platform.locks import OwnerLock  # noqa: F401  (re-export)
+from .usage import saved_reading
 
 
 # "system": macOS refused something (a launch, a folder, free disk space) rather than a provider.
@@ -393,7 +394,8 @@ def _is_number(value):
 
 def _account(row):
     account = dict(row)
-    account["last_good_usage"] = json.loads(account["last_good_usage"]) if account["last_good_usage"] else None
+    saved = json.loads(account["last_good_usage"]) if account["last_good_usage"] else None
+    account["last_good_usage"] = saved_reading(account.get("provider"), saved)
     account["flags"] = json.loads(account["flags"]) if account["flags"] else {}
     return account
 

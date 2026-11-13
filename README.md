@@ -146,7 +146,9 @@ runs them in a headless Chrome instead, found in `$ACCOUNTDECK_TEST_CHROME`, in 
 `/Applications`. A dashboard test skips when its engine is missing.
 `tools/slop_scan.py` lists code nothing uses. `PY` can select another compatible development runtime.
 To try `install.sh` or `uninstall.sh` without touching your real install, pass `--prefix DIR`:
-everything then goes below `DIR`, and `launchctl` and the Finder registration are skipped.
+everything then goes below `DIR`, `launchctl` and the Finder registration are skipped, and the app is not opened.
+Do not open the app in `DIR` by hand. It has no data folder of its own, so it would run on your real data and
+logins. To look at the app without them, use `run.py --demo`.
 
 ## License
 

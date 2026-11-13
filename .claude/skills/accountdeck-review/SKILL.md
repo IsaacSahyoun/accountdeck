@@ -38,13 +38,14 @@ The seats used so far: Claude Opus 5.5, Claude Sonnet 5.5 and GPT-6.1 Sol, each 
 What went wrong before:
 - A child can sit on a permission prompt without waking you. One waited 83 minutes on an `rm`. The brief forbids `rm` and tells reviewers never to wait on a blocked command. When a reviewer's answer file has not changed for a long stretch, read its task status once and look for a pending approval.
 - A child can die on the API rate limit. Its answer file is then under 1 KB.
+- A reviewer writes its answer file in parts, and the file has a Coverage section from the start. On 2026-11-13 two of three answers looked whole and still grew. The brief has each reviewer end the file with the line `END OF REVIEW`, and the audit fails an answer without it.
 - The reviewers run with full access and are only told to stay read-only. The audit is what checks it.
 
 ## 4. Audit
 ```sh
 "$PY" -E -s .claude/skills/accountdeck-review/tools/review.py audit <name>
 ```
-It says whether the copies are untouched and whether each answer is whole. A run that changed a copy does not count: run that seat again under a new folder name. An answer under 1 KB or without its Coverage section does not count either.
+It says whether the copies are untouched and whether each answer is whole, and it passes only with three whole answers. Run before the reviewers finish, it ends with "this review is not done". A run that changed a copy does not count: run that seat again under a new folder name. An answer under 1 KB, without its Coverage section or without the last line `END OF REVIEW` does not count either.
 
 ## 5. Sort and prove
 - Merge findings that describe the same issue, and note which models raised each one.

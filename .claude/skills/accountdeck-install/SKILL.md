@@ -21,7 +21,7 @@ PROOF=~/.accountdeck/proof/install-<date>; mkdir -p "$PROOF"
 - It keeps the runtime when its pinned versions are unchanged, and rebuilds `~/Applications/AccountDeck 2.app` only when the result differs.
 - It never touches the data: the vault, the database, the settings.
 - It does **not** stop a running app. A running app keeps its old Python code in memory and would serve the new page files from disk. So the app is quit first.
-- `--prefix <folder>` installs everything below that folder and skips the Mac's own registration. `--no-launch` opens nothing. Together they make a trial that cannot reach the live app. Never use `--prefix` without `--no-launch`.
+- `--prefix <folder>` installs everything below that folder and skips the Mac's own registration. `--no-launch` opens nothing. Together they make a trial that cannot reach the live app. Never use `--prefix` without `--no-launch`: a copy of `install.sh` from before 2026-11-13 opens the trial app at the end, and that app runs on the real data and logins. Never open a trial app by hand, for the same reason.
 
 ## 1. The build
 ```sh

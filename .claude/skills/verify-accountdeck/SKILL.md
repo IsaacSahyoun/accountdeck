@@ -114,7 +114,7 @@ diff "$PROOF/look-before/typical.txt" "$PROOF/look-after/typical.txt"
 ```
 `compare` counts the pixels that differ and writes the differing bands, before above after. Every difference is either meant or a bug. When a change moves the whole page, the pixel count is no use: read the words diff and look at the pictures.
 
-**The sweeps and probes.** `demo_sweep.py` starts every scenario, reads its API and pages and checks the server's request rules. `dashboard_sweep.py` draws every scenario in Chrome. `static_burst.py` fetches the page's files in parallel bursts. The `*_probe.py` files each ask one question the first review raised. Each one's header says how to run it.
+**The sweeps and probes.** `demo_sweep.py` starts every scenario, reads its API and pages and checks the server's request rules. `dashboard_sweep.py` draws every scenario in Chrome and fails a page whose account lists are not the demo's accounts. `static_burst.py` fetches the page's files in parallel bursts. The `*_probe.py` files each ask one question the first review raised. Each one's header says how to run it.
 
 **The whole check.** Before you call a code change done (a proof of one feature with no code change does not need it):
 ```sh
@@ -124,7 +124,7 @@ It runs the doctor, the suite in WebKit, the suite in Chrome, the probes, the bu
 
 Traps when driving:
 - This Mac has no `node`. Check JavaScript syntax with `jsc` (the command is in `AGENTS.md`).
-- A demo in the background ignores Ctrl-C, and a killed demo leaves its temp folder. The tools stop a demo through its API and remove its own folder. The `switching` and `stopping` scenarios answer 409 to a stop, so the tools end those themselves.
+- A demo in the background ignores Ctrl-C, and a killed demo leaves its temp folder. The tools give each demo a temp folder of its own (`accountdeck2-demo-run-*`), stop the demo through its API and remove that folder and no other. The `switching` and `stopping` scenarios answer 409 to a stop, so the tools end those themselves.
 - A `wait` or a `click` gives up after 15 seconds, and the failure reads "the page never showed". A Desktop switch in a demo takes about 22 seconds, because "Checking the sign-in" watches Claude for 20 real seconds. Give that wait `"seconds": 60`.
 - A sheet's progress list ends with a step named Done, and the report has a Done button. To wait for the report, wait for the button, not the word.
 - A picture of an open sheet shows the page's words through the sheet, sharp. The sheet blurs what is behind it (`backdrop-filter`), and the picture of a window that is not on screen does not draw the blur. It is the camera, as far as anyone knows. The real-Mac checks in the install skill settle it.

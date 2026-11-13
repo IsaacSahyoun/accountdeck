@@ -70,4 +70,7 @@ Your answer file must end up holding only this, in Markdown. Your final message 
 - Read in full: the files you read every line of.
 - Read in part: the files you skimmed, and what you skipped.
 - Not read: the files you never opened.
+
+END OF REVIEW
 ```
+Write the last line, `END OF REVIEW`, only when you are done. It is how the lead tells a finished review from one that was cut off.

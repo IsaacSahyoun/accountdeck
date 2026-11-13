@@ -38,7 +38,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from demo_run import Demo  # noqa: E402
+from demo_run import Demo, end_on_kill  # noqa: E402
 from tests import test_dashboard as page  # noqa: E402
 
 PLACES = {"menu": page.MENU, "sheet": page.SHEET, None: "document"}
@@ -137,4 +137,5 @@ if __name__ == "__main__":
     steps = sys.argv[5]
     if not steps.lstrip().startswith("["):
         steps = Path(steps).read_text(encoding="utf-8")
+    end_on_kill()
     sys.exit(main(sys.argv[1], sys.argv[2], sys.argv[3], Path(sys.argv[4]), json.loads(steps)))

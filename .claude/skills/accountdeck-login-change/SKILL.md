@@ -44,7 +44,7 @@ Every test fails before its fix and passes after. Keep both outputs.
 COPY=$(mktemp -d); git archive HEAD | tar -x -C "$COPY"
 "$PY" -E -s tools/verify/take_fix_out.py "$COPY" "$PY" cases.json
 ```
-`cases.json` names each fix, the exact text to remove and the test that should then fail (the format is in the tool's header). A test that still passes proves nothing: tighten it until it fails. Five tests in the third review passed without their fix, and this check is what found them.
+`cases.json` names each fix, the exact text to remove and the test that should then fail (the format is in the tool's header). A test that still passes proves nothing: tighten it until it fails. The tool also says "PROVES NOTHING" and exits 1 when the test fails with the fix in, when the changed file no longer parses, or when the test did not load. Then the case is wrong, not the test. Five tests in the third review passed without their fix, and this check is what found them.
 
 ## 5. Prove it
 Follow `.claude/skills/verify-accountdeck/SKILL.md`: the doctor, the feature file for what you changed, and the whole check on a clean copy of the commit.

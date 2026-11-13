@@ -2,7 +2,7 @@
 # The whole final check, on fake data only, against a clean copy of the code.
 # Usage: final_check.sh <clean code copy> <log folder> [under-load]
 #   COPY=$(mktemp -d); git archive <commit> | tar -x -C "$COPY"; final_check.sh "$COPY" ~/.accountdeck/proof/<task>
-# Read every file it writes: a line that says FAIL, ERROR or "exit 1" is a failed check. Nothing here stops
+# Read every file it writes: a line that says FAIL, ERROR, SKIPPED or "exit 1" is a failed check. Nothing here stops
 # at the first failure, so one run shows everything that is wrong.
 set -u
 COPY="$1"; LOGS="$2"; HERE="${0:A:h}"
@@ -18,7 +18,10 @@ cd "$COPY" || exit 2
 # The suite twice: the dashboard in the WebKit of the app's own window, then in headless Chrome.
 suite() {   # suite <name> [VAR=value]
   env ${2:-X=} "$PY" -E -s -m unittest discover -s tests -t . > "$LOGS/$1-full.txt" 2>&1; local code=$?
-  { grep -E "^(FAIL|ERROR):" "$LOGS/$1-full.txt"; tail -4 "$LOGS/$1-full.txt"; echo "exit $code"; } > "$LOGS/$1.txt"
+  { grep -E "^(FAIL|ERROR):" "$LOGS/$1-full.txt"; tail -4 "$LOGS/$1-full.txt"
+    # A dashboard test skips when its browser engine is missing, and unittest still says OK.
+    tail -1 "$LOGS/$1-full.txt" | grep -q "skipped=" && echo "SKIPPED: tests did not run in this pass, see $1-full.txt"
+    echo "exit $code"; } > "$LOGS/$1.txt"
 }
 suite final-suite
 suite chrome-suite ACCOUNTDECK_TEST_BROWSER=chrome

@@ -40,6 +40,20 @@ def demo_engine(case, scenario):
     return engine
 
 
+def shipped_reading(now, five, weekly):
+    """A Claude account's reading as the 2.0.0 build saved it, with a 5-hour limit in it. It is what that
+    build's own `usage.claude_usage` made of an answer, written out here so the new parser has no part in it."""
+    def window(wid, kind, label, short, minutes, used, reset):
+        return {"id": wid, "kind": kind, "label": label, "short": short, "model": None, "used": used, "known": True,
+                "reset": reset, "minutes": minutes, "started": True, "blocked": None, "group": None, "scope": None,
+                "primary": True, "severity_hint": None, "is_active": None}
+    return {"checked": now, "credits": [], "reset_credits": [], "tokens": None,
+            "raw_windows": [{"key": "five_hour", "used": five, "reset": now + 7200},
+                            {"key": "seven_day", "used": weekly, "reset": now + 4 * 86400}],
+            "windows": [window("five_hour", "session", "5-hour", "5h", 300, five, now + 7200),
+                        window("seven_day", "weekly", "Weekly", "7d", 10080, weekly, now + 4 * 86400)]}
+
+
 @contextlib.contextmanager
 def recover_reads(order):
     """Recover looks the open records up again when it is pressed. Inside this block that look returns
@@ -218,7 +232,7 @@ def render_in_webkit(case, url):
         if time.monotonic() > deadline:
             raise AssertionError(f"the page never drew; console: {window.problems()}")
         time.sleep(0.03)
-    time.sleep(0.5)                              # what the page fetches after its first drawing
+    # The page has drawn its first state and asks for nothing more until its next poll.
     return window.js("document.documentElement.outerHTML"), window.problems()
 
 

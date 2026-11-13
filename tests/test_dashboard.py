@@ -689,15 +689,36 @@ class OtherClientsRowsTest(DashboardTestCase):
 
 class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
     """Claude dropped its 5-hour limit. No part of the page names one for a Claude account, in the terminal or in
-    Claude Desktop. Codex and Muse keep theirs."""
+    Claude Desktop. Codex and Muse keep theirs. The page draws the limits it is given, so the first test
+    holds for the demo data and the second for what the 2.0.0 build left saved."""
+    SAYS_5_HOUR = """Object.fromEntries([['the cards', document.getElementById('overview')],
+        ['claude_cli', document.getElementById('accounts')],
+        ...[...document.querySelectorAll('#other-accounts .other-provider')].map((part, n) => [['claude', 'codex', 'muse'][n], part])]
+        .map(([name, part]) => [name, part.innerText.includes('5-hour')]))"""
+    CELLS = "[...document.querySelectorAll('#accounts .row:not(.is-blocked) .row-limits')].map((r) => r.children.length)"
 
     def test_only_codex_and_muse_show_a_5_hour_limit(self):
         self.show(fixtures.example_state("typical", now=time.time()))
-        said = self.browser.js("""Object.fromEntries([['the cards', document.getElementById('overview')],
-            ['claude_cli', document.getElementById('accounts')],
-            ...[...document.querySelectorAll('#other-accounts .other-provider')].map((part, n) => [['claude', 'codex', 'muse'][n], part])]
-            .map(([name, part]) => [name, part.innerText.includes('5-hour')]))""")
-        self.assertEqual(said, {"the cards": False, "claude_cli": False, "claude": False, "codex": True, "muse": True})
+        self.assertEqual(self.browser.js(self.SAYS_5_HOUR),
+                         {"the cards": False, "claude_cli": False, "claude": False, "codex": True, "muse": True})
+
+    def test_a_reading_the_shipped_version_saved_shows_no_5_hour_limit(self):
+        # After an upgrade the page draws what 2.0.0 saved until each account is read again. The fourth
+        # review: the saved 5-hour bar sat under the Weekly heading, and the card's big number named it.
+        engine = support.demo_engine(self, "typical")
+        now = engine.clock()
+        for saved in engine.store.accounts():
+            if saved["provider"] in ("claude_cli", "claude") and saved["last_good_usage"]:
+                engine.store.observe(saved["id"], support.shipped_reading(now, 100.0, 20.0), at=now)
+        engine.sense_active()
+        self.browser.open(serve(self, engine))
+        self.assertEqual(self.browser.js(self.SAYS_5_HOUR),
+                         {"the cards": False, "claude_cli": False, "claude": False, "codex": True, "muse": True})
+        cells = self.browser.js(self.CELLS)
+        self.assertEqual(sorted(set(cells)), [2], cells)
+        card = self.browser.js("document.querySelector('#overview .ov-inuse').innerText")
+        self.assertIn("20%", card)
+        self.assertIn("Weekly limit", card)
 
     def test_the_claude_code_table_has_a_weekly_and_a_fable_column(self):
         self.show(fixtures.example_state("typical", now=time.time()))
@@ -705,7 +726,7 @@ class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
                          ["Weekly", "Fable 5.1 weekly"])
         self.assertEqual(self.browser.js("[...document.querySelectorAll('#accounts-sort option')].map((o) => o.textContent)"),
                          ["Most room left", "Most Fable 5.1 room", "Most weekly room", "Soonest weekly reset", "My order"])
-        cells = self.browser.js("[...document.querySelectorAll('#accounts .row:not(.is-blocked) .row-limits')].map((r) => r.children.length)")
+        cells = self.browser.js(self.CELLS)
         self.assertEqual(sorted(set(cells)), [2], cells)
 
     def test_settings_name_the_limits_auto_switch_watches(self):
@@ -931,6 +952,17 @@ class InstallerScriptsTest(unittest.TestCase):
         self.assertGreater(text.index('rm -f "$agent"'), text.index("done", refused),
                            "the Open at login file is removed before the wait for the app to quit")
 
+
+    def test_an_install_below_a_prefix_never_opens_the_app(self):
+        """A trial install has no data folder of its own. Its app, opened, runs on the real data and logins,
+        and the README once called `--prefix` alone a safe trial (fourth review)."""
+        text = (ROOT / "install.sh").read_text()
+        start = text.index('if [ -n "$prefix" ]; then\n        mkdir -p "$prefix"')
+        self.assertIn("launch=0", text[start:text.index("\n    else\n", start)])
+        opened = [at for at in range(len(text)) if text.startswith('open "$APP"', at)]
+        self.assertEqual(len(opened), 1, "one place opens the app")
+        self.assertIn('if [ "$launch" = 1 ]; then', text[text.rindex("\n    if ", 0, opened[0]):opened[0]])
+        self.assertIn("the app is not opened", (ROOT / "README.md").read_text())
 
     def test_an_install_builds_everything_in_a_work_folder_of_its_own(self):
         text = (ROOT / "install.sh").read_text()
