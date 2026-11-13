@@ -105,7 +105,7 @@ def audit(name):
     bad, whole_answers = bool(changed), 0
     for answer in sorted((folder / "out").glob("*.md")):
         text = answer.read_text(encoding="utf-8", errors="replace")
-        size, ended = answer.stat().st_size, text.rstrip().endswith(LAST_LINE)
+        size, ended = answer.stat().st_size, text.rstrip().rpartition("\n")[2].strip() == LAST_LINE
         note = ("under 1 KB: likely a usage-limit message, not a review" if size < 1024
                 else "no Coverage section: cut off" if "## Coverage" not in text
                 else f"no last line \"{LAST_LINE}\": cut off, or its reviewer is still writing" if not ended else "ok")

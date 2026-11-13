@@ -11,7 +11,9 @@ The cases file is a JSON list. Each case names one fix and the test that should 
 Each test first runs on the copy as it is, and has to pass there. Then each fix is taken out, its test is run,
 and the file is put back. A case proves its fix only when the test ran and failed. A case proves nothing, and
 the script says so and exits 1, when the test fails with the fix in, when the changed file no longer parses,
-when the test did not load or was skipped, or when it did not finish in 15 minutes.
+when the test did not load or was skipped, or when it did not finish in 15 minutes. Python, JavaScript, JSON
+and shell files are parsed. For any other kind the proof line says that nothing parsed the change. A run cut
+off with Ctrl-C or `kill <pid>` ends the test it started and puts the file back before it exits.
 
 The copy must be a scratch copy (`git archive <commit> | tar -x -C <folder>`), never a checkout: this script
 edits files in it."""
@@ -19,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -50,16 +53,31 @@ def run_test(copy, python, test):
     return ("fails" if done.returncode else "passes"), lines
 
 
-def broken(path):
+def parser(path):
+    """What can say whether a changed file is still code that parses: "python", "javascript", "json", a
+    shell's path, or None for a kind of file nothing here parses (CSS, Markdown)."""
+    first = path.read_text(encoding="utf-8", errors="replace").partition("\n")[0]
+    if path.suffix in (".sh", ".command") or first.startswith("#!") and first.rstrip().endswith("sh"):
+        return "/bin/zsh" if "zsh" in first else "/bin/bash"
+    return {".py": "python", ".js": "javascript" if os.access(JSC, os.X_OK) else None, ".json": "json"}.get(path.suffix)
+
+
+def broken(path, kind):
     """The error when a changed file is no longer code that parses. A test that fails on that has not looked
     at the fix."""
-    if path.suffix == ".py":
+    if kind == "python":
         try:
             compile(path.read_text(encoding="utf-8"), str(path), "exec")
         except SyntaxError as exc:
             return f"SyntaxError: {exc}"
-    if path.suffix == ".js" and os.access(JSC, os.X_OK):
-        done = subprocess.run([JSC, "-e", f"checkSyntax({json.dumps(str(path))})"], capture_output=True, text=True)
+    elif kind == "json":
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            return f"not JSON: {exc}"
+    elif kind:
+        command = [JSC, "-e", f"checkSyntax({json.dumps(str(path))})"] if kind == "javascript" else [kind, "-n", str(path)]
+        done = subprocess.run(command, capture_output=True, text=True)
         if done.returncode:
             return ((done.stdout + done.stderr).strip().splitlines() or ["does not parse"])[0]
     return ""
@@ -76,6 +94,8 @@ def why(lines, starts=FAILED):
 def main(copy, python, cases):
     if (copy / ".git").exists():
         sys.exit("That is a checkout. Give a scratch copy: git archive <commit> | tar -x -C <folder>")
+    if not cases:
+        sys.exit("The cases file names no case, so this run would prove nothing.")
     with_fix, proved, still_pass = {}, 0, 0
     for case in cases:
         name, test, path = case["name"], case["test"], copy / case["file"]
@@ -89,9 +109,10 @@ def main(copy, python, cases):
             print(f"PROVES NOTHING '{name}': with the fix in, {test} {'fails' if said == 'fails' else 'does not run'} "
                   f"({said}): {lines[-1] if lines else ''}  {why(lines, BROKE)}")
             continue
-        path.write_text(text.replace(case["old"], case.get("new", "")), encoding="utf-8")
         try:
-            error = broken(path)
+            path.write_text(text.replace(case["old"], case.get("new", "")), encoding="utf-8")
+            kind = parser(path)
+            error = broken(path, kind)
             said, lines = ("", []) if error else run_test(copy, python, test)
         finally:
             path.write_text(text, encoding="utf-8")
@@ -99,7 +120,8 @@ def main(copy, python, cases):
             print(f"PROVES NOTHING '{name}': with the fix taken out, {case['file']} no longer parses: {error}")
         elif said == "fails":
             proved += 1
-            print(f"fails without '{name}', as it should: {lines[-1]}  {why(lines)}")
+            print(f"fails without '{name}', as it should: {lines[-1]}  {why(lines)}"
+                  + ("" if kind else f"  (nothing here parses a {path.suffix or path.name} file: read the change yourself)"))
         elif said == "passes":
             still_pass += 1
             print(f"STILL PASSES without '{name}': {test} does not prove this fix")
@@ -113,4 +135,5 @@ def main(copy, python, cases):
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         sys.exit(__doc__)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))     # `kill <pid>` exits the way Ctrl-C does, through the `finally` that puts the file back
     sys.exit(main(Path(sys.argv[1]), sys.argv[2], json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))))

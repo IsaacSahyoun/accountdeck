@@ -22,7 +22,6 @@ How recovery works: a switch saves a record before it changes a login and closes
 
 The dashboard is a web page (`accountdeck/web/`, plain JavaScript, no build step) served by `accountdeck/server.py` on `127.0.0.1` only. The app shows it in a window of its own, a WKWebView, so WebKit is the engine a user sees. A native menu bar item (`accountdeck/platform/`) starts switches too.
 
-## What this change is meant to do
 {INTENT}
 
 ## What to look for
@@ -70,7 +69,5 @@ Your answer file must end up holding only this, in Markdown. Your final message 
 - Read in full: the files you read every line of.
 - Read in part: the files you skimmed, and what you skipped.
 - Not read: the files you never opened.
-
-END OF REVIEW
 ```
-Write the last line, `END OF REVIEW`, only when you are done. It is how the lead tells a finished review from one that was cut off.
+When the review is finished, and not before, add one more line at the very end of the file, with nothing after it: `END OF REVIEW`. It is how the lead tells a finished review from one that was cut off or is still being written.

@@ -16,7 +16,7 @@ It was run three times on 2026-11-12. The verdicts are in `~/.accountdeck/review
 - Run it from a chat that did not build the change when you can. When the lead built the fixes, the reviewers are the independent read.
 
 ## 1. Scope
-Write `intent.md`, three short parts:
+Write `intent.md`, three short parts, each under a `## ` heading of these words (the brief takes the file as it is):
 - **What the change is meant to do.** One numbered line per fix or feature, with the function names. Take it from the ask and the commit messages.
 - **Decisions already made**, so the reviewers do not report those as findings.
 - **Where to spend attention**, most costly first.

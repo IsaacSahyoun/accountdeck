@@ -964,6 +964,16 @@ class InstallerScriptsTest(unittest.TestCase):
         self.assertIn('if [ "$launch" = 1 ]; then', text[text.rindex("\n    if ", 0, opened[0]):opened[0]])
         self.assertIn("the app is not opened", (ROOT / "README.md").read_text())
 
+    def test_help_prints_the_whole_header_of_each_script(self):
+        # --help prints the comment lines at the top by their line numbers, so a line added there moves the end
+        for name in ("install.sh", "uninstall.sh"):
+            with self.subTest(script=name):
+                lines = (ROOT / name).read_text().splitlines()
+                last = next(number for number, line in enumerate(lines[1:], 1) if not line.startswith("#"))
+                printed = re.search(r"sed -n '(\d+),(\d+)p' \"\$\{BASH_SOURCE\[0\]\}\"", "\n".join(lines))
+                self.assertIsNotNone(printed, "the help no longer prints a line range")
+                self.assertEqual(tuple(map(int, printed.groups())), (2, last))
+
     def test_an_install_builds_everything_in_a_work_folder_of_its_own(self):
         text = (ROOT / "install.sh").read_text()
         self.assertIn('WORK=$(mktemp -d "$SUPPORT/.install-XXXXXX")', text)

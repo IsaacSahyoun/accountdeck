@@ -52,7 +52,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'AccountDeck 2 was not installed: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---- pinned runtime: Apple silicon only ----
