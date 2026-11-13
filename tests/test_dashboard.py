@@ -719,6 +719,57 @@ class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
         self.assertNotIn("5-hour", words)
 
 
+class InUseCardTest(DashboardTestCase):
+    """The card "In use by your terminals" says a limit once. Its big number names the limit closest to full, and
+    that limit's bar sits under the number with no line of its own. With Claude's 5-hour limit gone the card said
+    "70% used" twice, one above the other."""
+    CARD = """(() => { const card = document.querySelector('#overview .ov-inuse');
+        const text = (node) => (node ? node.textContent.trim() : null);
+        return {number: text(card.querySelector('.figure-line')), caption: text(card.querySelector('.figure-caption')),
+                words: card.innerText,
+                limits: [...card.querySelectorAll('.limit-stack > .limit')].map((limit) => [
+                    text(limit.querySelector('.limit-label')), text(limit.querySelector('.limit-note')),
+                    text(limit.querySelector('.limit-value')),
+                    limit.querySelector('.meter') ? limit.querySelector('.meter').getAttribute('aria-valuetext').split(',')[0] : null])}; })()"""
+
+    def card(self, change=None):
+        """The card for `typical`, after `change(the weekly limit of the account in use, its windows, now)`."""
+        now = time.time()
+        state = fixtures.example_state("typical", now=now)
+        windows = self.account(state, "claude_cli", active=True)["windows"]
+        if change:
+            change(windows[0], windows, now)
+        self.show(state)
+        return self.browser.js(self.CARD)
+
+    def test_the_limit_the_number_names_is_a_bar_with_no_line_of_its_own(self):
+        card = self.card()
+        self.assertEqual((card["number"], card["caption"].split(" · ")[0]), ("70%used", "Weekly limit"))
+        self.assertEqual(card["limits"], [[None, None, None, "Weekly: 70% used"],
+                                          ["Fable 5.1 weekly", "Not reported", None, None]])
+        self.assertEqual((card["words"].count("70%"), card["words"].count("Weekly")), (1, 1), card["words"])
+
+    def test_the_named_limit_comes_first_when_it_is_not_the_weekly_one(self):
+        def fable_is_closest_to_full(weekly, windows, now):
+            windows.append(dict(weekly, id="seven_day_fable", kind="model", label="Fable 5.1 weekly", short="Fable 5.1",
+                                model="Fable", used=96.0, left=4.0, binding=True))
+            weekly.update(used=40.0, left=60.0, binding=False)
+        card = self.card(fable_is_closest_to_full)
+        self.assertEqual((card["number"], card["caption"].split(" · ")[0]), ("96%used", "Fable 5.1 weekly limit"))
+        self.assertEqual([limit[0::2] + limit[3:] for limit in card["limits"]],
+                         [[None, None, "Fable 5.1 weekly: 96% used"], ["Weekly", "40% used", "Weekly: 40% used"]])
+
+    def test_a_limit_that_just_refilled_keeps_its_line(self):
+        """The caption beside the number gives a countdown. "Refilled at" is only in the limit's own line."""
+        def refilled(weekly, windows, now):
+            weekly.update(used=2.0, left=98.0, refilled={"at": now - 600, "confirmed": now - 240, "from": 92.0})
+        card = self.card(refilled)
+        self.assertEqual(card["number"], "2%used")
+        self.assertEqual(card["limits"][0][0], "Weekly")
+        self.assertRegex(card["limits"][0][1], r"^Refilled at \d")
+        self.assertEqual(card["limits"][0][2:], ["2% used", "Weekly: 2% used"])
+
+
 CLIENTS = ("claude_cli", "claude", "codex", "muse")
 APPS = {"claude_cli": "Claude Code", "claude": "Claude Desktop", "codex": "Codex", "muse": "Muse Code"}
 METERS_SHOW = ("ready", "watch", "low", "critical")     # every other headline is words under the account's name

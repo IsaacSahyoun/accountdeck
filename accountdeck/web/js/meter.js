@@ -84,8 +84,9 @@
     return null;
   }
 
-  /** One limit of an account: label, value, meter and note. ctx: {nowMs, display, threshold, compact}.
-   * Compact (the overview) puts the note beside the label: one line of text, then the bar.
+  /** One limit of an account: label, value, meter and note. ctx: {nowMs, display, threshold, compact, bare}.
+   * Compact (the overview) puts the note beside the label: one line of text, then the bar. Bare is the
+   * bar alone, for the limit the card's big number already names.
    * A placeholder window (an account without a Fable 5.1 reading) keeps its slot and says so quietly. */
   function limit(win, account, ctx) {
     const fable = win.placeholder || AD.accounts.isFable(win);
@@ -100,6 +101,7 @@
     const bar = meter(win, { account, nowMs: ctx.nowMs, display: ctx.display, threshold: ctx.threshold });
     const data = { state: d.state, severity: d.severity, binding: d.binding ? 'true' : null, fable: fable ? 'true' : null,
       extra: win.extra ? 'true' : null };
+    if (ctx.bare) return AD.dom.el('div', { class: 'limit is-compact', dataset: Object.assign({ bare: 'true' }, data) }, bar);
     if (ctx.compact) {
       return AD.dom.el('div', { class: 'limit is-compact', dataset: data },
         AD.dom.el('div', 'limit-head', AD.dom.el('span', 'limit-lead', label, limitNote(win, d, ctx.nowMs, 'span')), value), bar);

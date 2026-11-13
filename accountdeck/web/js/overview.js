@@ -62,6 +62,19 @@
         timed ? [' · ', countdown(d.reset, d.secs, d.state === 'out' ? 'back in {countdown}' : 'resets in {countdown}')] : null));
   }
 
+  /** The limits under the big number. The limit that number names comes first, as its bar alone: the
+   * caption beside the number already says its name, its share and when it resets. It keeps its own
+   * line only while that line says more ("Refilled at 2:06 PM"). */
+  function limitStack(account, ctx) {
+    const compact = Object.assign({ compact: true }, ctx);
+    const bind = A.binding(account, ctx.nowMs);
+    const limits = A.limits(account);
+    const named = bind ? limits.find((win) => win.id === bind.win.id) : null;
+    return el('div', 'limit-stack',
+      named ? AD.meter.limit(named, account, Object.assign({ bare: bind.d.state !== 'refilled' }, compact)) : null,
+      limits.filter((win) => win !== named).map((win) => AD.meter.limit(win, account, compact)));
+  }
+
   function inUseCard(state, ctx) {
     const account = A.active(state);
     if (!account) {
@@ -74,7 +87,7 @@
         el('div', 'who-text', el('p', 'who-name', nameLink(account.label, account.id)),
           meta ? el('p', { class: 'who-meta', text: meta }) : null)),
       figure(account, ctx),
-      el('div', 'limit-stack', A.limits(account).map((win) => AD.meter.limit(win, account, Object.assign({ compact: true }, ctx)))),
+      limitStack(account, ctx),
     ];
     return card('inuse', { title: O.inUse, aside: headlineBadge(account) }, parts);
   }
