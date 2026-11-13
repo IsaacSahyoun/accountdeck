@@ -62,7 +62,7 @@ The 23 scenarios are in `accountdeck/fixtures.py` (`SCENARIOS`, one line each). 
 ```
 It changes nothing. It does read two things in the live app's folder: the app's code files, to say which commit they are, and the port number in `runtime.json`. It prints no token. Run it before the first proof and whenever something looks off. Each line is OK, WARN or STOP:
 - which commit the copy is, or which files differ from one and which are new;
-- which commit the live app runs, and its process and port, so nothing gets mistaken for it;
+- which commit the live app runs (named by `main` or by the tag of an installed build, like `v2.0.0`), and its process and port, so nothing gets mistaken for it;
 - demos running now and demo temp folders left behind, none of which are yours unless you made them;
 - that the WebKit window builds, and where headless Chrome is.
 

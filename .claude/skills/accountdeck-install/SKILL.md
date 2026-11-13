@@ -61,7 +61,7 @@ for f in Contents/MacOS/python3 Contents/Info.plist Contents/Resources/AccountDe
 done
 ```
 - The first line is the list of files that will change.
-- When all three app files are the same, the install leaves the app's signed program alone. On 2026-11-12 a trial of the refactor branch showed exactly that.
+- When all three app files are the same, the install leaves the app's signed program alone. On 2026-11-12 a trial of the refactored code showed exactly that.
 - When `Contents/MacOS/python3` differs, tell Isaac before going on. macOS ties Keychain access and notification permission to that program, and may ask for his password or his permission again on first start.
 
 ## 4. Nothing in flight
@@ -89,6 +89,11 @@ About 120 MB. The backup holds the encrypted vault. It stays on this Mac and is 
 ```
 `install.txt` should say the app code was installed and the runtime and the app are unchanged. `doctor-after.txt` must say the live app's code is the commit you meant.
 
+Then tag that commit, so the doctor can still name the live app's code after `main` moves on. Name the tag by the app's version (`accountdeck/__init__.py`) when the version changed since the last tag, and `installed-<date>` when it did not:
+```sh
+git tag -a <name> <commit> -m "AccountDeck <version>: installed <date>"
+```
+
 ## 7. Open it
 ```sh
 open "$HOME/Applications/AccountDeck 2.app"
@@ -104,7 +109,7 @@ trash "$LIVE"; cp -Rp "$LIVE-backup-$STAMP" "$LIVE"; trash "$LIVE/AccountDeck 2.
 ```
 A restored vault holds the logins as they were at the backup. A client that renewed its login since then may ask for a new sign-in. Say that before you do it.
 
-The database's schema number is 2 in both the 2.0.0 build and the refactor branch. Whether the 2.0.0 code reads everything the newer code writes has not been checked.
+The database's schema number is 2 in both the 2.0.0 build and the code after it. Whether the 2.0.0 code reads everything the newer code writes has not been checked.
 
 ## 9. The checks only the real Mac can show
 Isaac does these, and you write down what he saw, with the commit, in `$PROOF/real-mac.txt`. Until they are done, the report says the build is installed and not checked on real logins.

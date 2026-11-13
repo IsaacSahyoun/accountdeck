@@ -67,9 +67,11 @@ def some(names):
 
 
 def which_commit(folder, only=None):
-    """The words for which known commit a folder's files are."""
-    for name in dict.fromkeys(("main", git("rev-parse", "--abbrev-ref", "HEAD"))):
-        short = git("rev-parse", "--short", name)
+    """The words for which known commit a folder's files are: `main`, the branch checked out, or a tag. A tag
+    marks a build that was installed, so the live app's code is found there after `main` has moved on."""
+    names = ("main", git("rev-parse", "--abbrev-ref", "HEAD"), *git("tag", "--sort=-creatordate").splitlines())
+    for name in dict.fromkeys(names):
+        short = git("rev-parse", "--short", f"{name}^{{commit}}")
         if short:
             differ, of = same_as(folder, name, only)
             if of and not differ and not added_to(folder, name, only):
