@@ -15,8 +15,7 @@ WEEKLY_MINUTES = 10080
 PRIMARY_KINDS = frozenset({"session", "weekly", "model"})
 KIND_ORDER = {"session": 0, "weekly": 1, "model": 2, "other": 3}
 NON_WINDOW_KEYS = frozenset({"extra_usage", "spend", "limits"})
-_NAMED_MODELS = ("opus", "sonnet", "haiku", "fable")       # the models Claude's answer has a named key for
-_LEGACY_MODEL = re.compile(rf"seven_day_({'|'.join(_NAMED_MODELS)})")
+_LEGACY_MODEL = re.compile(r"seven_day_(opus|sonnet|haiku|fable)")
 _OTHER_KEYS = {
     "seven_day_oauth_apps": ("Connected apps weekly", "Apps"),
     "seven_day_cowork": ("Cowork weekly", "Cowork"),
@@ -85,21 +84,34 @@ def saved_reading(provider, reading):
     as it is.
     - The 2.0.0 build saved a Claude account's 5-hour limit as a window. It is no limit any more
       (`claude_usage`) and is left out.
-    - A build before `_model_id` saved a model's limit from Claude's list under an id of its own, beside the
-      same limit from the named key. It gets the id it has now and replaces the named key's."""
+    - An older build saved a model's limit from Claude's list beside the same limit from its named key. The
+      named key's is left out, as `claude_usage` leaves it out now (`_one_per_model`)."""
     if provider not in CLAUDE_CLIENTS or not isinstance(reading, dict) or not isinstance(reading.get("windows"), list):
         return reading
-    kept = [w for w in reading["windows"] if not (isinstance(w, dict) and w.get("kind") == "session")]
-    renamed = {}
-    for index, window in enumerate(kept):
-        if isinstance(window, dict) and window.get("kind") == "model" and isinstance(window.get("model"), str):
-            listed, current = f"seven_day_{_slug(window['model'])}", _model_id(window["model"])
-            if window.get("id") == listed != current:
-                renamed[index] = current
-    if renamed:
-        kept = [dict(w, id=renamed[i]) if i in renamed else w for i, w in enumerate(kept)
-                if i in renamed or not (isinstance(w, dict) and w.get("id") in renamed.values())]
-    return reading if len(kept) == len(reading["windows"]) and not renamed else dict(reading, windows=kept)
+    kept = _one_per_model([w for w in reading["windows"] if not (isinstance(w, dict) and w.get("kind") == "session")])
+    return reading if len(kept) == len(reading["windows"]) else dict(reading, windows=kept)
+
+
+def same_model(one, other):
+    """True when two names are one model's. Claude's named key says "Fable" where its list says "Fable 5.1"
+    (`model_label`). Letter case does not count."""
+    def key(name):
+        name = str(name or "").strip()
+        return model_label("Fable" if name.casefold() == "fable" else name).casefold()
+    return bool(key(one)) and key(one) == key(other)
+
+
+def _one_per_model(windows):
+    """The windows without a named key's model limit that Claude's list gives too. "Fable 5.1" in the list and
+    the key `seven_day_fable` are one limit (`model_label`), and the list's entry is the one that counts, as
+    the list's weekly entry replaces `seven_day`. Each keeps its own id. The app stores a limit's samples
+    under its id, and the forecast reads them as one series: samples of the key's number followed by samples
+    of the list's number would look like a limit that jumped."""
+    def named(window):
+        return bool(_LEGACY_MODEL.fullmatch(str(window.get("id"))))
+    models = [w for w in windows if isinstance(w, dict) and w.get("kind") == "model"]
+    listed = [w.get("model") for w in models if not named(w)]
+    return [w for w in windows if not (w in models and named(w) and any(same_model(w.get("model"), name) for name in listed))]
 
 
 def claude_usage(data, *, now=None):
@@ -145,7 +157,7 @@ def claude_usage(data, *, now=None):
                                group=_text(limit.get("group")), scope=model,
                                severity_hint=severity if isinstance(severity, str) else None,
                                is_active=active if isinstance(active, bool) else None))
-    return {"checked": time.time() if now is None else now, "windows": _shown(windows),
+    return {"checked": time.time() if now is None else now, "windows": _shown(_one_per_model(windows)),
             "raw_windows": raw, "credits": _claude_credits(data), "reset_credits": [], "tokens": None}
 
 
@@ -291,16 +303,6 @@ def model_label(model):
     return "Fable 5.1" if model == "Fable" else model
 
 
-def _model_id(model_name):
-    """The window id of a model's limit from Claude's list. When the list's name is the label of a named key
-    ("Fable 5.1" and `seven_day_fable`), both are one limit and the list's entry takes that key's id. It then
-    replaces the key's number in the reading, as the list's weekly entry replaces `seven_day`, and the limit
-    keeps one id whichever way Claude sends it."""
-    label = model_label(model_name).casefold()
-    named = next((name for name in _NAMED_MODELS if model_label(name.capitalize()).casefold() == label), None)
-    return f"seven_day_{named or _slug(model_name)}"
-
-
 def _describe(key):
     if key == "five_hour":
         return "session", "5-hour", "5h", None, SESSION_MINUTES
@@ -329,8 +331,9 @@ def _limit_shape(index, limit):
     if kind == "weekly_all":
         return "seven_day", base, _describe("seven_day")
     if kind == "weekly_scoped" and model_name:
-        wid, label = _model_id(model_name), model_label(model_name)
-        return wid, f"{base}.{wid.removeprefix('seven_day_')}", ("model", f"{label} weekly", label, model_name, WEEKLY_MINUTES)
+        slug = _slug(model_name)
+        label = model_label(model_name)
+        return f"seven_day_{slug}", f"{base}.{slug}", ("model", f"{label} weekly", label, model_name, WEEKLY_MINUTES)
     if kind == "weekly_scoped" and surface:
         key = f"seven_day_{_slug(surface)}"
         shape = _describe(key) if key in _OTHER_KEYS else ("other", f"{title(surface)} weekly", title(surface), None, WEEKLY_MINUTES)

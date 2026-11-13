@@ -409,12 +409,19 @@ class TerminalFableLimitTest(DeckCase):
         """Found by the review of this change: the rule refused every account whose Fable 5.1 limit was out and
         kept the terminals on an account that answered for no model. Then the reverse: the account it moved to
         is not left again for the one whose week ran out."""
-        self.read(self.first, weekly=100, fable=10)
         others = [row for row in self.rows("claude_cli") if not row["active"]]
         for row in others:
             self.read(row, weekly=20, fable=100)
+        # the usual road: at 99% the account still works, so the terminals stay and the app says all are low
+        self.read(self.first, weekly=99, fable=10)
+        before = self.engine.store.setting("cli_history", {}).get("last")
+        cli_auto.tick(self.engine)
+        self.assertTrue(self.engine.runner.wait(30))
+        history = self.engine.store.setting("cli_history", {})
+        self.assertEqual((history.get("last"), history.get("exhausted")), (before, True))
+        self.read(self.first, weekly=100, fable=10)
         last = self.switched()
-        self.assertEqual(last["kind"], "out")
+        self.assertEqual(last["kind"], "out", "no limit refilled")
         self.assertIn(last["to"], [row["id"] for row in (self.full, self.roomy)])
         self.assertRegex(last["reason"], r"reached its weekly limit; .+'s week can still be used, though its Fable 5\.1 weekly limit is at 100%\.$")
         self.assert_consistent("claude_cli", self.identity(last["to"]))
@@ -445,6 +452,63 @@ class TerminalFableLimitTest(DeckCase):
         self.assertEqual(schedule(weekly=90, fable=100), (True, True, False, 75.0))
         self.assertEqual(schedule(weekly=30, fable=100), (True, True, False, 75.0))
         self.assertEqual(schedule(weekly=100, fable=20), (True, True, True, 600.0), "a week that ran out is waited for, as before")
+
+    def test_an_account_with_an_old_reading_does_not_keep_the_terminals_on_one_that_cannot_work(self):
+        """Found by the second review of this change. The first account in the user's order has a reading an
+        hour old, so a check asks for a new one and switches nothing. While that read failed, every later
+        check asked for the same account, and the one behind it with a new reading was never used."""
+        self.engine.update_settings({"cli_order": "manual", "cli_manual_order": [self.full["id"], self.roomy["id"]]})
+        self.read(self.first, weekly=100, fable=10)
+        self.read(self.full, weekly=20, fable=100)
+        self.read(self.roomy, weekly=40, fable=100)
+        old = self.engine.store.account(self.full["id"])
+        self.engine.store.observe(self.full["id"], old["last_good_usage"], at=self.engine.clock() - 3600)
+        self.assertEqual([row["id"] for row in cli_auto.decision(self.engine)["next_up"]][:2], [self.full["id"], self.roomy["id"]])
+        last = self.switched()
+        self.assertEqual((last["to"], last["kind"]), (self.roomy["id"], "out"))
+        self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+
+    def test_an_account_that_cannot_work_does_not_wait_for_a_better_accounts_reading(self):
+        """Found by the second review of this change. An account with room and a reading an hour old is read
+        again before it is used. The account in use works for no model, so the terminals move now to the
+        account that is ready, and not when that read comes back."""
+        self.read(self.first, weekly=100, fable=10)
+        self.read(self.full, weekly=20, fable=20)
+        self.read(self.roomy, weekly=40, fable=100)
+        old = self.engine.store.account(self.full["id"])
+        self.engine.store.observe(self.full["id"], old["last_good_usage"], at=self.engine.clock() - 3600)
+        last = self.switched()
+        self.assertEqual((last["to"], last["kind"]), (self.roomy["id"], "out"))
+        self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["refresh"]), ("none", [self.full["id"]]), "the better account is still asked for")
+
+    def test_a_fable_limit_that_claude_names_twice_never_looks_like_it_is_filling(self):
+        """Found by the second review of this change. An older build saved the limit from Claude's list beside
+        the same limit from its named key, each with a number of its own. The first fix gave the list's entry
+        the named key's id. Its samples then followed the key's, a limit that stood still at 80% read as one
+        that went from 1% to 80% within minutes, the forecast passed the threshold and the terminals moved."""
+        from datetime import datetime, timezone
+        from accountdeck.usage import claude_usage
+        now = self.engine.clock()
+        ends = float(int(now) + 4 * 86400)
+        for row in (self.full, self.roomy):
+            self.read(row, weekly=20, fable=20)
+        week = dict(support.shipped_reading(now, 10.0, 30.0)["windows"][1], reset=ends)
+        named = support.fable_window(1.0, ends)
+        listed = dict(named, id="seven_day_fable_5_1", model="Fable 5.1", scope="Fable 5.1", used=80.0)
+        for age in (180, 60):          # two readings as that build saved them
+            self.engine.store.observe(self.first["id"], {"checked": now - age, "windows": [week, named, listed]}, at=now - age)
+        iso = datetime.fromtimestamp(ends, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        answer = {"seven_day": {"utilization": 30, "resets_at": iso}, "seven_day_fable": {"utilization": 1, "resets_at": iso},
+                  "limits": [{"kind": "weekly_all", "percent": 30, "resets_at": iso},
+                             {"kind": "weekly_scoped", "percent": 80, "resets_at": iso, "scope": {"model": {"display_name": "Fable 5.1"}}}]}
+        self.engine.store.observe(self.first["id"], claude_usage(answer, now=now), at=now)      # the same answer, read now
+        in_use = next(row for row in cli_auto.inputs(self.engine) if row["active"])
+        self.assertEqual([(w["kind"], w["used"]) for w in in_use["windows"]], [("weekly", 30.0), ("model", 80.0)])
+        self.assertEqual(in_use["forecast"], {}, "nothing is filling")
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["hold"], decision["reason"]), ("none", None, ""))
 
     def test_the_sheet_warns_before_a_switch_to_an_account_past_its_fable_threshold(self):
         """The same words reach the menu bar's alert, which lists a plan's warnings."""

@@ -8,6 +8,8 @@ from __future__ import annotations
 import datetime as dt
 import math
 
+from .usage import same_model
+
 PRIMARY_KINDS = frozenset({"session", "weekly", "model"})
 HIDDEN_STATES = frozenset({"not_started", "resetting", "expected_refill"})
 KIND_ORDER = {"session": 0, "weekly": 1, "model": 2, "other": 3}
@@ -174,9 +176,7 @@ def window_state(started, reset_state, severity, refilled, stale, now):
 def is_gating(window, pinned):
     if not window.get("primary") or window.get("used") is None:
         return False
-    model = window.get("model")
-    pinned_match = bool(pinned) and isinstance(model, str) and model.casefold() == pinned.casefold()
-    return window["severity"] == "out" or window["used"] >= 50 or pinned_match
+    return window["severity"] == "out" or window["used"] >= 50 or same_model(window.get("model"), pinned)
 
 
 def pick_binding(windows, pinned):

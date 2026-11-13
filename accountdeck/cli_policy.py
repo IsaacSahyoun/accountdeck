@@ -12,6 +12,9 @@
 - an account in use that works for no model (its week ran out, or it needs sign-in) is left, after every
   account above, for one whose week can still be used while a model's limit is used up. An account in
   use that still works is never left for such an account;
+- an account past the threshold is used only on a reading at most 15 minutes old, like an eligible one.
+  An older one is read again, and an account with a new reading behind it in the order is used first.
+  An account in use that works for no model does not wait for a reading while another account is ready;
 - holds: an expired idle terminal token. An Anthropic incident never holds (the owner's choice,
   2026-10-09): a switch only needs the target's own fresh reading;
 - a window of the account in use whose reset time has passed has refilled, so its last number is not
@@ -121,7 +124,7 @@ def evaluate(accounts, settings, history, now):
         return result
     need = _need(active, threshold, now)
     if need["trigger"]:
-        result.update(_leave(need, rows, active, history, threshold, now))
+        result.update(_leave(need, rows, active, history, settings, now))
     elif need["refilled"]:
         result.update(hold=f"{active['label']}'s {need['refilled'][0]} limit has refilled. Waiting for its new reading.",
                       refresh=[active["id"]])
@@ -136,6 +139,7 @@ def _row(account, settings, threshold, now):
     known = all(used is not None for _, used, _ in values)
     room = min(threshold - used for _, used, _ in values) if known else None
     age = max(0, now - account["last_good_at"]) if number(account.get("last_good_at")) is not None else None
+    old = age is not None and age > 900          # a reading too old to act on: it is read again first
     skip, past, stale = None, False, False
     if account.get("active"):
         skip = "in use by your terminals"
@@ -150,8 +154,8 @@ def _row(account, settings, threshold, now):
     elif room < 10:
         label, used, _ = max(values, key=lambda v: v[1])
         skip, past = f"{label} at {used:g}%", True
-    elif age > 900:
-        # Room at its last reading, too old to act on: read it again when it is needed.
+    elif old:
+        # Room at its last reading: read it again when it is needed.
         skip, stale = f"reading {math.ceil(age / 60)} min old", True
     # Skipped only for being past the threshold (not health, freshness or choice): usable when all are.
     usable = skip is None or past
@@ -163,7 +167,7 @@ def _row(account, settings, threshold, now):
                  if spent and all(w.get("kind") == "model" for _, _, w in spent) else None)
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
             "weekly_reset": reset(values[0][2]), "account": account, "values": values,
-            "drainable": usable and not spent, "week_only": week_only, "stale": stale}
+            "drainable": usable and not spent, "week_only": week_only, "stale": stale, "old": old}
 
 
 def _ordered(rows, settings):
@@ -226,10 +230,16 @@ def _held(history, now):
     return now - history.get("manual_at", -1e20) < 2 * HOUR
 
 
-def _leave(need, rows, active, history, threshold, now):
+def _checking(rows):
+    """The hold while accounts whose readings are too old to act on are read again."""
+    return {"hold": f"Checking {', '.join(row['label'] for row in rows[:3])} before switching",
+            "refresh": [row["id"] for row in rows]}
+
+
+def _leave(need, rows, active, history, settings, now):
     """What to do once the account in use asks to be left: wait, read the others again, switch, or say that every
     account is low. Returns the fields of the result that change."""
-    label = active["label"]
+    label, threshold = active["label"], settings.get("cli_threshold", 95)
     kind = "refilled" if history.get("exhausted") else need["trigger"]
     # The user's own choice outranks the threshold and a model's limit that ran out. It does not outrank an
     # account whose week ran out or that needs sign-in: staying there would stop their work.
@@ -239,23 +249,32 @@ def _leave(need, rows, active, history, threshold, now):
     if eligible:
         return {"action": "switch", "target": eligible[0]["id"], "kind": kind,
                 "reason": f"{label} {need['why']}; {eligible[0]['label']} is first in your eligible order."}
+    # An account with room and an old reading is read again. While the account in use still works, that is
+    # waited for. Once it works for no model, an account that is ready now is used first (further down).
     stale = [row for row in rows if row["stale"]]
-    if stale:
-        return {"hold": f"Checking {', '.join(row['label'] for row in stale[:3])} before switching",
-                "refresh": [row["id"] for row in stale]}
+    if stale and need["yields"]:
+        return _checking(stale)
     if need["trigger"] == "threshold" and need["peak"] < DRAIN_CEILING:
         return {"hold": f"Every account is past {threshold}% — using {label} up to {DRAIN_CEILING}%"}
-    drain = [row for row in rows if row["drainable"]]
-    if drain:
-        why = f"reached {DRAIN_CEILING}%" if need["trigger"] == "threshold" else need["why"]
-        return {"action": "switch", "target": drain[0]["id"], "kind": kind,
-                "reason": f"{label} {why}; every account is past {threshold}%, so {drain[0]['label']} is used up to {DRAIN_CEILING}%."}
-    # The account in use works for no model. One whose week can still be used works for all but the model
-    # whose limit ran out, so it is better than staying. While the account in use still works, it is not.
-    week_only = [row for row in rows if row["week_only"]] if not need["yields"] else []
-    if week_only:
-        return {"action": "switch", "target": week_only[0]["id"], "kind": kind,
-                "reason": f"{label} {need['why']}; {week_only[0]['label']}'s week can still be used, though its {week_only[0]['week_only']}."}
+    # The last resorts, the better one first. Every account is past the threshold, so one that can still be
+    # used up is used. And when the account in use works for no model, an account whose week can still be used
+    # works for all but the model whose limit ran out, so it is better than staying. While the account in
+    # use still works, it is not.
+    why = f"reached {DRAIN_CEILING}%" if need["trigger"] == "threshold" else need["why"]
+    last = [(row, kind, f"every account is past {threshold}%, so {row['label']} is used up to {DRAIN_CEILING}%")
+            for row in rows if row["drainable"]]
+    if not need["yields"]:
+        # These are judged on their week, so the order is the user's order with the week's room as the room.
+        # No limit refilled, so the switch keeps the kind of its trigger after "all low" too.
+        by_week = _ordered([dict(row, room=threshold - row["values"][0][1]) for row in rows if row["week_only"]], settings)
+        last += [(row, need["trigger"], f"{row['label']}'s week can still be used, though its {row['week_only']}")
+                 for row in by_week]
+    # An old reading is read again, and it does not keep an account with a new reading waiting behind it.
+    for row, how, words in last:
+        if not row["old"]:
+            return {"action": "switch", "target": row["id"], "kind": how, "reason": f"{label} {why}; {words}."}
+    if stale or last:
+        return _checking(stale + [row for row, _, _ in last])
     return {"exhausted": True, "reason": "All terminal accounts are low." + _refills_first(rows, threshold, now)}
 
 

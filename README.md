@@ -53,8 +53,9 @@ terminals are using cannot be removed; switch to another one first.
 accounts. It moves your terminals when the account in use reaches 95% of its weekly limit or of
 its Fable 5.1 weekly limit, and it judges the account it moves to by both limits too. One case is
 different: when the account in use has stopped working (its week ran out, or it needs sign-in) and
-no account has room in both limits, it moves to an account that has only its Fable 5.1 limit used
-up, because that account still works for the other models. Change it in
+no account has room in both limits, it first moves to an account that still has a little left in
+both. If there is none, it moves to an account that has only its Fable 5.1 limit used up, because
+that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. It waits for a usable account with a recent reading. Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
 switch has a 10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
