@@ -88,7 +88,8 @@ def saved_reading(provider, reading):
       named key's is left out, as `claude_usage` leaves it out now (`_one_per_model`)."""
     if provider not in CLAUDE_CLIENTS or not isinstance(reading, dict) or not isinstance(reading.get("windows"), list):
         return reading
-    kept = _one_per_model([w for w in reading["windows"] if not (isinstance(w, dict) and w.get("kind") == "session")])
+    kept = [w for w in reading["windows"] if not (isinstance(w, dict) and w.get("kind") == "session")]
+    kept = _one_per_model(kept, _saved_from_keys(kept))
     return reading if len(kept) == len(reading["windows"]) else dict(reading, windows=kept)
 
 
@@ -101,17 +102,28 @@ def same_model(one, other):
     return bool(key(one)) and key(one) == key(other)
 
 
-def _one_per_model(windows):
-    """The windows without a named key's model limit that Claude's list gives too. "Fable 5.1" in the list and
-    the key `seven_day_fable` are one limit (`model_label`), and the list's entry is the one that counts, as
-    the list's weekly entry replaces `seven_day`. Each keeps its own id. The app stores a limit's samples
-    under its id, and the forecast reads them as one series: samples of the key's number followed by samples
-    of the list's number would look like a limit that jumped."""
-    def named(window):
-        return bool(_LEGACY_MODEL.fullmatch(str(window.get("id"))))
+def _one_per_model(windows, from_keys):
+    """The windows without a named key's model limit that Claude's list gives too. `from_keys` holds the ids
+    of the windows that came from a named key. "Fable 5.1" in the list and the key `seven_day_fable` are
+    one limit (`same_model`), and the list's entry is the one that counts, as the list's weekly entry
+    replaces `seven_day`. Each keeps its own id. The app stores a limit's samples under its id, and the
+    forecast reads them as one series: samples of the key's number followed by samples of the list's number
+    would look like a limit that jumped. Two list entries of one model are two limits, and both stay."""
+    def model(window):
+        return isinstance(window, dict) and window.get("kind") == "model"
+    listed = [w.get("model") for w in windows if model(w) and w.get("id") not in from_keys]
+    return [w for w in windows if not (model(w) and w.get("id") in from_keys
+                                       and any(same_model(w.get("model"), name) for name in listed))]
+
+
+def _saved_from_keys(windows):
+    """The ids, in a saved reading, of model limits that came from a named key and have a list entry beside
+    them. A saved window does not say where it came from. A named key's has the key as its id and the key's
+    name for the model ("Fable"), and the list entry beside it has the model's other name ("Fable 5.1").
+    Two list entries of one model have one name, so neither is taken for a named key's."""
     models = [w for w in windows if isinstance(w, dict) and w.get("kind") == "model"]
-    listed = [w.get("model") for w in models if not named(w)]
-    return [w for w in windows if not (w in models and named(w) and any(same_model(w.get("model"), name) for name in listed))]
+    return {w.get("id") for w in models if _LEGACY_MODEL.fullmatch(str(w.get("id")))
+            and any(other.get("model") != w.get("model") and same_model(other.get("model"), w.get("model")) for other in models)}
 
 
 def claude_usage(data, *, now=None):
@@ -130,6 +142,7 @@ def claude_usage(data, *, now=None):
             continue
         windows.append(_window(key, kind, label, short, model, _describe(key)[4], used, reset,
                                scope=model if kind == "model" else key if kind == "other" else None))
+    from_keys = {w["id"] for w in windows}
     for index, limit in enumerate(data.get("limits") or []):
         if not isinstance(limit, dict):
             continue
@@ -150,6 +163,7 @@ def claude_usage(data, *, now=None):
             # The structured entry replaces its legacy alias, even when the asynchronously
             # updated percentages differ slightly.
             windows = [w for w in windows if w["id"] != wid]
+            from_keys.discard(wid)
             structured[wid] = [(used, reset)]
         severity = limit.get("severity")
         active = limit.get("is_active")
@@ -157,7 +171,7 @@ def claude_usage(data, *, now=None):
                                group=_text(limit.get("group")), scope=model,
                                severity_hint=severity if isinstance(severity, str) else None,
                                is_active=active if isinstance(active, bool) else None))
-    return {"checked": time.time() if now is None else now, "windows": _shown(_one_per_model(windows)),
+    return {"checked": time.time() if now is None else now, "windows": _shown(_one_per_model(windows, from_keys)),
             "raw_windows": raw, "credits": _claude_credits(data), "reset_credits": [], "tokens": None}
 
 

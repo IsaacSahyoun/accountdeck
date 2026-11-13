@@ -56,7 +56,7 @@ different: when the account in use has stopped working (its week ran out, or it 
 no account has room in both limits, it first moves to an account that still has a little left in
 both. If there is none, it moves to an account that has only its Fable 5.1 limit used up, because
 that account still works for the other models. Change it in
-**Settings → Auto-Switch**, or turn it off. It waits for a usable account with a recent reading. Right after a weekly limit refills, it waits for a new reading of the
+**Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a recent reading. Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
 switch has a 10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
 
@@ -70,8 +70,8 @@ switches only at your own percentage.
 
 **Your own choice:** When you switch Claude Code accounts yourself, or choose **Undo**, auto-switch
 leaves that choice alone for 2 hours. It still switches if that account's week runs out or it
-needs sign-in. A Fable 5.1 limit that ran out does not undo your choice, because the account still
-works for the other models.
+needs sign-in, and from then on it switches as usual. A Fable 5.1 limit that ran out does not undo
+your choice, because the account still works for the other models.
 
 **Start at login:** Turn it on in **Settings → Menu Bar & Login**. Closing the dashboard leaves
 usage checks running. Choose **Quit AccountDeck 2** from its menu to stop them.

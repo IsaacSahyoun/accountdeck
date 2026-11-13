@@ -22,7 +22,8 @@
   and asks for a new reading of that account (`refresh`);
 - a manual choice, Undo included, is held for 2 hours against the threshold, the early switch and a model's
   limit that ran out (the account still works for the other models). It is not held against an account
-  whose week ran out or that needs sign-in;
+  whose week ran out or that needs sign-in, and once auto-switch has moved the terminals off the chosen
+  account for that, nothing is held;
 - the optional early switch spends weekly allowance that expires within 24 hours, at most every 2 hours.
 """
 from functools import cmp_to_key
@@ -226,8 +227,11 @@ def _need(active, threshold, now):
 
 
 def _held(history, now):
-    """True for 2 hours after the user's own choice, Undo included."""
-    return now - history.get("manual_at", -1e20) < 2 * HOUR
+    """True for 2 hours after the user's own choice, Undo included, while the chosen account is the one in
+    use. An automatic switch since the choice moved the terminals off it (its week ran out, or it needed
+    sign-in), and the account in use now is not the user's choice."""
+    chosen = history.get("manual_at", -1e20)
+    return now - chosen < 2 * HOUR and (history.get("last") or {}).get("at", -1e20) <= chosen
 
 
 def _checking(rows):
@@ -261,8 +265,11 @@ def _leave(need, rows, active, history, settings, now):
     # works for all but the model whose limit ran out, so it is better than staying. While the account in
     # use still works, it is not.
     why = f"reached {DRAIN_CEILING}%" if need["trigger"] == "threshold" else need["why"]
-    last = [(row, kind, f"every account is past {threshold}%, so {row['label']} is used up to {DRAIN_CEILING}%")
-            for row in rows if row["drainable"]]
+    names = [row["label"] for row in stale]
+    others = (f"every account is past {threshold}%" if not stale else
+              f"{names[0]} needs a new reading first" if len(names) == 1 else
+              f"{', '.join(names[:-1][:2])} and {names[-1]} need a new reading first")
+    last = [(row, kind, f"{others}, so {row['label']} is used up to {DRAIN_CEILING}%") for row in rows if row["drainable"]]
     if not need["yields"]:
         # These are judged on their week, so the order is the user's order with the week's room as the room.
         # No limit refilled, so the switch keeps the kind of its trigger after "all low" too.

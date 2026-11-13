@@ -518,6 +518,39 @@ class TerminalFableLimitTest(DeckCase):
                          ["This account is over your auto-switch threshold. Auto-switch keeps your choice for 2 hours, "
                           "unless the account's week runs out or it needs sign-in."])
 
+    def test_a_manual_choice_is_held_only_while_the_chosen_account_is_in_use(self):
+        """Found by the third review of this change. The 2 hours ran from the moment of the choice, whichever
+        account was in use afterwards. Here the chosen account's week runs out, auto-switch moves the terminals
+        to the one account that is ready, and the hold then kept them on it (an account the user never chose,
+        with no Fable 5.1 left) after the better account had been read again. Then the reverse: an Undo is a
+        new choice, and it is held."""
+        hold = "Your manual choice is held for 2 hours"
+        self.act("claude_cli", "switch", self.full["id"])
+        self.assert_consistent("claude_cli", self.identity(self.full["id"]))
+        self.read(self.full, weekly=96, fable=10)
+        self.read(self.roomy, weekly=40, fable=100)
+        self.read(self.first, weekly=20, fable=20)
+        old = self.engine.store.account(self.first["id"])
+        self.engine.store.observe(self.first["id"], old["last_good_usage"], at=self.engine.clock() - 3600)
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["hold"]), ("none", hold), "the choice is held against the threshold")
+        self.read(self.full, weekly=100, fable=10)          # the chosen account's week runs out
+        last = self.switched()
+        self.assertEqual((last["to"], last["kind"]), (self.roomy["id"], "out"))
+        self.read(self.first, weekly=20, fable=20)          # the better account has been read again
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["target"], decision["hold"]), ("switch", self.first["id"], None))
+        last = self.switched()
+        self.assertEqual((last["to"], last["kind"]), (self.first["id"], "out"))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+        plan = self.engine.action("cli-undo", {"provider": "claude_cli"})["plan"]
+        self.assertEqual(plan["blockers"], [])
+        self.engine.action("switch", {"id": self.roomy["id"], "provider": "claude_cli", "plan_id": plan["plan_id"]})
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["hold"]), ("none", hold), "an Undo is the user's choice")
+
     def test_an_undo_of_a_switch_made_for_the_fable_limit_stands(self):
         """The reverse. The account auto-switch left still works for the other models, so the user's Undo is
         not reversed at the next check. Without that rule the terminals were moved away again within seconds."""
