@@ -1,6 +1,7 @@
 """The local server and the dashboard as a person uses them: every request rule of the server, every demo
-scenario drawn by headless Chrome, and the rows clicked through the Chrome DevTools Protocol. Synthetic data
-only. The dashboard tests skip, loudly, when no Chrome is installed (see tests/support.find_chrome)."""
+scenario drawn in a browser, and the rows clicked with real mouse and key events. The browser is the WebKit
+of the app's own window, or headless Chrome with ACCOUNTDECK_TEST_BROWSER=chrome. Synthetic data only.
+The dashboard tests skip, loudly, when the browser they need is missing (see tests/support.in_chrome)."""
 import base64
 import http.client
 import json
@@ -17,7 +18,7 @@ import time
 import unittest
 import urllib.request
 
-from tests import support
+from tests import support, webkit
 
 from accountdeck import fixtures
 from accountdeck.core import DeckError
@@ -235,7 +236,7 @@ class ServerRulesTest(unittest.TestCase):
             Server(("0.0.0.0", 0), support.StubEngine(self.state))
 
 
-# ---- headless Chrome, driven over the DevTools Protocol ----
+# ---- the dashboard in a browser: headless Chrome over the DevTools Protocol, or the app's WebKit ----
 
 class WebSocket:
     """The little of RFC 6455 the DevTools Protocol needs: text messages to and from one local server."""
@@ -291,8 +292,42 @@ class WebSocket:
         self.conn.close()
 
 
-class Browser:
-    """One headless Chrome page. `problems` collects what the page's console would show in red.
+class Page:
+    """What the dashboard tests ask of a browser. `problems` collects what the page's console would show in
+    red. An engine gives `js`, `load`, `mouse`, `type` and `press`."""
+
+    def wait(self, expression, why=None, seconds=WAIT):
+        """Waits until the expression is truthy and returns its value. Gives up after `seconds`."""
+        deadline = time.monotonic() + seconds
+        while True:
+            value = self.js(expression)
+            if value:
+                return value
+            if time.monotonic() > deadline:
+                raise AssertionError(f"the page never showed: {why or expression}; console: {self.problems}")
+            time.sleep(0.03)
+
+    def open(self, server):
+        """Opens the dashboard of `server` the way the app does and waits for its first drawing."""
+        self.problems.clear()
+        self.load(f"http://127.0.0.1:{server.server_port}/#token={server.token}")
+        self.wait(support.DRAWN, "the dashboard with its first state")
+
+    def click(self, element, why=None):
+        """A real mouse click in the middle of the element the expression names, once it is on the page.
+        Fails when something else covers that spot, as it would for a person."""
+        find = f"(() => {{ const e = {element}; return e && e.isConnected ? e : null; }})()"
+        self.wait(f"!!{find}", why or element)
+        x, y, hit = self.js(f"""(() => {{ const e = {find}; e.scrollIntoView({{block: 'center'}});
+            const r = e.getBoundingClientRect(); const x = r.x + r.width / 2, y = r.y + r.height / 2;
+            const top = document.elementFromPoint(x, y); return [x, y, !!top && (top === e || e.contains(top))]; }})()""")
+        if not hit:
+            raise AssertionError(f"{why or element} is covered by something else")
+        self.mouse(x, y)
+
+
+class Chrome(Page):
+    """One headless Chrome page, driven over the DevTools Protocol.
     `cleanup(function, *args)` registers what to undo when the tests that use it are done."""
 
     def __init__(self, cleanup):
@@ -356,34 +391,10 @@ class Browser:
             raise AssertionError(f"{expression}: {result['exceptionDetails']['exception'].get('description')}")
         return result["result"].get("value")
 
-    def wait(self, expression, why=None):
-        """Waits until the expression is truthy and returns its value."""
-        deadline = time.monotonic() + WAIT
-        while True:
-            value = self.js(expression)
-            if value:
-                return value
-            if time.monotonic() > deadline:
-                raise AssertionError(f"the page never showed: {why or expression}; console: {self.problems}")
-            time.sleep(0.03)
+    def load(self, url):
+        self.call("Page.navigate", url=url)
 
-    def open(self, server):
-        """Opens the dashboard of `server` the way the app does and waits for its first drawing."""
-        self.problems.clear()
-        self.call("Page.navigate", url=f"http://127.0.0.1:{server.server_port}/#token={server.token}")
-        self.wait("!!(window.AD && AD.app && AD.app.state) && !document.querySelector('#accounts .loading-line')",
-                  "the dashboard with its first state")
-
-    def click(self, element, why=None):
-        """A real mouse click in the middle of the element the expression names, once it is on the page.
-        Fails when something else covers that spot, as it would for a person."""
-        find = f"(() => {{ const e = {element}; return e && e.isConnected ? e : null; }})()"
-        self.wait(f"!!{find}", why or element)
-        x, y, hit = self.js(f"""(() => {{ const e = {find}; e.scrollIntoView({{block: 'center'}});
-            const r = e.getBoundingClientRect(); const x = r.x + r.width / 2, y = r.y + r.height / 2;
-            const top = document.elementFromPoint(x, y); return [x, y, !!top && (top === e || e.contains(top))]; }})()""")
-        if not hit:
-            raise AssertionError(f"{why or element} is covered by something else")
+    def mouse(self, x, y):
         for kind in ("mousePressed", "mouseReleased"):
             self.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, button="left", clickCount=1)
 
@@ -395,6 +406,49 @@ class Browser:
         for kind in ("rawKeyDown", "char", "keyUp") if key in ("Enter", " ") else ("rawKeyDown", "keyUp"):
             self.call("Input.dispatchKeyEvent", type=kind, key=key, code=code or key, windowsVirtualKeyCode=codes[key],
                       text="\r" if key == "Enter" and kind == "char" else key if kind == "char" else "")
+
+
+class AppWindow(Page):
+    """One page in the engine of the app's own window: WebKit, with the user agent that window sends
+    (tests/webkit.py). Mouse and key presses go to the web view as events, as a person's would."""
+
+    def __init__(self, cleanup):
+        try:
+            self.window = webkit.AppWindow("app")
+        except OSError as exc:
+            raise unittest.SkipTest(f"{exc}; the dashboard tests cannot run in WebKit") from None
+        cleanup(self.window.close)
+        self.seen = []
+
+    @property
+    def problems(self):
+        self.seen.extend(self.window.problems())
+        return self.seen
+
+    def js(self, expression):
+        try:
+            return self.window.js(expression)
+        except AssertionError as exc:
+            raise AssertionError(f"{expression}: {exc}") from None
+
+    def load(self, url):
+        self.window.call("load", url=url)
+
+    def mouse(self, x, y):
+        self.window.call("click", x=x, y=y)
+
+    def type(self, text):
+        if not self.js(f"document.execCommand('insertText', false, {json.dumps(text)})"):
+            raise AssertionError("nothing on the page takes typing")
+
+    def press(self, key, code=None):
+        self.window.call("press", key=key)
+
+
+def browser(cleanup):
+    """The browser the dashboard tests run in (tests/support.in_chrome): the WebKit of the app's own window,
+    or headless Chrome. A change to the dashboard is checked in both."""
+    return Chrome(cleanup) if support.in_chrome() else AppWindow(cleanup)
 
 
 def button(text, inside="document"):
@@ -416,11 +470,11 @@ SHEET = "document.getElementById('modal')"
 
 
 class DashboardTestCase(unittest.TestCase):
-    """One Chrome for the whole class; each test opens the page of its own server."""
+    """One browser for the whole class; each test opens the page of its own server."""
 
     @classmethod
     def setUpClass(cls):
-        cls.browser = Browser(cls.addClassCleanup)
+        cls.browser = browser(cls.addClassCleanup)
 
     def show(self, state):
         server = support.serve(self, state)

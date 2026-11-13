@@ -1,4 +1,4 @@
-"""Shared test helpers: a whole engine on synthetic data, the dashboard drawn in headless Chrome, and the
+"""Shared test helpers: a whole engine on synthetic data, the dashboard drawn in a browser, and the
 stand-ins the review-finding tests use. Everything runs in safe mode; the real apps, their logins and the
 Keychain are never touched."""
 import os
@@ -16,13 +16,18 @@ import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 from unittest import mock  # noqa: E402
 
 from accountdeck import demo, diagnostics, recovery  # noqa: E402
 from accountdeck.operations import Operation  # noqa: E402
 from accountdeck.server import Server  # noqa: E402
+from tests import webkit  # noqa: E402
 
 CHROME_ENV = "ACCOUNTDECK_TEST_CHROME"
+BROWSER_ENV = "ACCOUNTDECK_TEST_BROWSER"        # "chrome" for headless Chrome; anything else is the app's WebKit
+# JavaScript that is true once the dashboard has drawn its first state.
+DRAWN = "!!(window.AD && AD.app && AD.app.state) && !document.querySelector('#accounts .loading-line')"
 
 
 def demo_engine(case, scenario):
@@ -166,6 +171,13 @@ def serve(case, state):
     return server
 
 
+def in_chrome():
+    """Which browser draws the dashboard in tests. The app shows it in a WKWebView and Safari is on every Mac,
+    so WebKit is the engine a person sees and the one tests use. ACCOUNTDECK_TEST_BROWSER=chrome runs them in
+    headless Chrome instead, for the people who open the dashboard in a Chrome-family browser."""
+    return os.environ.get(BROWSER_ENV) == "chrome"
+
+
 def find_chrome():
     """A headless Chrome for the dashboard tests: $ACCOUNTDECK_TEST_CHROME, Playwright's download, or Chrome."""
     home = Path.home()
@@ -177,21 +189,39 @@ def find_chrome():
 
 
 def render(case, state):
-    """Draw `state` with the real dashboard files in headless Chrome. Returns (page HTML, console error lines).
-    Skips the test, loudly, when no Chrome is installed."""
+    """Draw `state` with the real dashboard files. Returns (page HTML, console error lines). The browser is
+    the one `in_chrome` names. Skips the test, loudly, when that browser is missing."""
+    server = serve(case, state)
+    url = f"http://127.0.0.1:{server.server_port}/#token={server.token}"
+    if not in_chrome():
+        return render_in_webkit(case, url)
     chrome = find_chrome()
     if chrome is None:
         case.skipTest(f"no headless Chrome found; set {CHROME_ENV} to run the dashboard tests")
-    server = serve(case, state)
     profile = tempfile.mkdtemp(prefix="accountdeck-test-chrome-")
     case.addCleanup(shutil.rmtree, profile, True)
-    url = f"http://127.0.0.1:{server.server_port}/#token={server.token}"
     page = subprocess.run([chrome, "--headless", "--dump-dom", "--virtual-time-budget=9000", "--enable-logging=stderr",
                            "--v=0", "--no-first-run", "--disable-gpu", "--window-size=1280,2400",
                            f"--user-data-dir={profile}", url], capture_output=True, text=True, timeout=120)
     errors = [line for line in page.stderr.splitlines()
               if "CONSOLE" in line and re.search(r"Uncaught|Error|error|Refused|violat", line)]
     return page.stdout, errors
+
+
+def render_in_webkit(case, url):
+    try:
+        window = webkit.AppWindow("app")
+    except OSError as exc:
+        case.skipTest(f"{exc}; the dashboard tests cannot run in WebKit")
+    case.addCleanup(window.close)
+    window.call("load", url=url)
+    deadline = time.monotonic() + 15
+    while not window.js(DRAWN):
+        if time.monotonic() > deadline:
+            raise AssertionError(f"the page never drew; console: {window.problems()}")
+        time.sleep(0.03)
+    time.sleep(0.5)                              # what the page fetches after its first drawing
+    return window.js("document.documentElement.outerHTML"), window.problems()
 
 
 def text_of(html):
