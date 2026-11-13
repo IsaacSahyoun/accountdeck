@@ -127,7 +127,7 @@
     return el('div', { class: 'table-head', 'aria-hidden': 'true' },
       el('span', { text: T.colAccount }),
       el('div', 'table-head-limits', labels.map((text, index) => el('span', null,
-        index === 2 ? el('span', { class: 'fable-mark' }) : null, text))),
+        index === 1 ? el('span', { class: 'fable-mark' }) : null, text))),
       el('span'));
   }
 

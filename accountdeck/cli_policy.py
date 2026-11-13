@@ -1,7 +1,7 @@
 """The terminal auto-switch policy the owner approved. Pure: no I/O or clock reads.
 
 `evaluate` decides, for the active terminal account, whether to switch now and to which account:
-- threshold: any considered window (5-hour, weekly, the pinned model's weekly) at or past `cli_threshold`,
+- threshold: any considered window (weekly, the pinned model's weekly) at or past `cli_threshold`,
   or projected to pass it before the next read can land (the burn-rate forecast);
 - out / login: a limit reached or a sign-in that needs renewing switches whatever the threshold;
 - eligible targets have a reading at most 15 minutes old and at least 10 points of room below the
@@ -9,9 +9,8 @@
   when none qualifies but some are only too old, those are read again first (`refresh`);
 - once no account qualifies, every account is used up to DRAIN_CEILING (99 %): the active one stays
   until it reaches it, then a target with DRAIN_ROOM points left below it is used;
-- holds: an expired idle terminal token, and a 5-hour refill within 10 minutes when only the 5-hour
-  window is past. An Anthropic incident never holds (the owner's choice, 2026-10-09): a switch only
-  needs the target's own fresh reading;
+- holds: an expired idle terminal token. An Anthropic incident never holds (the owner's choice,
+  2026-10-09): a switch only needs the target's own fresh reading;
 - a window of the account in use whose reset time has passed has refilled, so its last number is not
   acted on: the windows still running decide, and when none of them asks for a switch the rule holds
   and asks for a new reading of that account (`refresh`);
@@ -19,11 +18,11 @@
   not held against an account that ran out or needs sign-in;
 - the optional early switch spends weekly allowance that expires within 24 hours, at most every 2 hours.
 """
-from datetime import datetime
 from functools import cmp_to_key
 import math
 
 from .core import is_frozen
+from .rules import clock_text
 
 HOUR = 3600
 
@@ -33,12 +32,12 @@ def number(value):
 
 
 def considered(account, settings):
+    """The limits the rule acts on, the weekly one first: (name, % used or None, window). Claude has no 5-hour
+    limit (`usage.claude_usage`)."""
     windows = account.get("windows") or []
-    five = next((w for w in windows if w.get("kind") == "session"), {})
     weekly = next((w for w in windows if w.get("kind") == "weekly"), {})
     models = {w.get("model") or w.get("label", "").removesuffix(" weekly"): w for w in windows if w.get("kind") == "model"}
-    values = [("5-hour", 0 if five.get("started") is False else number(five.get("used")), five),
-              ("weekly", number(weekly.get("used")), weekly)]
+    values = [("weekly", number(weekly.get("used")), weekly)]
     pinned = settings.get("pinned_model", "").casefold()
     for label, window in models.items():
         if pinned and label.casefold() == pinned:
@@ -136,7 +135,7 @@ def _row(account, settings, threshold, now):
     elif age is None:
         skip = "reading unavailable"
     elif not known:
-        skip = "weekly reading unknown" if values[1][1] is None else "reading incomplete"
+        skip = "weekly reading unknown" if values[0][1] is None else "reading incomplete"
     elif room < 10:
         label, used, _ = max(values, key=lambda v: v[1])
         skip, past = f"{label} at {used:g}%", True
@@ -147,7 +146,7 @@ def _row(account, settings, threshold, now):
     drainable = (skip is None or past) and all(used <= DRAIN_CEILING - DRAIN_ROOM and not w.get("blocked")
                                                 for _, used, w in values)
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
-            "weekly_reset": reset(values[1][2]), "account": account, "values": values, "drainable": drainable,
+            "weekly_reset": reset(values[0][2]), "account": account, "values": values, "drainable": drainable,
             "stale": stale}
 
 
@@ -196,7 +195,7 @@ def _need(active, threshold, now):
         trigger, why = "threshold", f"will pass {threshold}% of its {soon[0]} limit before the next check"
     else:
         trigger, why = None, ""
-    return {"trigger": trigger, "why": why, "five_hour_only": all(label == "5-hour" for label in over or soon),
+    return {"trigger": trigger, "why": why,
             "peak": max((used for _, used in projected if used is not None), default=0),
             "refilled": [label for label, used, w in active["values"]
                          if ended(w, now) and (w.get("blocked") or (used is not None and used >= threshold))]}
@@ -212,14 +211,10 @@ def _leave(need, rows, active, history, threshold, now):
     account is low. Returns the fields of the result that change."""
     label = active["label"]
     kind = "refilled" if history.get("exhausted") else need["trigger"]
-    if need["trigger"] == "threshold":
-        five_reset = reset(active["values"][0][2])
-        if need["five_hour_only"] and five_reset is not None and five_reset - now <= 600:
-            return {"hold": f"{label} refills in {duration(five_reset - now)} — staying"}
-        # The user's own choice outranks the threshold. It does not outrank an account that ran out or needs
-        # sign-in: staying there would stop their work.
-        if _held(history, now):
-            return {"hold": MANUAL_HOLD}
+    # The user's own choice outranks the threshold. It does not outrank an account that ran out or needs
+    # sign-in: staying there would stop their work.
+    if need["trigger"] == "threshold" and _held(history, now):
+        return {"hold": MANUAL_HOLD}
     eligible = [row for row in rows if row["skip"] is None]
     if eligible:
         return {"action": "switch", "target": eligible[0]["id"], "kind": kind,
@@ -239,7 +234,8 @@ def _leave(need, rows, active, history, threshold, now):
 
 
 def _refills_first(rows, threshold, now):
-    """" Beta refills first at 3:40 PM.": the usable account whose limiting windows all refill soonest, or ""."""
+    """" Beta refills first, Thu 9:00 AM.": the usable account whose limiting windows all refill soonest, or "".
+    A week ends days away, so the time carries its day unless it is within 24 hours."""
     resets = []
     for row in rows:
         account = row["account"]
@@ -252,7 +248,7 @@ def _refills_first(rows, threshold, now):
     if not resets:
         return ""
     at, label = min(resets, key=lambda pair: pair[0])
-    return f" {label} refills first at {datetime.fromtimestamp(at).strftime('%I:%M %p').lstrip('0')}."
+    return f" {label} refills first, {clock_text(at, now)}."
 
 
 def _early(rows, active, history, now):
@@ -268,9 +264,9 @@ def _early(rows, active, history, now):
     just_left = history.get("left") if now - history.get("left_at", -1e20) < 1800 else None
     early = [row for row in rows if row["skip"] is None and row["weekly_reset"] is not None and mine is not None
              and 0 < row["weekly_reset"] - now <= 24 * HOUR and row["weekly_reset"] < mine
-             and row["values"][1][1] <= 80 and row["id"] != just_left]
+             and row["values"][0][1] <= 80 and row["id"] != just_left]
     if not early:
         return {}
     target = min(early, key=lambda row: (row["weekly_reset"], row["label"].casefold()))
     return {"action": "switch", "target": target["id"], "kind": "early",
-            "reason": f"Using {target['label']}'s weekly allowance before it resets in {duration(target['weekly_reset'] - now)} ({100 - target['values'][1][1]:g}% left)."}
+            "reason": f"Using {target['label']}'s weekly allowance before it resets in {duration(target['weekly_reset'] - now)} ({100 - target['values'][0][1]:g}% left)."}

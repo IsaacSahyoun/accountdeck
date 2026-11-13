@@ -687,6 +687,38 @@ class OtherClientsRowsTest(DashboardTestCase):
                 self.assertEqual(squeezed, [True, "hidden", "ellipsis", False])
 
 
+class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
+    """Claude dropped its 5-hour limit. No part of the page names one for a Claude account, in the terminal or in
+    Claude Desktop. Codex and Muse keep theirs."""
+
+    def test_only_codex_and_muse_show_a_5_hour_limit(self):
+        self.show(fixtures.example_state("typical", now=time.time()))
+        said = self.browser.js("""Object.fromEntries([['the cards', document.getElementById('overview')],
+            ['claude_cli', document.getElementById('accounts')],
+            ...[...document.querySelectorAll('#other-accounts .other-provider')].map((part, n) => [['claude', 'codex', 'muse'][n], part])]
+            .map(([name, part]) => [name, part.innerText.includes('5-hour')]))""")
+        self.assertEqual(said, {"the cards": False, "claude_cli": False, "claude": False, "codex": True, "muse": True})
+
+    def test_the_claude_code_table_has_a_weekly_and_a_fable_column(self):
+        self.show(fixtures.example_state("typical", now=time.time()))
+        self.assertEqual(self.browser.js("[...document.querySelectorAll('#accounts .table-head-limits > span')].map((s) => s.textContent)"),
+                         ["Weekly", "Fable 5.1 weekly"])
+        self.assertEqual(self.browser.js("[...document.querySelectorAll('#accounts-sort option')].map((o) => o.textContent)"),
+                         ["Most room left", "Most Fable 5.1 room", "Most weekly room", "Soonest weekly reset", "My order"])
+        cells = self.browser.js("[...document.querySelectorAll('#accounts .row:not(.is-blocked) .row-limits')].map((r) => r.children.length)")
+        self.assertEqual(sorted(set(cells)), [2], cells)
+
+    def test_settings_name_the_limits_auto_switch_watches(self):
+        self.show(fixtures.example_state("typical", now=time.time()))
+        self.browser.click("document.getElementById('open-settings')")
+        self.browser.wait("document.getElementById('settings').open", "Settings")
+        self.browser.click("[...document.querySelectorAll('#settings-tabs [role=tab]')].find((t) => t.textContent.trim() === 'Auto-Switch')")
+        self.browser.wait("document.getElementById('settings-pane-title').textContent === 'Auto-Switch'", "the Auto-Switch tab")
+        words = self.browser.js("document.getElementById('settings-body').textContent")
+        self.assertIn("Of its weekly or Fable 5.1 weekly limit.", words)
+        self.assertNotIn("5-hour", words)
+
+
 CLIENTS = ("claude_cli", "claude", "codex", "muse")
 APPS = {"claude_cli": "Claude Code", "claude": "Claude Desktop", "codex": "Codex", "muse": "Muse Code"}
 METERS_SHOW = ("ready", "watch", "low", "critical")     # every other headline is words under the account's name

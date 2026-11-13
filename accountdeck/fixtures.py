@@ -28,10 +28,10 @@ _UTC = dt.timezone.utc
 
 SCENARIOS = {
     "terminal": "Terminal accounts, automatic order, enrollment and Undo",
-    "typical": "Mixed: out / watch / plenty / refilled / not-started, one busy session, recommendation",
+    "typical": "Mixed: out / watch / plenty / refilled, one busy session, recommendation",
     "resets-soon": "Four windows inside the 15 min / 1 h / 6 h / 24 h buckets; hero at 12m 30s; Back-in and Use-it chips",
     "refilled": "A confirmed refill 4 min old; hero kind refilled",
-    "not-started": "Every 5-hour window not started; weekly windows live",
+    "not-started": "Limits that have not started: Beta's week and Codex's 5-hour window",
     "codex-blocked": "Codex blocked and ordinaryUsageAllowed=false, reset credits, every Codex account exhausted",
     "needs-signin": "One account reauth_required, one expired (last known 3 h), one web_only",
     "blocked-cloudflare": "error.code=blocked on two inactive accounts, state unchanged, last-known readings",
@@ -121,13 +121,13 @@ def muse_accounts():
 def terminal_accounts(scenario):
     switched = scenario in ("terminal", "resets-soon")
     rows = []
-    for key, label, five, weekly, reset, excluded, health in (
-            ("alpha", "Alpha", 95 if switched else 60, 70, 4 * 3600, False, "ok"),
-            ("beta", "Beta", 30, 60, 9 * 3600, False, "ok"),
-            ("delta", "Delta", 90, 50, 5 * 3600, False, "ok"),
-            ("gamma", "Gamma", 20, 20, 3 * 86400, True, "ok"),
-            ("epsilon", "Epsilon", 20, 35, 2 * 86400, False, "needs_signin")):
-        row = _claude("cli_" + key, label, [_w("five_hour", five, 2400), _w("seven_day", weekly, reset)],
+    for key, label, weekly, reset, excluded, health in (
+            ("alpha", "Alpha", 95 if switched else 70, 4 * 3600, False, "ok"),
+            ("beta", "Beta", 60, 9 * 3600, False, "ok"),
+            ("delta", "Delta", 90, 5 * 3600, False, "ok"),
+            ("gamma", "Gamma", 20, 3 * 86400, True, "ok"),
+            ("epsilon", "Epsilon", 35, 2 * 86400, False, "needs_signin")):
+        row = _claude("cli_" + key, label, [_w("seven_day", weekly, reset)],
                       active=key == ("beta" if switched else "alpha"), excluded=excluded, health=health,
                       credential={"state": "reauth_required" if health == "needs_signin" else "fresh"})
         row["provider"] = "claude_cli"
@@ -299,17 +299,17 @@ def _typical_accounts(active="acc_1"):
     usage_credits = [{"label": "Usage credits", "enabled": False, "used": None, "limit": None, "balance": None,
                       "unit": "minor currency units", "exponent": 2, "currency": "USD", "percent": None}]
     accounts = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 100, 5400), _w("seven_day_fable", 63, 5400)],
+        _claude("acc_1", "Alpha", [_w("seven_day", 100, 5400), _w("seven_day_fable", 63, 5400)],
                 checked=-120, credential={"state": "live", "expires_in": 5400, "session_expires_in_days": 21},
                 credits=usage_credits),
-        _claude("acc_2", "Beta", [_w("five_hour", 32, 7200), _w("seven_day", 70, 259200)],
+        _claude("acc_2", "Beta", [_w("seven_day", 70, 259200)],
                 other=[_w("seven_day_oauth_apps", 12, 259200)], checked=-600,
                 credential={"state": "expired", "expires_in": -3600, "session_expires_in_days": 18}),
-        _claude("acc_3", "Gamma", [_w("five_hour", 4, 16200, refilled=(-3200, -800, 88)), _w("seven_day", 42, 72000)],
+        _claude("acc_3", "Gamma", [_w("seven_day", 42, 72000)],
                 checked=-800, credential={"expires_in": 2400, "session_expires_in_days": 26}),
-        _claude("acc_4", "Delta", [_w("five_hour", 8, 10800), _w("seven_day", 9, 432000)], checked=-300,
+        _claude("acc_4", "Delta", [_w("seven_day", 9, 601600, refilled=(-3200, -800, 88))], checked=-300,
                 credential={"expires_in": 3000, "dormant_days": 24, "session_expires_in_days": 4}),
-        _claude("acc_5", "Epsilon", [_w("five_hour", 0), _w("seven_day", 22, 518400)], checked=-900,
+        _claude("acc_5", "Epsilon", [_w("seven_day", 22, 518400)], checked=-900,
                 credential={"state": "expired", "expires_in": -86400, "session_expires_in_days": 12}),
         _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], checked=-60,
                credential={"state": "live", "expires_in": 518400},
@@ -331,20 +331,20 @@ def _events(now):
 
 
 def _scene_typical(spec, now):
-    spec["alerts"] = [{"id": "al_3", "kind": "reset_confirmed", "level": "good", "account": "acc_3", "window": "five_hour",
-                       "title": "Gamma's 5-hour limit refilled", "message": "Gamma is ready again.", "at": now - 800,
+    spec["alerts"] = [{"id": "al_3", "kind": "reset_confirmed", "level": "good", "account": "acc_4", "window": "seven_day",
+                       "title": "Delta's weekly limit refilled", "message": "Delta is ready again.", "at": now - 800,
                        "snoozed_until": None, "dismissed": False}]
     spec["notices"] = [{"id": "n_12", "level": "info", "message": "Alpha is ready.", "at": now - 900, "sticky": False}]
 
 
 def _scene_resets_soon(spec, now):
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 100, 750)], active=True, checked=-90,
+        _claude("acc_1", "Alpha", [_w("seven_day", 100, 750)], active=True, checked=-90,
                 credential={"state": "live", "expires_in": 4000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 97, 2400), _w("seven_day", 55, 345600)], checked=-400),
-        _claude("acc_3", "Gamma", [_w("five_hour", 3, 7200), _w("seven_day", 45, 18000)], checked=-500),
-        _claude("acc_4", "Delta", [_w("five_hour", 10, 10800), _w("seven_day", 60, 72000)], checked=-300),
-        _claude("acc_5", "Epsilon", [_w("five_hour", 22, 14400), _w("seven_day", 30, 518400)], checked=-700),
+        _claude("acc_2", "Beta", [_w("seven_day", 55, 345600)], checked=-400),
+        _claude("acc_3", "Gamma", [_w("seven_day", 45, 18000)], checked=-500),
+        _claude("acc_4", "Delta", [_w("seven_day", 60, 72000)], checked=-300),
+        _claude("acc_5", "Epsilon", [_w("seven_day", 30, 518400)], checked=-700),
         _codex("acc_6", "Codex main", [_w("five_hour", 20, 1200), _w("seven_day", 50, 172800)], active=True,
                checked=-60, credential={"state": "live", "expires_in": 518400}),
     ]
@@ -352,24 +352,24 @@ def _scene_resets_soon(spec, now):
 
 def _scene_refilled(spec, now):
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 2, 17400, refilled=(-600, -240, 100)), _w("seven_day", 30, 345600)],
+        _claude("acc_1", "Alpha", [_w("seven_day", 2, 604200, refilled=(-600, -240, 100))],
                 active=True, checked=-240, credential={"state": "live", "expires_in": 6000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 10, 7200), _w("seven_day", 20, 259200)], checked=-500),
-        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 15, 432000)], checked=-700),
+        _claude("acc_2", "Beta", [_w("seven_day", 20, 259200)], checked=-500),
+        _claude("acc_3", "Gamma", [_w("seven_day", 15, 432000)], checked=-700),
         _codex("acc_6", "Codex main", [_w("five_hour", 5, 16000), _w("seven_day", 12, 500000)], active=True,
                checked=-60, credential={"state": "live", "expires_in": 518400}),
     ]
-    spec["alerts"] = [{"id": "al_9", "kind": "reset_confirmed", "level": "good", "account": "acc_1", "window": "five_hour",
-                       "title": "Alpha's 5-hour limit refilled", "message": "Alpha is ready again.", "at": now - 240,
+    spec["alerts"] = [{"id": "al_9", "kind": "reset_confirmed", "level": "good", "account": "acc_1", "window": "seven_day",
+                       "title": "Alpha's weekly limit refilled", "message": "Alpha is ready again.", "at": now - 240,
                        "snoozed_until": None, "dismissed": False}]
 
 
 def _scene_not_started(spec, now):
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 35, 259200)], active=True, checked=-100,
+        _claude("acc_1", "Alpha", [_w("seven_day", 35, 259200)], active=True, checked=-100,
                 credential={"state": "live", "expires_in": 7000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 0), _w("seven_day", 48, 172800)], checked=-400),
-        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 10, 518400)], checked=-600),
+        _claude("acc_2", "Beta", [_w("seven_day", 0)], checked=-400),
+        _claude("acc_3", "Gamma", [_w("seven_day", 10, 518400)], checked=-600),
         _codex("acc_6", "Codex main", [_w("five_hour", 0), _w("seven_day", 20, 432000)], active=True, checked=-60,
                credential={"state": "live", "expires_in": 518400}),
     ]
@@ -377,9 +377,9 @@ def _scene_not_started(spec, now):
 
 def _scene_codex_blocked(spec, now):
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 12, 12000), _w("seven_day", 30, 300000)], active=True, checked=-100,
+        _claude("acc_1", "Alpha", [_w("seven_day", 30, 300000)], active=True, checked=-100,
                 credential={"state": "live", "expires_in": 7000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 0), _w("seven_day", 20, 400000)], checked=-500),
+        _claude("acc_2", "Beta", [_w("seven_day", 20, 400000)], checked=-500),
         _codex("acc_6", "Codex main", [_w("five_hour", 100, 7200, blocked="not_allowed"), _w("seven_day", 64, 259200)],
                active=True, checked=-60, credential={"state": "live", "expires_in": 518400},
                credits=[{"label": "Codex credits", "balance": "0", "unlimited": False, "hasCredits": False},
@@ -393,14 +393,14 @@ def _scene_codex_blocked(spec, now):
 
 def _scene_needs_signin(spec, now):
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 25, 9000), _w("seven_day", 40, 300000)], active=True, checked=-90,
+        _claude("acc_1", "Alpha", [_w("seven_day", 40, 300000)], active=True, checked=-90,
                 credential={"state": "live", "expires_in": 6000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 60, 3600), _w("seven_day", 75, 200000)], checked=-300, reading=-7200,
+        _claude("acc_2", "Beta", [_w("seven_day", 75, 200000)], checked=-300, reading=-7200,
                 credential={"state": "reauth_required", "last_outcome": "4xx"},
                 error={"code": "reauth_required", "message": "Sign-in needs renewing.", "since": -2400}),
-        _claude("acc_3", "Gamma", [_w("five_hour", 15, 2000), _w("seven_day", 50, 250000)], checked=-10800,
+        _claude("acc_3", "Gamma", [_w("seven_day", 50, 250000)], checked=-10800,
                 credential={"state": "expired", "expires_in": -14400}),
-        _claude("acc_4", "Delta", [_w("five_hour", 5, 12000), _w("seven_day", 12, 400000)], checked=-400,
+        _claude("acc_4", "Delta", [_w("seven_day", 12, 400000)], checked=-400,
                 credential={"state": "web_only"}),
         _codex("acc_6", "Codex main", [_w("five_hour", 10, 15000), _w("seven_day", 20, 300000)], active=True,
                checked=-60, reading=-1500, credential={"state": "access_expired", "expires_in": -300, "last_outcome": "4xx"}),
@@ -410,13 +410,13 @@ def _scene_needs_signin(spec, now):
 def _scene_blocked_cloudflare(spec, now):
     blocked = {"code": "blocked", "message": "Check refused by Cloudflare · sign-in not known to be bad"}
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 40, 6000), _w("seven_day", 55, 250000)], active=True, checked=-100,
+        _claude("acc_1", "Alpha", [_w("seven_day", 55, 250000)], active=True, checked=-100,
                 credential={"state": "live", "expires_in": 6000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 20, 9000), _w("seven_day", 35, 300000)], checked=-60, reading=-1500,
+        _claude("acc_2", "Beta", [_w("seven_day", 35, 300000)], checked=-60, reading=-1500,
                 credential={"state": "expired", "last_outcome": "4xx"}, error={**blocked, "since": -1500}),
-        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 61, 90000)], checked=-60, reading=-5400,
+        _claude("acc_3", "Gamma", [_w("seven_day", 61, 90000)], checked=-60, reading=-5400,
                 credential={"state": "expired", "last_outcome": "4xx"}, error={**blocked, "since": -5400}),
-        _claude("acc_4", "Delta", [_w("five_hour", 5, 15000), _w("seven_day", 10, 500000)], checked=-200),
+        _claude("acc_4", "Delta", [_w("seven_day", 10, 500000)], checked=-200),
         _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
                checked=-60, credential={"state": "live", "expires_in": 518400}),
     ]
@@ -424,12 +424,12 @@ def _scene_blocked_cloudflare(spec, now):
 
 def _scene_stale(spec, now):
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 45, 5000), _w("seven_day", 62, 200000)], active=True, checked=-2520,
+        _claude("acc_1", "Alpha", [_w("seven_day", 62, 200000)], active=True, checked=-2520,
                 credential={"state": "live", "expires_in": 3000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 30, 3000), _w("seven_day", 80, 150000)], checked=-10800,
+        _claude("acc_2", "Beta", [_w("seven_day", 80, 150000)], checked=-10800,
                 credential={"state": "expired", "expires_in": -7200}),
-        _claude("acc_3", "Gamma", [_w("five_hour", 10, 10000), _w("seven_day", 20, 400000)], checked=-300),
-        _claude("acc_4", "Delta", [_w("five_hour", 0), _w("seven_day", 33, 300000)], checked=-900),
+        _claude("acc_3", "Gamma", [_w("seven_day", 20, 400000)], checked=-300),
+        _claude("acc_4", "Delta", [_w("seven_day", 33, 300000)], checked=-900),
         _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
                checked=-60, credential={"state": "live", "expires_in": 518400}),
     ]
@@ -438,12 +438,12 @@ def _scene_stale(spec, now):
 def _scene_fable_binding(spec, now):
     spec["settings"] = {"pinned_model": "Fable"}
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 20, 9000), _w("seven_day", 40, 170000),
+        _claude("acc_1", "Alpha", [_w("seven_day", 40, 170000),
                                    _w("seven_day_fable", 92, 170000)], active=True, checked=-100,
                 credential={"state": "live", "expires_in": 6000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 10, 12000), _w("seven_day", 30, 300000),
+        _claude("acc_2", "Beta", [_w("seven_day", 30, 300000),
                                   _w("seven_day_fable", 35, 300000)], checked=-400),
-        _claude("acc_3", "Gamma", [_w("five_hour", 0), _w("seven_day", 50, 100000),
+        _claude("acc_3", "Gamma", [_w("seven_day", 50, 100000),
                                    _w("seven_day_fable", 70, 100000)], checked=-600),
         _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
                checked=-60, credential={"state": "live", "expires_in": 518400}),
@@ -452,11 +452,11 @@ def _scene_fable_binding(spec, now):
 
 def _scene_resetting(spec, now):
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 100, -120), _w("seven_day", 55, 259000)], active=True, checked=-200,
+        _claude("acc_1", "Alpha", [_w("seven_day", 100, -120)], active=True, checked=-200,
                 credential={"state": "live", "expires_in": 5000}),
-        _claude("acc_2", "Beta", [_w("five_hour", 80, -1800), _w("seven_day", 30, 400000)], checked=-7200,
+        _claude("acc_2", "Beta", [_w("seven_day", 80, -1800)], checked=-7200,
                 credential={"state": "expired", "expires_in": -3600}),
-        _claude("acc_3", "Gamma", [_w("five_hour", 15, 8000), _w("seven_day", 25, 350000)], checked=-400),
+        _claude("acc_3", "Gamma", [_w("seven_day", 25, 350000)], checked=-400),
         _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
                checked=-60, credential={"state": "live", "expires_in": 518400}),
     ]
@@ -464,7 +464,7 @@ def _scene_resetting(spec, now):
 
 def _scene_rate_limited(spec, now):
     paused = 1920
-    spec["accounts"][1] = _claude("acc_2", "Beta", [_w("five_hour", 35, 7000), _w("seven_day", 45, 300000)],
+    spec["accounts"][1] = _claude("acc_2", "Beta", [_w("seven_day", 45, 300000)],
                                   checked=-60, reading=-900, paused_until=paused,
                                   credential={"state": "expired", "expires_in": -3600, "last_outcome": "429"},
                                   error={"code": "rate_limited", "since": -60,
@@ -477,11 +477,11 @@ def _scene_outage(spec, now):
     spec["status"] = {"claude": _status("claude", now, "outage", since=-1800, checked=-60, incident={
         "title": "Elevated errors on claude.ai", "impact": "major", "status": "investigating", "started": now - 1800})}
     spec["accounts"] = [
-        _claude("acc_1", "Alpha", [_w("five_hour", 0), _w("seven_day", 70, 200000)], checked=-60, reading=-1500,
+        _claude("acc_1", "Alpha", [_w("seven_day", 70, 200000)], checked=-60, reading=-1500,
                 error=paused),
-        _claude("acc_2", "Beta", [_w("five_hour", 30, 8000), _w("seven_day", 40, 300000)], checked=-60, reading=-1500,
+        _claude("acc_2", "Beta", [_w("seven_day", 40, 300000)], checked=-60, reading=-1500,
                 error=paused),
-        _claude("acc_4", "Delta", [_w("five_hour", 8, 10000), _w("seven_day", 12, 400000)], active=True, checked=-60,
+        _claude("acc_4", "Delta", [_w("seven_day", 12, 400000)], active=True, checked=-60,
                 reading=-1500, credential={"state": "live", "expires_in": 2000}, error=paused),
         _codex("acc_6", "Codex main", [_w("five_hour", 30, 10800), _w("seven_day", 36, 172800)], active=True,
                checked=-60, credential={"state": "live", "expires_in": 518400}),
@@ -563,7 +563,7 @@ def _scene_demo_banner(spec, now):
 
 def _scene_first_run(spec, now):
     spec["accounts"] = [
-        _claude("unsaved-claude", "gamma", [_w("five_hour", 18, 12600), _w("seven_day", 46, 280000)], active=True,
+        _claude("unsaved-claude", "gamma", [_w("seven_day", 46, 280000)], active=True,
                 switchable=False, saved=False, checked=-20, email="gamma@example.test",
                 credential={"state": "live", "expires_in": 6800})]
     spec["notices"] = [{"id": "n_1", "level": "good", "message": "Saved your current terminal login as alpha@example.test.",
@@ -615,11 +615,9 @@ def _fifty_accounts():
     for n in range(1, 36):
         stale = n % 9 == 0
         age = 3900 + 60 * n if stale else 60 + (n * 97) % 1100
-        five = (0, 4, 12, 27, 45, 61, 78, 88, 96, 100)[n % 10]
         week = (n * 13 + 7) % 101
         week_reset = 3600 + (n * 104729) % 590000
-        windows = [_w("five_hour", five, None if five == 0 else min(18000 - age - 60, 600 + (n * 1543) % 16000)),
-                   _w("seven_day", week, week_reset)]
+        windows = [_w("seven_day", week, None if week == 0 else week_reset)]
         if n % 5 == 0:
             windows.append(_w("seven_day_fable", min(100, week + 20), week_reset))
         state = "reauth_required" if n == 17 else "expired" if n % 11 == 5 else "live" if n == 1 else "fresh"
@@ -680,7 +678,7 @@ def example_state(scenario, now=BASE_NOW):
                            "switching": switching["claude_cli"], "paused": settings["refresh_paused"],
                            "autoswitch": terminal_autoswitch(accounts, settings, now,
                                {"last": {"from": "cli_alpha", "to": "cli_beta", "at": now - 120,
-                                "kind": "threshold", "reason": "Alpha reached 95% of its 5-hour limit; switched terminals to Beta.",
+                                "kind": "threshold", "reason": "Alpha reached 95% of its weekly limit; switched terminals to Beta.",
                                 "undo_until": now + 480}} if scenario in ("terminal", "resets-soon") else None),
                            "enrollment": {"phase": "idle", "message": ""}, "readonly_reason": None},
             "muse": {"status": status["muse"], "active": active["muse"],

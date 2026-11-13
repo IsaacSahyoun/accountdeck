@@ -71,7 +71,7 @@
       sub: 'Every open terminal follows the account in use.', add: 'Add Account',
       sorts: {
         room: 'Most room left', fable: 'Most Fable 5.1 room', weekly: 'Most weekly room',
-        session: 'Most 5-hour room', reset: 'Soonest weekly reset', manual: 'My order',
+        reset: 'Soonest weekly reset', manual: 'My order',
       },
       emptyTitle: 'No terminal accounts yet',
       emptyText: 'Your current Claude Code login is saved automatically when it can be verified. To start, install Claude Code and sign in, or choose Add Account. Use a private browser window to choose a different account.',
@@ -194,7 +194,7 @@
       confirmIdle: 'Ask before switching when Claude is idle',
       confirmIdleHint: 'Shows the confirmation even when no Claude session would be interrupted.',
       auto: 'Switch accounts automatically', autoHint: 'Before an account runs out, every terminal moves to the next one.',
-      threshold: 'Switch when an account reaches', thresholdHint: 'Of its 5-hour, weekly or Fable 5.1 weekly limit.',
+      threshold: 'Switch when an account reaches', thresholdHint: 'Of its weekly or Fable 5.1 weekly limit.',
       thresholdUp: 'Raise the switch point', thresholdDown: 'Lower the switch point',
       order: 'Next account', orderBy: 'Order', aboutVersion: 'Version {version}', orders: { soonest_reset: 'Soonest reset first', most_room: 'Most room left first', manual: 'My own order' },
       orderNow: 'Order right now', orderManual: 'Your order (top goes first)', orderEmpty: 'Add terminal accounts to see the order.',

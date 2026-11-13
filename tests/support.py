@@ -100,15 +100,13 @@ def once_the_login_is(engine, refresh_token, then):
     return fired
 
 
-def with_reading(engine, key, *, session=None, weekly=None, reset_in=3 * 3600):
-    """Give account `key` a reading taken this second, with the given percent used."""
+def with_reading(engine, key, *, weekly):
+    """Give a Claude account a reading taken this second, with this percent of its week used."""
     now = engine.clock()
     usage = copy.deepcopy(engine.store.account(key)["last_good_usage"])
     usage["checked"] = now
     for window in usage["windows"]:
-        if window.get("kind") == "session" and session is not None:
-            window.update(used=float(session), reset=now + reset_in)
-        if window.get("kind") == "weekly" and weekly is not None:
+        if window.get("kind") == "weekly":
             window.update(used=float(weekly), reset=now + 4 * 86400)
     engine.store.observe(key, usage, at=now)
 

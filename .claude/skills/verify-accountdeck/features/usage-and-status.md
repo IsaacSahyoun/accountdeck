@@ -3,7 +3,7 @@
 Status: draft. The tests named here are in the final check, and `look_sweep.py` drew every scenario below on 2026-11-12. Nobody has driven these by hand through this skill.
 
 ## Sub-features
-- Each account shows its limits: 5-hour, weekly, and a model's weekly limit where the client reports one.
+- Each account shows its limits. Claude Code and Claude Desktop have a weekly limit and a model's weekly limit where Claude reports one. Claude dropped its 5-hour limit, and the app makes no limit of a 5-hour number an answer still carries (`usage.claude_usage`). Codex and Muse have a 5-hour and a weekly limit.
 - A note per limit: "Resets in 40m", "Refilled at 2:06 PM", "Starts with your next message", "Back in 1h 30m".
 - The card "In use by your terminals", the Next reset card and the Auto-switch card on the left.
 - A row says when its reading is old, when checks are paused, when sign-in is needed, and when the provider has an incident.
@@ -25,7 +25,7 @@ Tests to reuse: `tests/test_readings.py` (`RefillTest`, `UpkeepTest`, `Scheduler
 
 ## Gotchas
 - The demo clock runs from its start. Pass `--now` (the tools do) when two runs must show the same numbers.
-- Known flaw: the note beside a meter is cut off in the Desktop, Codex and Muse rows at the window's first width. See `rows-and-menus.md`.
+- A limit's note sits under its bar. The 2.0.0 build cut it off in the Desktop, Codex and Muse rows at the window's first width. See `rows-and-menus.md`.
 - A row says a thing once. The screenshot compare of 2026-11-12 found "Paused" in a badge and again under the name; `OtherClientsRowsTest.test_a_row_says_a_provider_incident_once` holds that.
 
 ## Only on the real Mac

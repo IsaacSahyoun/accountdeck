@@ -110,10 +110,10 @@ class AutoSwitchWhileAnotherClientWaitsTest(unittest.TestCase):
             return next(r for r in engine.store.accounts() if r["provider"] == "claude_cli" and r["identity"] == identity)
 
         active = in_use()
-        support.with_reading(engine, active["id"], session=97)
+        support.with_reading(engine, active["id"], weekly=97)
         for row in engine.store.accounts():
             if row["provider"] == "claude_cli" and row["id"] != active["id"] and row["last_good_usage"]:
-                support.with_reading(engine, row["id"], session=20, weekly=20)
+                support.with_reading(engine, row["id"], weekly=20)
         self.assertEqual(cli_auto.decision(engine)["action"], "switch")
         waiting = support.WaitingOperation("codex")
         self.addCleanup(waiting.release.set)
@@ -131,32 +131,34 @@ class AutoSwitchWhileAnotherClientWaitsTest(unittest.TestCase):
         self.assertTrue(waiting.wait(10))
 
 
-def reading(key, label, five_used, five_reset, weekly_used, *, active=False, out=False):
+def reading(key, label, weekly_used, weekly_reset=NOW + 3 * 86400, *, fable=None, active=False, out=False):
+    """One terminal account as the rule gets it. Claude has no 5-hour limit: a weekly limit, and Fable's with `fable`."""
+    windows = [{"id": "seven_day", "kind": "weekly", "used": weekly_used, "reset": weekly_reset}]
+    if fable is not None:
+        windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable 5.1 weekly",
+                        "used": fable, "reset": NOW + 3 * 86400})
     return {"id": key, "label": label, "active": active, "forecast": {}, "owner": "v2", "excluded": False,
-            "health": "ok", "live_expired": False, "last_good_at": NOW - 60, "out": out,
-            "windows": [{"id": "five_hour", "kind": "session", "used": five_used, "reset": five_reset, "started": True},
-                        {"id": "seven_day", "kind": "weekly", "used": weekly_used, "reset": NOW + 3 * 86400}]}
+            "health": "ok", "live_expired": False, "last_good_at": NOW - 60, "out": out, "windows": windows}
 
 
 class AutoSwitchPolicyTest(unittest.TestCase):
     """Act on 2 and 3, on the pure decision rule `cli_policy.evaluate(accounts, settings, history, now)`."""
-    BETA = reading("beta", "Beta", 20, NOW + 4 * 3600, 30)
+    BETA = reading("beta", "Beta", 30)
 
-    def decide(self, active, history=None, now=NOW):
-        return cli_policy.evaluate([active, copy.deepcopy(self.BETA)], SETTINGS, history or {}, now)
+    def decide(self, active, history=None, now=NOW, settings=SETTINGS):
+        return cli_policy.evaluate([active, copy.deepcopy(self.BETA)], settings, history or {}, now)
 
-    def test_stays_when_the_five_hour_limit_refills_within_ten_minutes(self):
-        self.assertEqual(self.decide(reading("alpha", "Alpha", 96, NOW + 240, 40, active=True))["action"], "none")
-
-    def test_stays_when_the_five_hour_limit_has_just_refilled(self):
-        # The reading is from before the refill: its 96% describes a window that has ended.
+    def test_stays_when_the_weekly_limit_has_just_refilled(self):
+        # The reading is from before the refill: its 96% describes a week that has ended.
         for ago in (1, 40, 300):
             with self.subTest(refilled_seconds_ago=ago):
-                result = self.decide(reading("alpha", "Alpha", 96, NOW - ago, 40, active=True))
-                self.assertEqual(result["action"], "none", result["reason"])
+                result = self.decide(reading("alpha", "Alpha", 96, NOW - ago, active=True))
+                self.assertEqual((result["action"], result["refresh"]), ("none", ["alpha"]), result["reason"])
+                self.assertIn("has refilled", result["hold"])
 
-    def test_still_leaves_for_a_weekly_limit_when_the_five_hour_limit_has_refilled(self):
-        result = self.decide(reading("alpha", "Alpha", 96, NOW - 40, 96, active=True))
+    def test_still_leaves_for_the_pinned_models_limit_when_the_weekly_limit_has_refilled(self):
+        pinned = dict(SETTINGS, pinned_model="fable")
+        result = self.decide(reading("alpha", "Alpha", 96, NOW - 40, fable=96, active=True), settings=pinned)
         self.assertEqual((result["action"], result["target"]), ("switch", "beta"))
 
     def undone(self, seconds_ago):
@@ -166,7 +168,7 @@ class AutoSwitchPolicyTest(unittest.TestCase):
                 "last": {"from": "alpha", "to": "beta", "at": at - 55, "kind": "threshold", "reason": "", "undo_until": at}}
 
     def test_an_undo_is_not_reversed_at_the_next_check(self):
-        over = reading("alpha", "Alpha", 30, NOW + 3600, 96, active=True)
+        over = reading("alpha", "Alpha", 96, active=True)
         for seconds_ago in (5, 600, 7000):
             with self.subTest(undone_seconds_ago=seconds_ago):
                 result = self.decide(over, self.undone(seconds_ago))
@@ -174,11 +176,11 @@ class AutoSwitchPolicyTest(unittest.TestCase):
                 self.assertTrue(result["hold"], "the dashboard needs a line saying why auto-switch is waiting")
 
     def test_the_users_choice_is_held_for_two_hours_then_the_threshold_applies_again(self):
-        over = reading("alpha", "Alpha", 30, NOW + 3600, 96, active=True)
+        over = reading("alpha", "Alpha", 96, active=True)
         self.assertEqual(self.decide(over, self.undone(2 * 3600 + 5))["action"], "switch")
 
     def test_the_users_choice_does_not_strand_them_on_an_account_that_ran_out(self):
-        out = reading("alpha", "Alpha", 30, NOW + 3600, 100, active=True, out=True)
+        out = reading("alpha", "Alpha", 100, active=True, out=True)
         result = self.decide(out, self.undone(5))
         self.assertEqual((result["action"], result["target"]), ("switch", "beta"))
 
@@ -195,9 +197,9 @@ class TerminalAccountUpkeepTest(unittest.TestCase):
         row = next(r for r in engine.store.accounts()
                    if r["provider"] == "claude_cli" and r["identity"] == engine.active_identity["claude_cli"])
         before = copy.deepcopy(row["last_good_usage"])
-        next(w for w in before["windows"] if w.get("kind") == "session").update(used=92.0, reset=now - 120)
+        next(w for w in before["windows"] if w.get("kind") == "weekly").update(used=92.0, reset=now - 120)
         after = copy.deepcopy(before)
-        next(w for w in after["windows"] if w.get("kind") == "session").update(used=0.0, reset=now + 5 * 3600)
+        next(w for w in after["windows"] if w.get("kind") == "weekly").update(used=0.0, reset=now + 5 * 86400)
         before["checked"], after["checked"] = now - 600, now
         engine.store.observe(row["id"], before, at=now - 600)
         had = len(engine.store.refills(0))

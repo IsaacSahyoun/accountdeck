@@ -368,10 +368,10 @@ class TerminalAutoSwitchTest(DeckCase):
         super().setUp()
         self.engine.sense_active()
         self.active_row = self.active("claude_cli")
-        support.with_reading(self.engine, self.active_row["id"], session=97)
+        support.with_reading(self.engine, self.active_row["id"], weekly=97)
         for row in self.engine.store.accounts():
             if row["provider"] == "claude_cli" and row["id"] != self.active_row["id"] and row["last_good_usage"]:
-                support.with_reading(self.engine, row["id"], session=20, weekly=20)
+                support.with_reading(self.engine, row["id"], weekly=20)
 
     def test_it_switches_away_from_an_account_over_the_threshold(self):
         self.assertEqual(cli_auto.decision(self.engine)["action"], "switch")

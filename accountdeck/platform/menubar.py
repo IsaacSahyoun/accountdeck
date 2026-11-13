@@ -6,7 +6,7 @@ What it shows, from the engine's cached snapshot (pure functions: state + now in
   reset is minutes away. It is a template image (drawn by macOS in the menu bar's own colour, right in light,
   dark and highlighted menu bars) while all is well or nothing is known (dimmed), and coloured amber or red
   only when the account needs attention;
-- the title: Claude Code terminal room left in accounts' worth, "5h 4.2 · wk 5.6", with the labels in the
+- the title: Claude Code terminal room left in accounts' worth, "wk 5.6", with the label in the
   secondary colour (empty when there are no terminal accounts, so only the ring takes room by the notch);
 - the tooltip: the active account in words, work in progress, and every terminal account's room;
 - the menu: what is happening (active account, next reset, best account, totals), Open Dashboard ⌘O (in the
@@ -198,16 +198,13 @@ def ring_for(state, now) -> Ring:
 
 
 def title_runs(state, now) -> tuple[tuple[str, str], ...]:
-    """The title as (text, role) runs, role "label" (secondary colour) or "value": "5h 4.2 · wk 5.6", "5h — ·
-    wk —" when terminal accounts exist but none can be counted, and nothing when there are none at all."""
+    """The title as (text, role) runs, role "label" (secondary colour) or "value": "wk 5.6", "wk —" when
+    terminal accounts exist but none can be counted, and nothing when there are none at all."""
     totals = pool.summarize(state, now)
     if not (totals.capacity or totals.signin or totals.left_out or totals.unread):
         return ()
-    if totals.capacity:
-        five, weekly = pool.amount(totals.five, totals.five_approx), pool.amount(totals.weekly, totals.weekly_approx)
-    else:
-        five = weekly = "—"
-    return (("5h ", "label"), (five, "value"), (" · ", "label"), ("wk ", "label"), (weekly, "value"))
+    weekly = pool.amount(totals.weekly, totals.weekly_approx) if totals.capacity else "—"
+    return (("wk ", "label"), (weekly, "value"))
 
 
 def _number(window, display) -> str:
@@ -316,12 +313,11 @@ def _status_lines(state, now) -> list[str]:
 
 
 def _terminals_line(totals) -> str | None:
-    """"Terminals: 5-hour 4.2 · weekly 5.6 of 6 accounts", or None without terminal accounts."""
+    """"Terminals: weekly 5.6 of 6 accounts", or None without terminal accounts."""
     if not totals.capacity:
         return "Terminals: none can be counted" if totals.signin or totals.left_out or totals.unread else None
     accounts = f"{totals.capacity} account" + ("" if totals.capacity == 1 else "s")
-    return (f"Terminals: 5-hour {pool.amount(totals.five, totals.five_approx)} · weekly "
-            f"{pool.amount(totals.weekly, totals.weekly_approx)} of {accounts}")
+    return f"Terminals: weekly {pool.amount(totals.weekly, totals.weekly_approx)} of {accounts}"
 
 
 def _switch_menus(state, now, busy) -> tuple[list[MenuItem], dict[int, str]]:

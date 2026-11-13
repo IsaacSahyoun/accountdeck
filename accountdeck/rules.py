@@ -327,10 +327,15 @@ def next_reset(accounts, strip, now):
 
 
 def headroom(account, pinned):
-    """Recommender headroom: min left over session, weekly, the pinned model and model windows ≥ 50 % used."""
+    """Recommender headroom: min left over session, weekly, the pinned model and model windows ≥ 50 % used.
+    An account whose session and weekly limits have all not started is whole. Claude has no 5-hour limit, so a
+    week that has not started can be the only limit an account shows."""
     lefts = [w["left"] for w in account["windows"] if w["left"] is not None and (
         w["kind"] in ("session", "weekly") or (w["kind"] == "model" and (w["used"] >= 50 or is_gating(w, pinned))))]
-    return min(lefts) if lefts else None
+    if lefts:
+        return min(lefts)
+    main = [w for w in account["windows"] if w["kind"] in ("session", "weekly")]
+    return 100.0 if main and all(w["state"] == "not_started" for w in main) else None
 
 
 def eligible(account, pinned):

@@ -1,11 +1,12 @@
 """How much terminal capacity is left, in "accounts' worth" (the menu bar totals). Pure: state + now in.
 
 Only Claude Code (terminal) accounts count; Desktop "claude" rows are the same people. An account
-that needs sign-in, that the owner left out, or whose 5-hour or weekly reading is unknown is not
+that needs sign-in, that the owner left out, or whose weekly reading is unknown is not
 counted, only named. Each counted window's share left at `now` (which may be after the snapshot):
 not started → 100; a reset that passed since the reading → 100, assumed (approximate); blocked or
-out → 0; else 100 − used. An account whose weekly limit is out has no usable 5-hour (or Fable 5.1)
-room either. The totals are those shares summed over 100: 4.2 means four accounts and a fifth of one.
+out → 0; else 100 − used. An account whose weekly limit is out has no usable Fable 5.1 room
+either. The totals are those shares summed over 100: 4.2 means four accounts and a fifth of one.
+Claude has no 5-hour limit, so the weekly limit is the room an account has.
 """
 from __future__ import annotations
 
@@ -29,11 +30,9 @@ class Row:
     id: str
     label: str
     active: bool
-    five: float
     weekly: float
     fable: float | None
     weekly_out: bool
-    five_approx: bool
     weekly_approx: bool
     fable_approx: bool
 
@@ -41,7 +40,7 @@ class Row:
 @dataclass(frozen=True)
 class Refill:
     label: str
-    window: str         # "5-hour" | "weekly"
+    window: str         # "weekly"
     gain: float         # accounts' worth added to that total
     at: float
 
@@ -59,11 +58,6 @@ class Pool:
         return len(self.rows)
 
     @property
-    def five(self) -> float:
-        # 5-hour use also spends the weekly limit, so no account adds more 5-hour room than weekly room.
-        return sum(min(r.five, r.weekly) for r in self.rows) / 100
-
-    @property
     def weekly(self) -> float:
         return sum(r.weekly for r in self.rows) / 100
 
@@ -74,10 +68,6 @@ class Pool:
     @property
     def fable_capacity(self) -> int:
         return sum(r.fable is not None for r in self.rows)
-
-    @property
-    def five_approx(self) -> bool:
-        return any(r.five_approx for r in self.rows)
 
     @property
     def weekly_approx(self) -> bool:
@@ -111,11 +101,10 @@ def left_at(window, at, now):
 
 def _windows(account):
     windows = [w for w in account.get("windows") or () if isinstance(w, dict)]
-    five = next((w for w in windows if w.get("kind") == "session"), None)
     weekly = next((w for w in windows if w.get("kind") == "weekly"), None)
     fable = next((w for w in windows if w.get("kind") == "model" and str(w.get("model") or "").casefold()
                   == FABLE.casefold()), None)
-    return five, weekly, fable
+    return weekly, fable
 
 
 def _signin(account) -> bool:
@@ -123,36 +112,32 @@ def _signin(account) -> bool:
 
 
 def _row(account, now):
-    """A Row, or None when the account's 5-hour or weekly share is unknown."""
+    """A Row, or None when the account's weekly share is unknown."""
     at = _num(account.get("last_good_at"))
     if at is None:
         return None
-    five_w, weekly_w, fable_w = _windows(account)
-    five, weekly, fable = left_at(five_w, at, now), left_at(weekly_w, at, now), left_at(fable_w, at, now)
-    if five is None or weekly is None:
+    weekly_w, fable_w = _windows(account)
+    weekly, fable = left_at(weekly_w, at, now), left_at(fable_w, at, now)
+    if weekly is None:
         return None
     stale = now - at > STALE
     out = weekly[0] <= OUT_LEFT or bool(weekly_w.get("blocked"))
     label = str(account.get("label") or account.get("id") or "")
-    return Row(str(account.get("id") or label), label, bool(account.get("active")),
-               0.0 if out else five[0], weekly[0], None if fable is None else (0.0 if out else fable[0]), out,
-               stale or five[1], stale or weekly[1], fable is not None and (stale or fable[1]))
+    return Row(str(account.get("id") or label), label, bool(account.get("active")), weekly[0],
+               None if fable is None else (0.0 if out else fable[0]), out,
+               stale or weekly[1], fable is not None and (stale or fable[1]))
 
 
 def _refill(rows, accounts, now):
-    """The soonest scheduled reset that adds room to the 5-hour or weekly total."""
+    """The soonest scheduled weekly reset that adds room to the total."""
     best = None
     for row in rows:
-        five_w, weekly_w, _ = _windows(accounts[row.id])
-        # A 5-hour refill adds nothing while the weekly limit is out.
-        for name, window, left in (("5-hour", None if row.weekly_out else five_w, row.five),
-                                   ("weekly", weekly_w, row.weekly)):
-            reset = _num((window or {}).get("reset"))
-            gain = (row.weekly - min(left, row.weekly) if name == "5-hour" else 100.0 - left) / 100
-            if reset is None or reset <= now or gain < MIN_GAIN:
-                continue
-            if best is None or reset < best.at:
-                best = Refill(row.label, name, gain, reset)
+        reset = _num(_windows(accounts[row.id])[0].get("reset"))
+        gain = (100.0 - row.weekly) / 100
+        if reset is None or reset <= now or gain < MIN_GAIN:
+            continue
+        if best is None or reset < best.at:
+            best = Refill(row.label, "weekly", gain, reset)
     return best
 
 
@@ -206,8 +191,7 @@ def _share(value, approx) -> str:
 
 
 def _account_line(row: Row) -> str:
-    five = _share(row.five, row.five_approx) + (" (weekly out)" if row.weekly_out else "")
-    parts = [f"5-hour {five}", f"weekly {_share(row.weekly, row.weekly_approx)}"]
+    parts = [f"weekly {_share(row.weekly, row.weekly_approx)}"]
     if row.fable is not None:
         parts.append(f"Fable 5.1 {_share(row.fable, row.fable_approx)}")
     return f"{row.label}{' (in use)' if row.active else ''}: " + " · ".join(parts) + " left"
@@ -221,7 +205,6 @@ def tooltip_lines(pool: Pool, now) -> list[str]:
     """The totals' detail text: totals, the next refill, each counted account, then who is not counted."""
     lines = ["Claude Code terminals: room left in accounts' worth"]
     if pool.capacity:
-        lines.append(_total_line("5-hour", pool.five, pool.capacity, pool.five_approx))
         lines.append(_total_line("Weekly", pool.weekly, pool.capacity, pool.weekly_approx))
         if pool.fable_capacity:
             lines.append(_total_line("Fable 5.1", pool.fable, pool.fable_capacity, pool.fable_approx))
@@ -229,7 +212,7 @@ def tooltip_lines(pool: Pool, now) -> list[str]:
             refill = pool.refill
             lines.append(f"Next refill: {refill.label} +{amount(refill.gain)} ({refill.window}) in "
                          f"{countdown_text(refill.at - now)}")
-        if pool.five_approx or pool.weekly_approx or pool.fable_approx:
+        if pool.weekly_approx or pool.fable_approx:
             lines.append("~ an old reading, or a reset assumed to have refilled")
         lines.append("")
         lines += [_account_line(row) for row in pool.rows]

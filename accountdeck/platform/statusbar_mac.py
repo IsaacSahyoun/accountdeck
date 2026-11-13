@@ -28,7 +28,7 @@ IMAGE_LEFT = 2                  # NSImageLeft
 AUTOSAVE_NAME = "local.accountdeck2.status"
 ALERT_FIRST = 1000              # NSAlertFirstButtonReturn
 ALERT_STYLES = {"warning": 0, "informational": 1}
-LABEL_SHRINK = 2.0              # points smaller than the menu bar font for the "5h"/"wk" labels
+LABEL_SHRINK = 2.0              # points smaller than the menu bar font for the "wk" label
 NO_APP = "The menu bar item needs the AccountDeck 2 app (run.py --app)."
 ACCESSIBILITY_LABEL = "AccountDeck 2"
 

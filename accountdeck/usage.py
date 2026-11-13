@@ -70,6 +70,8 @@ def classify_key(key, value):
 
 
 def claude_usage(data, *, now=None):
+    """Claude's limits are weekly. It dropped its 5-hour limit, so a number an answer still carries for one
+    stays in ``raw_windows`` and becomes no window: nothing shows it, counts it or switches on it."""
     windows, raw, structured = [], [], {}
     for key, value in data.items():
         described = classify_key(key, value)
@@ -78,6 +80,8 @@ def claude_usage(data, *, now=None):
         kind, label, short, model, _primary = described
         used, reset = _percent(value), timestamp(value.get("resets_at"))
         raw.append({"key": key, "used": used, "reset": reset})
+        if kind == "session":
+            continue
         windows.append(_window(key, kind, label, short, model, _describe(key)[4], used, reset,
                                scope=model if kind == "model" else key if kind == "other" else None))
     for index, limit in enumerate(data.get("limits") or []):
@@ -89,6 +93,8 @@ def claude_usage(data, *, now=None):
         reset = timestamp(limit.get("resets_at"))
         wid, raw_key, (kind, label, short, model, minutes) = _limit_shape(index, limit)
         raw.append({"key": raw_key, "used": used, "reset": reset})
+        if kind == "session":
+            continue
         if wid in structured:
             if (used, reset) in structured[wid]:
                 continue

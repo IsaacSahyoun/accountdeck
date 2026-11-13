@@ -53,8 +53,8 @@ FROZEN = 6 * 3600.0             # accounts a scenario shows as stale or broken a
 LOADING_S = 25.0                # the `loading` scenario's first readings arrive after this long
 OUTAGE_S = 600.0                # the `outage` scenario's incident ends after this long
 HISTORY_OFFSETS = (1800, 3600, 2 * 3600, 6 * 3600, 12 * 3600, 86400, 2 * 86400, 3 * 86400)
-DEFAULT_WINDOWS = {"claude": (("five_hour", 8.0, 10800.0), ("seven_day", 20.0, 400000.0)),
-                   "claude_cli": (("five_hour", 8.0, 10800.0), ("seven_day", 20.0, 400000.0)),
+DEFAULT_WINDOWS = {"claude": (("seven_day", 20.0, 400000.0),),
+                   "claude_cli": (("seven_day", 20.0, 400000.0),),
                    "codex": (("codex:primary", 10.0, 10000.0), ("codex:secondary", 15.0, 300000.0)),
                    "muse": (("muse:window", 8.0, 10000.0), ("muse:weekly", 20.0, 300000.0))}
 
@@ -172,7 +172,7 @@ def _iso(when):
 
 
 def _minutes(key):
-    if key in ("five_hour", "codex:primary", "muse:window"):
+    if key in ("codex:primary", "muse:window"):
         return 300
     return 10080 if key.startswith("seven_day") or key in ("codex:secondary", "muse:weekly") else None
 
@@ -258,8 +258,6 @@ def _rolling(provider, account, base, windows):
         offset = LATE_REFILL if late else w["reset"] - base + REFILL_LAG
         if provider in ("codex", "muse"):
             after = {"used": 0.0, "reset": max(w["reset"], base + offset) + minutes * 60}
-        elif minutes == 300:
-            after = {"used": 0.0, "reset": None}
         else:
             after = {"used": min(w["used"] or 0.0, 3.0), "reset": w["reset"] + minutes * 60}
         events.append((offset, w["key"], after))
@@ -650,7 +648,7 @@ class _Builder:
             self._cli_live(alpha)
             engine.sense_active()
             engine.submit(CLISwitch(engine, keys["cli_beta"], kind="threshold",
-                reason="Alpha reached 95% of its 5-hour limit; switched terminals to Beta."))
+                reason="Alpha reached 95% of its weekly limit; switched terminals to Beta."))
             engine.runner.wait(10)
             engine.runner.dismiss_report()
         if self.scenario != "first-run":

@@ -3,29 +3,40 @@ are the app's real decisions for hand-made readings.  Usage: policy_probe.py <co
 import os, sys
 os.environ["ACCOUNTDECK_SAFE_MODE"] = "1"
 sys.path.insert(0, sys.argv[1])
-from accountdeck import cli_policy
+from accountdeck import cli_policy, usage
 
 NOW = 1_800_000_000.0
 SETTINGS = {"cli_autoswitch": True, "cli_threshold": 95, "cli_order": "soonest_reset", "cli_early_switch": True, "pinned_model": ""}
 
-def account(key, label, five_used, five_reset, weekly_used, *, active=False, age=60):
+def account(key, label, weekly_used, weekly_reset, *, active=False, age=60, windows=None):
     return {"id": key, "label": label, "active": active, "forecast": {}, "owner": "v2", "excluded": False, "health": "ok",
             "live_expired": False, "last_good_at": NOW - age,
-            "windows": [{"id": "five_hour", "kind": "session", "used": five_used, "reset": five_reset, "started": True},
-                        {"id": "seven_day", "kind": "weekly", "used": weekly_used, "reset": NOW + 3 * 86400}]}
+            "windows": windows or [{"id": "seven_day", "kind": "weekly", "used": weekly_used, "reset": weekly_reset}]}
+
+def answered(key, label, answer, *, active=False):
+    """An account whose limits are what the app makes of one answer from Claude."""
+    return account(key, label, None, None, active=active, windows=usage.claude_usage(answer, now=NOW)["windows"])
 
 def show(title, accounts, history=None):
     r = cli_policy.evaluate(accounts, SETTINGS, history or {}, NOW)
     print(f"{title}\n   -> action={r['action']} target={r['target']} hold={r['hold']!r} reason={r['reason']!r}")
 
-beta = account("beta", "Beta", 20, NOW + 4 * 3600, 30)
-print("A. Active account Alpha is at 96% of its 5-hour limit; Beta has room.")
-show("   5-hour limit refills in 4 minutes", [account("alpha", "Alpha", 96, NOW + 240, 40, active=True), beta])
-show("   5-hour limit refilled 1 second ago (the reading is still the one from before the refill)",
-     [account("alpha", "Alpha", 96, NOW - 1, 40, active=True), beta])
-show("   5-hour limit refilled 40 seconds ago (the next read of Alpha lands 45 seconds after the refill)",
-     [account("alpha", "Alpha", 96, NOW - 40, 40, active=True), beta])
+WEEK = NOW + 3 * 86400
+beta = account("beta", "Beta", 30, WEEK)
+print("A. Active account Alpha is at 96% of its weekly limit; Beta has room.")
+show("   the week ends in 3 days", [account("alpha", "Alpha", 96, WEEK, active=True), beta])
+show("   the week ended 1 second ago (the reading is still the one from before the refill)",
+     [account("alpha", "Alpha", 96, NOW - 1, active=True), beta])
+show("   the week ended 40 seconds ago (the next read of Alpha lands 45 seconds after the refill)",
+     [account("alpha", "Alpha", 96, NOW - 40, active=True), beta])
 print("B. Auto-switch left Alpha for Beta because Alpha's weekly limit hit 96%. The user pressed Undo, so Alpha is active again.")
 history = {"left": "beta", "left_at": NOW - 5, "manual_at": NOW - 5,
            "last": {"from": "alpha", "to": "beta", "at": NOW - 60, "kind": "threshold", "reason": "", "undo_until": NOW - 5}}
-show("   the next 5-second check after the Undo", [account("alpha", "Alpha", 30, NOW + 3600, 96, active=True), beta], history)
+show("   the next 5-second check after the Undo", [account("alpha", "Alpha", 96, WEEK, active=True), beta], history)
+print("C. Claude has no 5-hour limit. What the app makes of Claude's own answers:")
+week = {"utilization": 97, "resets_at": "2027-01-20T00:00:00Z"}
+show("   an answer with a weekly number only, Alpha at 97%",
+     [answered("alpha", "Alpha", {"seven_day": week}, active=True), answered("beta", "Beta", {"seven_day": dict(week, utilization=20)})])
+show("   an answer that still carries a 5-hour number of 99%, weekly at 20%",
+     [answered("alpha", "Alpha", {"five_hour": dict(week, utilization=99), "seven_day": dict(week, utilization=20)}, active=True),
+      answered("beta", "Beta", {"five_hour": dict(week, utilization=99), "seven_day": dict(week, utilization=20)})])

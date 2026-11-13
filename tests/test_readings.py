@@ -22,11 +22,10 @@ SETTINGS = {"cli_autoswitch": True, "cli_threshold": 95, "cli_order": "soonest_r
             "pinned_model": ""}
 
 
-def account(key, five, five_reset, weekly, weekly_reset=3 * DAY, *, active=False, age=60, model=None, **fields):
-    """One terminal account as `cli_auto.inputs` hands it to the rule. Resets are seconds from NOW; `age` is how
+def account(key, weekly, weekly_reset=3 * DAY, *, active=False, age=60, model=None, **fields):
+    """One terminal account as `cli_auto.inputs` hands it to the rule. The reset is seconds from NOW; `age` is how
     old the reading is (None: never read); `model` is the % used of a Fable weekly window."""
-    windows = [{"id": "five_hour", "kind": "session", "used": five, "reset": NOW + five_reset, "started": True},
-               {"id": "seven_day", "kind": "weekly", "used": weekly, "reset": NOW + weekly_reset}]
+    windows = [{"id": "seven_day", "kind": "weekly", "used": weekly, "reset": NOW + weekly_reset}]
     if model is not None:
         windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable weekly",
                         "used": model, "reset": NOW + weekly_reset})
@@ -36,13 +35,12 @@ def account(key, five, five_reset, weekly, weekly_reset=3 * DAY, *, active=False
 
 
 # ---- the decision table ----
-# Columns: the reading of Alpha, the account in use. 5-hour % used, when that window resets, weekly % used.
-FIVE_USED = (20, 96, 99, 100)
-FIVE_RESET = (("in 4 h", 4 * HOUR), ("in 4 min", 240), ("40 s ago", -40))
-WEEKLY_USED = (30, 96)
-COLUMNS = [(five, name, reset, weekly) for five in FIVE_USED for name, reset in FIVE_RESET for weekly in WEEKLY_USED]
+# Columns: the reading of Alpha, the account in use. Weekly % used, and when that week ends.
+WEEKLY_USED = (30, 96, 99, 100)
+WEEKLY_RESET = (("in 3 d", 3 * DAY), ("in 4 min", 240), ("40 s ago", -40))
+COLUMNS = [(weekly, name, reset) for weekly in WEEKLY_USED for name, reset in WEEKLY_RESET]
 
-BETA = dict(five=20, five_reset=4 * HOUR, weekly=30)
+BETA = dict(weekly=30)
 SOON = dict(BETA, weekly=50, weekly_reset=12 * HOUR)          # Beta's week ends before Alpha's: the early switch
 UNDONE = {"left": "beta", "left_at": NOW - 5, "manual_at": NOW - 5,
           "last": {"from": "alpha", "to": "beta", "at": NOW - 60, "kind": "threshold", "reason": "", "undo_until": NOW - 5}}
@@ -50,11 +48,11 @@ UNDONE = {"left": "beta", "left_at": NOW - 5, "manual_at": NOW - 5,
 
 def beta(**changes):
     spec = {**BETA, **changes}
-    return account("beta", spec.pop("five"), spec.pop("five_reset"), spec.pop("weekly"), **spec)
+    return account("beta", spec.pop("weekly"), **spec)
 
 
 def gamma():
-    return account("gamma", 40, 4 * HOUR, 50, 2 * DAY)
+    return account("gamma", 50, 2 * DAY)
 
 
 # Rows: everything else. name -> (the other accounts, history, settings changes, changes to Alpha).
@@ -69,7 +67,7 @@ ROWS = {
     "Beta is left out": ([beta(excluded=True)], {}, {}, {}),
     "Beta belongs to the PC": ([beta(owner="on_pc")], {}, {}, {}),
     "Alpha is the only account": ([], {}, {}, {}),
-    "Beta is 20 min old, Gamma at 90%": ([beta(age=1200), account("gamma", 40, 4 * HOUR, 90, 2 * DAY)], {}, {}, {}),
+    "Beta is 20 min old, Gamma at 90%": ([beta(age=1200), account("gamma", 90, 2 * DAY)], {}, {}, {}),
     "Gamma's week ends sooner": ([beta(), gamma()], {}, {}, {}),
     "Gamma's week ends sooner, most room first": ([beta(), gamma()], {}, {"cli_order": "most_room"}, {}),
     "Gamma's week ends sooner, my order Beta first": ([beta(), gamma()], {},
@@ -87,7 +85,7 @@ ROWS = {
     "Alpha needs sign-in": ([beta()], {}, {}, {"health": "needs_signin"}),
     "Alpha is marked out": ([beta()], {}, {}, {"out": True}),
     "Alpha belongs to the PC": ([beta()], {}, {}, {"owner": "on_pc"}),
-    "Alpha's 5-hour is forecast at 97%": ([beta()], {}, {}, {"forecast": {"five_hour": 97.0}}),
+    "Alpha's weekly is forecast at 97%": ([beta()], {}, {}, {"forecast": {"seven_day": 97.0}}),
     "Alpha's pinned Fable limit is at 96%": ([beta()], {}, {"pinned_model": "fable"}, {"model": 96}),
     "Beta's week ends in 12 h": ([beta(**SOON)], {}, {}, {}),
     "Beta's week ends in 12 h, 85% used": ([beta(**dict(SOON, weekly=85))], {}, {}, {}),
@@ -96,14 +94,14 @@ ROWS = {
     "Beta's week ends in 12 h, early switch 1 h ago": ([beta(**SOON)], {"early_at": NOW - HOUR}, {}, {}),
 }
 
-HOLDS = {"refills in": "r", "has refilled": "w", "Checking": "c", "Every account is past": "d", "Usage updates after": "x",
+HOLDS = {"has refilled": "w", "Checking": "c", "Every account is past": "d", "Usage updates after": "x",
          "An early switch happened": "e", "Your manual choice": "m"}
 KINDS = {"threshold": "T", "out": "O", "login": "L", "early": "E", "refilled": "R"}
 
 
 def code(result):
     """One decision as two characters. A switch: its kind (Threshold, Out, Login, Early, Refilled after all were
-    low) and the target's initial. A hold: h and its reason (r refills soon, w has refilled, c checking the
+    low) and the target's initial. A hold: h and its reason (w has refilled, c checking the
     others, d using every account up, x login expired, e early switch too recent, m manual choice), in capitals
     when the rule also asks for a new reading. XX: every account is low. ..: nothing to do."""
     if result["action"] == "switch":
@@ -118,9 +116,9 @@ def code(result):
 
 def decide(row, column):
     others, history, settings, alpha = ROWS[row]
-    five, _name, reset, weekly = column
+    weekly, _name, reset = column
     alpha = dict(alpha)
-    active = account("alpha", five, reset, weekly, active=True, model=alpha.pop("model", None), **alpha)
+    active = account("alpha", weekly, reset, active=True, model=alpha.pop("model", None), **alpha)
     return cli_policy.evaluate([active] + copy.deepcopy(others), {**SETTINGS, **settings}, copy.deepcopy(history), NOW)
 
 
@@ -128,95 +126,90 @@ def table():
     return {row: " ".join(code(decide(row, column)) for column in COLUMNS) for row in ROWS}
 
 
-# The answers at the starting commit (1c1787b), apart from two fixed bugs. A 5-hour window that ended 40 s ago used
-# to count with its old number (Tb, Ob at 96% and up). Now it is waited for (hW) and the weekly limit decides.
-# A manual choice or Undo in the last 2 hours used to hold only the early switch. Now it holds the threshold
-# switch too (hm where the two manual rows had Tb), but not an account that ran out or needs sign-in.
-# 5-hour % used:
-#                                                      20                96                99                100
-# 5-hour reset (in 4 h, in 4 min, 40 s ago), each with weekly 30 then 96:
-#                                                      4h    4m    ago   4h    4m    ago   4h    4m    ago   4h    4m    ago
+# The answers of the rule since Claude dropped its 5-hour limit (2026-11-13). Before that the table had a 5-hour
+# reading in every column, and a 5-hour limit that refilled within 10 minutes held the switch back. What it
+# keeps from the starting commit (1c1787b): a limit whose reset time passed 40 s ago is waited for (hW) and not
+# acted on, and a manual choice or Undo in the last 2 hours holds the threshold switch (hm), but not an
+# account that ran out or needs sign-in.
+# weekly % used:                                        30         96         99         100
+# the week ends:                                        3d 4m ago 3d 4m ago 3d 4m ago 3d 4m ago
 EXPECTED = {
-    "Beta has room":                                   ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Beta's reading is 20 min old":                    ".. hC .. hC .. hC hC hC hr hC hW hC hC hC hr hC hW hC hC hC hC hC hW hC",
-    "Beta was never read":                             ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
-    "Beta's weekly is at 90%":                         ".. hd .. hd .. hd hd hd hr hd hW hd Tb Tb hr Tb hW hd Ob Ob Ob Ob hW hd",
-    "Beta's weekly is at 98%":                         ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
-    "Beta's weekly is unknown":                        ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
-    "Beta needs sign-in":                              ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
-    "Beta is left out":                                ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
-    "Beta belongs to the PC":                          ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
-    "Alpha is the only account":                       ".. hd .. hd .. hd hd hd hr hd hW hd XX XX hr XX hW hd XX XX XX XX hW hd",
-    "Beta is 20 min old, Gamma at 90%":                ".. hC .. hC .. hC hC hC hr hC hW hC hC hC hr hC hW hC hC hC hC hC hW hC",
-    "Gamma's week ends sooner":                        ".. Tg .. Tg .. Tg Tg Tg hr Tg hW Tg Tg Tg hr Tg hW Tg Og Og Og Og hW Tg",
-    "Gamma's week ends sooner, most room first":       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Gamma's week ends sooner, my order Beta first":   ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Undo pressed 5 s ago":                            "hm hm hm hm hm hm hm hm hr hm hW hm hm hm hr hm hW hm Ob Ob Ob Ob hW hm",
-    "Undo pressed 5 s ago, Alpha needs sign-in":       "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
-    "Undo pressed 5 s ago, Alpha is marked out":       "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
-    "Manual choice 2 h 5 s ago":                       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Early switch 1 h ago":                            "he Tb he Tb he Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Every account was low before":                    ".. Rb .. Rb .. Rb Rb Rb hr Rb hW Rb Rb Rb hr Rb hW Rb Rb Rb Rb Rb hW Rb",
-    "Auto-switch is off":                              ".. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..",
-    "Early switch is off":                             ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Threshold is 80%":                                ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Alpha's login expired while idle":                "hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx hx",
-    "Alpha needs sign-in":                             "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
-    "Alpha is marked out":                             "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
-    "Alpha belongs to the PC":                         ".. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. ..",
-    "Alpha's 5-hour is forecast at 97%":               "Tb Tb hr Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Alpha's pinned Fable limit is at 96%":            "Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Tb Ob Ob Ob Ob Tb Tb",
-    "Beta's week ends in 12 h":                        "Eb Tb Eb Tb Eb Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Beta's week ends in 12 h, 85% used":              ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Beta's week ends in 12 h, left 10 min ago":       ".. Tb .. Tb .. Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
-    "Beta's week ends in 12 h, manual choice 5 s ago": "hm hm hm hm hm hm hm hm hr hm hW hm hm hm hr hm hW hm Ob Ob Ob Ob hW hm",
-    "Beta's week ends in 12 h, early switch 1 h ago":  "he Tb he Tb he Tb Tb Tb hr Tb hW Tb Tb Tb hr Tb hW Tb Ob Ob Ob Ob hW Tb",
+    "Beta has room":                                   ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Beta's reading is 20 min old":                    ".. .. .. hC hC hW hC hC hW hC hC hW",
+    "Beta was never read":                             ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Beta's weekly is at 90%":                         ".. .. .. hd hd hW Tb Tb hW Ob Ob hW",
+    "Beta's weekly is at 98%":                         ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Beta's weekly is unknown":                        ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Beta needs sign-in":                              ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Beta is left out":                                ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Beta belongs to the PC":                          ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Alpha is the only account":                       ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Beta is 20 min old, Gamma at 90%":                ".. .. .. hC hC hW hC hC hW hC hC hW",
+    "Gamma's week ends sooner":                        ".. .. .. Tg Tg hW Tg Tg hW Og Og hW",
+    "Gamma's week ends sooner, most room first":       ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Gamma's week ends sooner, my order Beta first":   ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Undo pressed 5 s ago":                            "hm hm hm hm hm hW hm hm hW Ob Ob hW",
+    "Undo pressed 5 s ago, Alpha needs sign-in":       "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
+    "Undo pressed 5 s ago, Alpha is marked out":       "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
+    "Manual choice 2 h 5 s ago":                       ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Early switch 1 h ago":                            "he he he Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Every account was low before":                    ".. .. .. Rb Rb hW Rb Rb hW Rb Rb hW",
+    "Auto-switch is off":                              ".. .. .. .. .. .. .. .. .. .. .. ..",
+    "Early switch is off":                             ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Threshold is 80%":                                ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Alpha's login expired while idle":                "hx hx hx hx hx hx hx hx hx hx hx hx",
+    "Alpha needs sign-in":                             "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
+    "Alpha is marked out":                             "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
+    "Alpha belongs to the PC":                         ".. .. .. .. .. .. .. .. .. .. .. ..",
+    "Alpha's weekly is forecast at 97%":               "Tb Tb .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Alpha's pinned Fable limit is at 96%":            "Tb Tb hW Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Beta's week ends in 12 h":                        "Eb .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Beta's week ends in 12 h, 85% used":              ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Beta's week ends in 12 h, left 10 min ago":       ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Beta's week ends in 12 h, manual choice 5 s ago": "hm hm hm hm hm hW hm hm hW Ob Ob hW",
+    "Beta's week ends in 12 h, early switch 1 h ago":  "he he he Tb Tb hW Tb Tb hW Ob Ob hW",
 }
 
 
 class AutoSwitchTableTest(unittest.TestCase):
-    """Every decision of `cli_policy.evaluate` for 34 situations times 24 readings of the account in use."""
+    """Every decision of `cli_policy.evaluate` for 34 situations times 12 readings of the account in use."""
     maxDiff = None
 
     def test_the_decision_table(self):
-        header = " ".join(f"{five:>3}" for five, _n, _r, _w in COLUMNS)
-        self.assertEqual(table(), EXPECTED, f"columns (5-hour % used; reset in 4 h, in 4 min, 40 s ago; weekly 30, 96): {header}")
+        header = " ".join(f"{weekly:>3}" for weekly, _name, _reset in COLUMNS)
+        self.assertEqual(table(), EXPECTED, f"columns (weekly % used; the week ends in 3 d, in 4 min, 40 s ago): {header}")
 
 
 class AutoSwitchWordsTest(unittest.TestCase):
     """The words the rule gives the dashboard, and the order it lists the accounts in."""
     maxDiff = None
 
-    def result(self, row, five=20, reset=4 * HOUR, weekly=30):
-        return decide(row, (five, "", reset, weekly))
+    def result(self, row, weekly=30, reset=3 * DAY):
+        return decide(row, (weekly, "", reset))
 
     def test_reasons_and_holds(self):
         said = {
-            "threshold": self.result("Beta has room", five=96)["reason"],
-            "weekly": self.result("Beta has room", weekly=96)["reason"],
-            "out": self.result("Beta has room", five=100)["reason"],
+            "threshold": self.result("Beta has room", weekly=96)["reason"],
+            "out": self.result("Beta has room", weekly=100)["reason"],
             "login": self.result("Alpha needs sign-in")["reason"],
-            "forecast": self.result("Alpha's 5-hour is forecast at 97%")["reason"],
-            "drain": self.result("Beta's weekly is at 90%", five=99)["reason"],
+            "forecast": self.result("Alpha's weekly is forecast at 97%")["reason"],
+            "drain": self.result("Beta's weekly is at 90%", weekly=99)["reason"],
             "early": self.result("Beta's week ends in 12 h")["reason"],
-            "refills soon": self.result("Beta has room", five=96, reset=240)["hold"],
-            "has refilled": self.result("Beta has room", five=96, reset=-40)["hold"],
-            "checking": self.result("Beta's reading is 20 min old", five=96)["hold"],
-            "using up": self.result("Beta's weekly is at 90%", five=96)["hold"],
+            "has refilled": self.result("Beta has room", weekly=96, reset=-40)["hold"],
+            "checking": self.result("Beta's reading is 20 min old", weekly=96)["hold"],
+            "using up": self.result("Beta's weekly is at 90%", weekly=96)["hold"],
             "login expired": self.result("Alpha's login expired while idle")["hold"],
             "early too recent": self.result("Early switch 1 h ago")["hold"],
             "manual choice": self.result("Undo pressed 5 s ago")["hold"],
         }
         self.assertEqual(said, {
-            "threshold": "Alpha reached 95% of its 5-hour limit; Beta is first in your eligible order.",
-            "weekly": "Alpha reached 95% of its weekly limit; Beta is first in your eligible order.",
+            "threshold": "Alpha reached 95% of its weekly limit; Beta is first in your eligible order.",
             "out": "Alpha reached a limit; Beta is first in your eligible order.",
             "login": "Alpha needs sign-in; Beta is first in your eligible order.",
-            "forecast": "Alpha will pass 95% of its 5-hour limit before the next check; Beta is first in your eligible order.",
+            "forecast": "Alpha will pass 95% of its weekly limit before the next check; Beta is first in your eligible order.",
             "drain": "Alpha reached 99%; every account is past 95%, so Beta is used up to 99%.",
             "early": "Using Beta's weekly allowance before it resets in 12h 0m (50% left).",
-            "refills soon": "Alpha refills in 4 min — staying",
-            "has refilled": "Alpha's 5-hour limit has refilled. Waiting for its new reading.",
+            "has refilled": "Alpha's weekly limit has refilled. Waiting for its new reading.",
             "checking": "Checking Beta before switching",
             "using up": "Every account is past 95% — using Alpha up to 99%",
             "login expired": "Usage updates after your next message in Claude Code",
@@ -225,21 +218,23 @@ class AutoSwitchWordsTest(unittest.TestCase):
         })
 
     def test_checking_asks_for_the_old_readings(self):
-        self.assertEqual(self.result("Beta is 20 min old, Gamma at 90%", five=96)["refresh"], ["beta"])
+        self.assertEqual(self.result("Beta is 20 min old, Gamma at 90%", weekly=96)["refresh"], ["beta"])
 
     def test_a_refilled_limit_asks_for_a_new_reading_of_the_account_in_use(self):
-        self.assertEqual(self.result("Beta has room", five=100, reset=-1)["refresh"], ["alpha"])
+        self.assertEqual(self.result("Beta has room", weekly=100, reset=-1)["refresh"], ["alpha"])
 
     def test_all_low_says_who_refills_first(self):
-        result = self.result("Beta's weekly is at 98%", five=99)
+        result = self.result("Beta's weekly is at 98%", weekly=99, reset=2 * DAY)
         self.assertEqual((result["action"], result["exhausted"]), ("none", True))
-        self.assertRegex(result["reason"], r"^All terminal accounts are low\. Alpha refills first at \d{1,2}:\d\d [AP]M\.$")
+        self.assertRegex(result["reason"], r"^All terminal accounts are low\. Alpha refills first, [A-Z][a-z]{2} \d{1,2}:\d\d [AP]M\.$")
+        soon = self.result("Beta's weekly is at 98%", weekly=99, reset=5 * HOUR)["reason"]
+        self.assertRegex(soon, r"^All terminal accounts are low\. Alpha refills first, \d{1,2}:\d\d [AP]M\.$")
 
     def test_the_order_and_why_each_account_is_skipped(self):
-        others = [beta(), gamma(), account("delta", 20, 4 * HOUR, 90), account("epsilon", 20, 4 * HOUR, 30, age=1200),
-                  account("zeta", 20, 4 * HOUR, 30, health="needs_signin"), account("eta", 20, 4 * HOUR, 30, excluded=True),
-                  account("theta", 20, 4 * HOUR, 30, age=None), account("iota", 20, 4 * HOUR, None)]
-        active = account("alpha", 20, 4 * HOUR, 30, active=True)
+        others = [beta(), gamma(), account("delta", 90), account("epsilon", 30, age=1200),
+                  account("zeta", 30, health="needs_signin"), account("eta", 30, excluded=True),
+                  account("theta", 30, age=None), account("iota", None)]
+        active = account("alpha", 30, active=True)
 
         def order(**settings):
             result = cli_policy.evaluate([active] + copy.deepcopy(others), {**SETTINGS, **settings}, {}, NOW)
@@ -257,9 +252,70 @@ class AutoSwitchWordsTest(unittest.TestCase):
                          {"id", "label", "skip", "room", "weekly_reset"})
 
 
+class ClaudeHasNoFiveHourLimitTest(unittest.TestCase):
+    """Claude dropped its 5-hour limit. The rule, the totals and the menu bar used to need a 5-hour number: with
+    none in Claude's answer every other account was "reading incomplete", so auto-switch never switched and the
+    menu bar counted no account."""
+    WEEK = "2027-01-20T00:00:00Z"
+
+    def terminal(self, key, weekly, *, active=False, five=None):
+        answer = {"seven_day": {"utilization": weekly, "resets_at": self.WEEK}}
+        if five is not None:
+            answer["five_hour"] = {"utilization": five, "resets_at": "2027-01-15T10:00:00Z"}
+        return {"id": key, "label": key.capitalize(), "provider": "claude_cli", "active": active, "health": "ok",
+                "last_good_at": NOW - 60, "windows": claude_usage(answer, now=NOW)["windows"]}
+
+    def test_an_answer_with_no_5_hour_number_still_switches(self):
+        result = cli_policy.evaluate([self.terminal("alpha", 97, active=True), self.terminal("beta", 20),
+                                      self.terminal("gamma", 35)], SETTINGS, {}, NOW)
+        self.assertEqual([(row["id"], row["skip"], row["room"]) for row in result["next_up"]],
+                         [("beta", None, 75), ("gamma", None, 60), ("alpha", "in use by your terminals", -2)])
+        self.assertEqual((result["action"], result["target"]), ("switch", "beta"))
+        self.assertEqual(result["reason"], "Alpha reached 95% of its weekly limit; Beta is first in your eligible order.")
+
+    def test_a_5_hour_number_claude_still_sends_is_no_limit(self):
+        old = {"five_hour": {"utilization": 99, "resets_at": "2027-01-15T10:00:00Z"},
+               "seven_day": {"utilization": 20, "resets_at": self.WEEK}}
+        new = {"limits": [{"kind": "session", "percent": 99, "resets_at": "2027-01-15T10:00:00Z"},
+                          {"kind": "weekly_all", "percent": 20, "resets_at": self.WEEK}]}
+        for shape, answer in (("named keys", old), ("limits list", new)):
+            with self.subTest(shape=shape):
+                reading = claude_usage(answer, now=NOW)
+                self.assertEqual([(w["kind"], w["used"]) for w in reading["windows"]], [("weekly", 20)])
+                self.assertEqual(sorted(raw["used"] for raw in reading["raw_windows"]), [20, 99])
+        result = cli_policy.evaluate([self.terminal("alpha", 20, active=True, five=99), self.terminal("beta", 20, five=99)],
+                                     SETTINGS, {}, NOW)
+        self.assertEqual((result["action"], result["hold"], [row["skip"] for row in result["next_up"]]),
+                         ("none", None, ["in use by your terminals", None]))
+
+    def test_the_menu_bar_counts_an_account_by_its_weekly_number(self):
+        from accountdeck import pool
+        from accountdeck.platform import menubar
+        state = {"accounts": [self.terminal("alpha", 97, active=True), self.terminal("beta", 20), self.terminal("gamma", 35)]}
+        totals = pool.summarize(state, NOW)
+        self.assertEqual((totals.capacity, totals.unread, pool.amount(totals.weekly)), (3, (), "1.5"))
+        self.assertEqual(menubar.title_runs(state, NOW), (("wk ", "label"), ("1.5", "value")))
+        self.assertEqual(menubar._terminals_line(totals), "Terminals: weekly 1.5 of 3 accounts")
+        self.assertEqual(pool.tooltip_lines(totals, NOW)[:3], ["Claude Code terminals: room left in accounts' worth",
+                                                               "Weekly 1.5 of 3 accounts (49%)",
+                                                               "Next refill: Alpha +1.0 (weekly) in 4d 16h"])
+        self.assertIn("Beta: weekly 80% left", pool.tooltip_lines(totals, NOW))
+
+    def test_an_account_whose_week_has_not_started_can_be_the_best_pick(self):
+        """Its only limit shows no number yet. That is a whole week left, not a reading nobody has."""
+        from accountdeck import rules
+        state = fixtures.example_state("not-started")
+        beta = next(a for a in state["accounts"] if a["label"] == "Beta")
+        self.assertEqual([(w["kind"], w["state"], w["left"]) for w in beta["windows"]], [("weekly", "not_started", None)])
+        self.assertEqual((rules.headroom(beta, ""), rules.eligible(beta, "")), (100.0, True))
+        best = state["now_band"]["best"]["claude"]
+        self.assertEqual((best["label"], best["reason"]), ("Beta", "Most headroom (100% left) and a fresh reading"))
+
+
 # ---- readings, for all four clients ----
 CLIENTS = ("claude_cli", "claude", "codex", "muse")
-WINDOWS = {"claude_cli": ("five_hour", "seven_day"), "claude": ("five_hour", "seven_day"),
+# For each client: the limit whose refill the test records, and one that keeps running. Claude has weekly limits only.
+WINDOWS = {"claude_cli": ("seven_day", "seven_day_fable"), "claude": ("seven_day", "seven_day_fable"),
            "codex": ("codex:primary", "codex:secondary"), "muse": ("muse:window", "muse:weekly")}
 
 
@@ -302,9 +358,9 @@ class RefillTest(unittest.TestCase):
     def refill_is_recorded(self, provider):
         engine = support.demo_engine(self, "typical")
         now, row = engine.clock(), signed_in(engine, provider)
-        session, weekly = WINDOWS[provider]
-        before = [{"key": session, "used": 92.0, "reset": now - 120}, {"key": weekly, "used": 40.0, "reset": now + 3 * DAY}]
-        after = [{"key": session, "used": 3.0, "reset": now + 5 * HOUR}, {"key": weekly, "used": 41.0, "reset": now + 3 * DAY}]
+        refilled, running = WINDOWS[provider]
+        before = [{"key": refilled, "used": 92.0, "reset": now - 120}, {"key": running, "used": 40.0, "reset": now + 3 * DAY}]
+        after = [{"key": refilled, "used": 3.0, "reset": now + 5 * DAY}, {"key": running, "used": 41.0, "reset": now + 3 * DAY}]
         engine.store.observe(row["id"], demo._usage(provider, demo._payload(provider, before), now - 600), at=now - 600)
         engine.alert_engine.hold_until = 0
         engine._evaluate_alerts(now)                              # the first pass only notes what already holds
@@ -312,12 +368,12 @@ class RefillTest(unittest.TestCase):
         answer(engine, provider, after)
         self.assertEqual(engine._refresh(row["id"]), "ok")
         new = engine.store.refills(0)[had:]
-        self.assertEqual([(r["account"], r["window"], r["previous_used"]) for r in new], [(row["id"], session, 92.0)])
-        window = next(w for w in shown(engine, row["id"])["windows"] if w["id"] == session)
+        self.assertEqual([(r["account"], r["window"], r["previous_used"]) for r in new], [(row["id"], refilled, 92.0)])
+        window = next(w for w in shown(engine, row["id"])["windows"] if w["id"] == refilled)
         self.assertEqual((window["state"], window["used"]), ("refilled", 3.0))
         engine._evaluate_alerts(now)
         self.assertEqual([(a["kind"], a["account"], a["window"]) for a in engine.store.alerts() if a["id"] not in alerted],
-                         [("reset_confirmed", row["id"], session)])
+                         [("reset_confirmed", row["id"], refilled)])
         self.assertEqual(engine._refresh(row["id"]), "ok")       # the same refill is not recorded twice
         self.assertEqual(len(engine.store.refills(0)), had + 1)
 
@@ -641,16 +697,16 @@ BROKEN = {
     "an other window with nothing to show": (1, lambda a: a["other_windows"][0].update(
         used=0.0, left=100.0, reset=None, reset_state="none", pace=None)),
     "no limiting window marked": (1, lambda a: window(a, "seven_day").update(binding=False)),
-    "two limiting windows marked": (1, lambda a: window(a, "five_hour").update(binding=True)),
-    "the wrong limiting window": (8, lambda a: (window(a, "five_hour").update(binding=False), window(a, "seven_day").update(binding=True))),
-    "a limiting window where none limits": (2, lambda a: window(a, "five_hour").update(binding=True)),
+    "two limiting windows marked": (0, lambda a: window(a, "seven_day_fable").update(binding=True)),
+    "the wrong limiting window": (0, lambda a: (window(a, "seven_day").update(binding=False), window(a, "seven_day_fable").update(binding=True))),
+    "a limiting window where none limits": (2, lambda a: window(a, "seven_day").update(binding=True)),
     "the wrong state": (1, lambda a: a.update(state="limited")),
     "the wrong headline": (1, lambda a: a["headline"].update(kind="ready")),
-    "a headline about another window": (1, lambda a: a["headline"].update(window="five_hour")),
+    "a headline about another window": (1, lambda a: a["headline"].update(window="seven_day_oauth_apps")),
     "recommended without rank 1": (3, lambda a: a.update(rank=2)),
 }
 
-# What `contract.validate_state` says about each (the answers at the starting commit, 1c1787b).
+# What `contract.validate_state` says about each.
 SAID = {
     'no label': ["accounts[1]: missing 'label'"],
     'a number for a label': ['accounts[1].label: must be a non-empty string, got 5'],
@@ -668,11 +724,11 @@ SAID = {
     'the wrong age': ["accounts[1].age_tier: must be 'fresh' for a reading 600s old"],
     'stale without an old reading': ["accounts[1].stale: must be true exactly when age_tier is 'stale'"],
     'windows without a reading': ['accounts[1].age_tier: must be None for a reading never taken', 'accounts[1].windows: an account without a reading has no windows'],
-    'the same window twice': ['accounts[1].windows: must be sorted session, weekly, then models by label', "accounts[1]: duplicate window id 'five_hour'"],
+    'the same window twice': ["accounts[1]: duplicate window id 'seven_day'", 'accounts[1]: exactly one gating window must be binding', "accounts[1].headline.kind: must be 'ready'", 'accounts[1].headline.window: must be None'],
     'an other window with nothing to show': ['accounts[1].other_windows[0]: other windows appear only when used > 0 or a reset exists'],
     'no limiting window marked': ['accounts[1]: exactly one gating window must be binding', "accounts[1].headline.kind: must be 'ready'", 'accounts[1].headline.window: must be None'],
-    'two limiting windows marked': ['accounts[1]: exactly one gating window must be binding', "accounts[1].headline.kind: must be 'ready'", 'accounts[1].headline.window: must be None'],
-    'the wrong limiting window': ["accounts[8]: binding must be 'five_hour' (out beats everything, then the lowest left)", "accounts[8].headline.kind: must be 'ready'", 'accounts[8].headline.window: must be None', 'providers.claude_cli.autoswitch.next_up: must list every terminal account once'],
+    'two limiting windows marked': ['accounts[0]: exactly one gating window must be binding', "accounts[0].headline.kind: must be 'ready'", 'accounts[0].headline.window: must be None', 'providers.claude.active: must name the active claude account (None)'],
+    'the wrong limiting window': ["accounts[0]: binding must be 'seven_day' (out beats everything, then the lowest left)", "accounts[0].headline.kind: must be 'ready'", 'accounts[0].headline.window: must be None', 'providers.claude.active: must name the active claude account (None)'],
     'a limiting window where none limits': ['accounts[2]: no gating window, so no window may be binding'],
     'the wrong state': ["accounts[1].state: must be 'ok'"],
     'the wrong headline': ["accounts[1].headline.kind: must be 'watch'"],
@@ -706,13 +762,13 @@ def picks(state):
     return found
 
 
-# The answers at the starting commit (1c1787b).
+# The picks since Claude dropped its 5-hour limit (2026-11-13): the weekly limit is an account's room.
 PICKS = {
     'terminal': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
     'typical': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
-    'resets-soon': ['claude acc_5 ok Most headroom (70% left) and a fresh reading | acc_5 acc_3 acc_4 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha'],
-    'refilled': ['claude acc_3 ok Most headroom (85% left) and a fresh reading | acc_3 acc_2 acc_1'],
-    'not-started': ['claude acc_3 ok Most headroom (90% left) and a fresh reading | acc_3 acc_1 acc_2'],
+    'resets-soon': ['claude acc_5 ok Most headroom (70% left) and a fresh reading | acc_5 acc_3 acc_2 acc_4', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha'],
+    'refilled': ["claude acc_1 ok You're on the best account | acc_1 acc_3 acc_2"],
+    'not-started': ['claude acc_2 ok Most headroom (100% left) and a fresh reading | acc_2 acc_3 acc_1'],
     'codex-blocked': ['claude acc_2 ok Most headroom (80% left) and a fresh reading | acc_2 acc_1', 'codex None all_exhausted No account has room right now. Soonest back: Codex main in 2h — 4:13 PM | '],
     'needs-signin': ['claude acc_4 ok Most headroom (88% left) and a fresh reading | acc_4 acc_1'],
     'blocked-cloudflare': ['claude acc_4 ok Most headroom (90% left) and a fresh reading | acc_4 acc_1'],
@@ -727,7 +783,7 @@ PICKS = {
     'needs-reconfirm': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
     'empty': [],
     'loading': ['claude None unknown Waiting for the first readings | '],
-    'fifty': ['claude acc_31 ok Most headroom (94% left) and a fresh reading | acc_31 acc_32 acc_1 acc_33', 'codex acc_48 ok Most headroom (89% left) and a fresh reading | acc_48 acc_42 acc_49 acc_43'],
+    'fifty': ['claude acc_15 ok Most headroom (100% left) and a fresh reading | acc_15 acc_31 acc_8 acc_16', 'codex acc_48 ok Most headroom (89% left) and a fresh reading | acc_48 acc_42 acc_49 acc_43'],
     'read-only': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
     'demo-banner': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
     'first-run': [],

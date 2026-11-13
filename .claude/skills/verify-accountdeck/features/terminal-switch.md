@@ -43,7 +43,7 @@ It works when the sheet goes from "Working…" to the report "Switched to Alpha"
 
 Tests to reuse:
 - the files on the fake disk through a switch, a crash at each step and a renewal by Claude Code: `tests/test_switch_safety.py`, `TerminalSwitchTest`, `TerminalInterruptedSwitchTest`, `TerminalAutoSwitchTest`;
-- the auto-switch decision table: `tests/test_readings.py`, `AutoSwitchTableTest`, `AutoSwitchWordsTest`, and `tests/test_review_findings.py`, `AutoSwitchPolicyTest`;
+- the auto-switch decision table: `tests/test_readings.py`, `AutoSwitchTableTest`, `AutoSwitchWordsTest`, `ClaudeHasNoFiveHourLimitTest`, and `tests/test_review_findings.py`, `AutoSwitchPolicyTest`;
 - auto-switch while another client waits, and who is signed in during a wait: `AutoSwitchWhileAnotherClientWaitsTest`, `AutoSwitchKnowsWhoIsSignedInTest`;
 - Undo clicked in the real dashboard against the real engine: `tests/test_second_review.py`, `UndoBesideAWaitTest`.
 
@@ -54,6 +54,7 @@ Probes: `policy_probe.py` (decisions on hand-made readings), `switch_renewal_pro
 - The sheet does not close after Switch Now. It shows "Working…" with a Hide button, then a report, "Switched to <name>", with Explain Last Switch and Done. A journey waits for the report and clicks Done.
 - An Undo planned right after an automatic switch is refused until that switch has ended ("Finish the current operation or recovery first"). A test waits for `runner.free_for("claude_cli", beside_waits=True)` first.
 - `engine.sense_active()` must run before the policy is asked anything.
+- Auto-switch acts on an account's weekly limit and the pinned model's weekly limit. Claude has no 5-hour limit. The 2.0.0 build needed a 5-hour number from every account: with none in Claude's answer it skips every other account as "reading incomplete", never switches, and the menu bar counts no account. `tests/test_readings.py`, `ClaudeHasNoFiveHourLimitTest` holds the fix, and section C of `policy_probe.py` shows it on Claude's own answers.
 - The dashboard and the menu bar do not offer a manual terminal switch during another client's wait. The engine supports it. That is an open decision, not a bug.
 
 ## Only on the real Mac

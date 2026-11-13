@@ -92,8 +92,9 @@
 
   // ---- Limits -------------------------------------------------------------------------------------
 
-  /** The limits a row shows: 5-hour, weekly, Fable 5.1 weekly (a placeholder when the account has no
-   * Fable reading, so the columns line up), then any other model limit that binds (marked extra). */
+  /** The limits a row shows: weekly, Fable 5.1 weekly (a placeholder when the account has no Fable
+   * reading, so the columns line up), then any other model limit that binds (marked extra). Claude has
+   * no 5-hour limit. */
   function limits(account) {
     const windows = account.windows || [];
     const main = windows.filter((w) => !w.model);
@@ -105,15 +106,12 @@
 
   /** The column labels of the accounts table, from the first account that has each limit. */
   function columns(accounts) {
-    const labels = ['5-hour', 'Weekly', AD.format.STRINGS.overview.fableFallback];
-    const kinds = ['session', 'weekly'];
+    const labels = ['Weekly', AD.format.STRINGS.overview.fableFallback];
     for (const account of accounts) {
-      for (const [index, kind] of kinds.entries()) {
-        const win = (account.windows || []).find((w) => w.kind === kind && !w.model);
-        if (win && win.label) labels[index] = win.label;
-      }
+      const weekly = (account.windows || []).find((w) => w.kind === 'weekly' && !w.model);
+      if (weekly && weekly.label) labels[0] = weekly.label;
       const fable = fableWindow(account);
-      if (fable && fable.label) labels[2] = fable.label;
+      if (fable && fable.label) labels[1] = fable.label;
     }
     return labels;
   }
@@ -136,20 +134,19 @@
     return d.state === 'not_started' ? 100 : d.left;
   }
 
-  const SORTS = ['room', 'fable', 'weekly', 'session', 'reset', 'manual'];
+  const SORTS = ['room', 'fable', 'weekly', 'reset', 'manual'];
 
   /** Terminal rows in `mode` (one of SORTS): usable accounts first, unknown readings after known
-   * ones, saved order on ties. "Most room left" ranks by the tightest of 5-hour, weekly and Fable 5.1. */
+   * ones, saved order on ties. "Most room left" ranks by the tighter of weekly and Fable 5.1. */
   function sorted(list, mode, nowMs) {
     const win = (a, kind) => (a.windows || []).find((w) => w.kind === kind);
     const key = {
       room: (a) => {
-        const values = [win(a, 'session'), win(a, 'weekly'), fableWindow(a)].map((w) => leftOf(w, a, nowMs)).filter((v) => v !== null);
+        const values = [win(a, 'weekly'), fableWindow(a)].map((w) => leftOf(w, a, nowMs)).filter((v) => v !== null);
         return values.length ? Math.min(...values) : null;
       },
       fable: (a) => leftOf(fableWindow(a), a, nowMs),
       weekly: (a) => leftOf(win(a, 'weekly'), a, nowMs),
-      session: (a) => leftOf(win(a, 'session'), a, nowMs),
       reset: (a) => { const w = win(a, 'weekly'); return w && isNum(w.reset) ? -w.reset : null; },
     }[mode];
     if (!key) return list.slice().sort((a, b) => blocked(a) - blocked(b) || order(a) - order(b));

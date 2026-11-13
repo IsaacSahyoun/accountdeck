@@ -9,8 +9,8 @@
   const { STRINGS, fill } = AD.format;
 
   const BADGE_ICONS = { good: 'check', warning: 'warning', critical: 'warning', accent: null, neutral: null, fable: null };
-  // Limits auto-switch watches: the 5-hour, the weekly and model (Fable 5.1 / pinned model) limits.
-  const GATING = new Set(['session', 'weekly', 'model']);
+  // Limits auto-switch watches: the weekly and model (Fable 5.1 / pinned model) limits.
+  const GATING = new Set(['weekly', 'model']);
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
   /** The share a meter shows, 0–100: used, or left when the page shows what is left. */

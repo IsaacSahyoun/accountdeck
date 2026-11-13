@@ -109,10 +109,10 @@ class AutoSwitchKnowsWhoIsSignedInTest(DeckCase):
         self.engine.update_settings({"cli_early_switch": False})      # only the threshold rule is under test
         self.engine.sense_active()
         self.was_active = self.active("claude_cli")
-        support.with_reading(self.engine, self.was_active["id"], session=97)
+        support.with_reading(self.engine, self.was_active["id"], weekly=97)
         for row in self.engine.store.accounts():
             if row["provider"] == "claude_cli" and row["id"] != self.was_active["id"] and row["last_good_usage"]:
-                support.with_reading(self.engine, row["id"], session=20, weekly=20)
+                support.with_reading(self.engine, row["id"], weekly=20)
         # The account the rule would move to, and another healthy one the user picks by hand instead.
         self.rule_target = cli_auto.decision(self.engine)["target"]
         self.user_choice = next(a for a in self.rows("claude_cli") if not a["active"] and a["id"] != self.rule_target
@@ -783,10 +783,10 @@ class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
         self.engine.update_settings({"cli_early_switch": False})
         self.engine.sense_active()
         first = self.active("claude_cli")
-        support.with_reading(self.engine, first["id"], session=97)
+        support.with_reading(self.engine, first["id"], weekly=97)
         for row in self.engine.store.accounts():
             if row["provider"] == "claude_cli" and row["id"] != first["id"] and row["last_good_usage"]:
-                support.with_reading(self.engine, row["id"], session=20, weekly=20)
+                support.with_reading(self.engine, row["id"], weekly=20)
         waiting = Waiting("codex")
         self.addCleanup(waiting.release.set)
         self.engine.submit(waiting)
@@ -813,10 +813,10 @@ class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
         self.engine.update_settings({"cli_early_switch": False})
         self.engine.sense_active()
         first = self.active("claude_cli")
-        support.with_reading(self.engine, first["id"], session=97)
+        support.with_reading(self.engine, first["id"], weekly=97)
         for row in self.engine.store.accounts():
             if row["provider"] == "claude_cli" and row["id"] != first["id"] and row["last_good_usage"]:
-                support.with_reading(self.engine, row["id"], session=20, weekly=20)
+                support.with_reading(self.engine, row["id"], weekly=20)
         other = WaitThenClose()
         for event in (other.sessions_closed, other.finish):
             self.addCleanup(event.set)

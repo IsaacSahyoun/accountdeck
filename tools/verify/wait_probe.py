@@ -24,19 +24,18 @@ try:
     now = engine.clock()
     def in_use():
         return next(r for r in engine.store.accounts() if r["provider"] == "claude_cli" and r["identity"] == engine.cli.adapter.current()["identity"])
-    def reading(key, session, weekly=None):
+    def reading(key, weekly):
         usage = copy.deepcopy(engine.store.account(key)["last_good_usage"]); usage["checked"] = now
         for w in usage["windows"]:
-            if w.get("kind") == "session": w.update(used=float(session), reset=now + 3 * 3600)
-            if w.get("kind") == "weekly" and weekly is not None: w.update(used=float(weekly), reset=now + 4 * 86400)
+            if w.get("kind") == "weekly": w.update(used=float(weekly), reset=now + 4 * 86400)
         engine.store.observe(key, usage, at=now)
     active = in_use()
     reading(active["id"], 97)
     for r in engine.store.accounts():
         if r["provider"] == "claude_cli" and r["id"] != active["id"] and r["last_good_usage"]:
-            reading(r["id"], 20, 20)
+            reading(r["id"], 20)
     d = cli_auto.decision(engine)
-    print(f"terminal account in use: {active['label']} at 97% of its 5-hour limit")
+    print(f"terminal account in use: {active['label']} at 97% of its weekly limit")
     print("what the policy wants:", d["action"], "|", d["reason"] or d["hold"])
     waiting = Waiting()
     engine.submit(waiting)
