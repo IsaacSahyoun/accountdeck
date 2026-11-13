@@ -405,6 +405,26 @@ class TerminalFableLimitTest(DeckCase):
         self.assertEqual(self.switched()["kind"], "threshold")
         self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
 
+    def test_an_account_whose_week_ran_out_is_left_for_one_whose_fable_limit_alone_is_out(self):
+        """Found by the review of this change: the rule refused every account whose Fable 5.1 limit was out and
+        kept the terminals on an account that answered for no model. Then the reverse: the account it moved to
+        is not left again for the one whose week ran out."""
+        self.read(self.first, weekly=100, fable=10)
+        others = [row for row in self.rows("claude_cli") if not row["active"]]
+        for row in others:
+            self.read(row, weekly=20, fable=100)
+        last = self.switched()
+        self.assertEqual(last["kind"], "out")
+        self.assertIn(last["to"], [row["id"] for row in (self.full, self.roomy)])
+        self.assertRegex(last["reason"], r"reached its weekly limit; .+'s week can still be used, though its Fable 5\.1 weekly limit is at 100%\.$")
+        self.assert_consistent("claude_cli", self.identity(last["to"]))
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["exhausted"]), ("none", True))
+        cli_auto.tick(self.engine)
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assertEqual(self.engine.store.setting("cli_history", {}).get("last"), last)
+        self.assert_consistent("claude_cli", self.identity(last["to"]))
+
     def test_a_fable_limit_the_shipped_version_saved_counts_on_the_first_check(self):
         """Data the installed 2.0.0 wrote: until the next read, its saved reading is all the app knows."""
         now = self.engine.clock()
@@ -412,6 +432,27 @@ class TerminalFableLimitTest(DeckCase):
             self.engine.store.observe(row["id"], support.shipped_reading(now, 10.0, weekly, fable), at=now)
         self.assertEqual(self.switched()["kind"], "out")
         self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+
+    def test_an_account_in_use_whose_fable_limit_is_out_is_still_read_often(self):
+        """Its week can still run out, and only a new reading tells the rule so. Found by the review of this
+        change: the read schedule took a Fable 5.1 limit at 100% for an account with nothing left to learn."""
+        from accountdeck import scheduler
+
+        def schedule(**reading):
+            self.read(self.first, **reading)
+            target = next(target for target in self.engine.targets() if target.id == self.first["id"])
+            return target.active, target.hot, target.exhausted, scheduler.base_interval(target)
+        self.assertEqual(schedule(weekly=90, fable=100), (True, True, False, 75.0))
+        self.assertEqual(schedule(weekly=30, fable=100), (True, True, False, 75.0))
+        self.assertEqual(schedule(weekly=100, fable=20), (True, True, True, 600.0), "a week that ran out is waited for, as before")
+
+    def test_the_sheet_warns_before_a_switch_to_an_account_past_its_fable_threshold(self):
+        """The same words reach the menu bar's alert, which lists a plan's warnings."""
+        self.read(self.roomy, weekly=40, fable=96)
+        self.engine.bump()
+        self.assertEqual([warning["message"] for warning in self.plan("claude_cli", "switch", self.roomy["id"])["warnings"]],
+                         ["This account is over your auto-switch threshold. Auto-switch keeps your choice for 2 hours, "
+                          "unless the account's week runs out or it needs sign-in."])
 
     def test_an_undo_of_a_switch_made_for_the_fable_limit_stands(self):
         """The reverse. The account auto-switch left still works for the other models, so the user's Undo is

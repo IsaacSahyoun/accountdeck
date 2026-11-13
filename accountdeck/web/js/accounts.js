@@ -173,6 +173,20 @@
     return { account, headroom: isNum(best.headroom) ? best.headroom : null };
   }
 
+  /** The model a saved `pinned_model` setting names, '' for none. No control sets it; a settings bundle
+   * from an older build can carry one. */
+  function pinned(state) {
+    return String((state && state.settings && state.settings.pinned_model) || '');
+  }
+
+  /** True for a limit auto-switch acts on, which gets its notch (cli_policy.considered): the weekly limit,
+   * the Fable 5.1 weekly limit, and the weekly limit of the pinned model. */
+  function watched(win, pinnedModel) {
+    const pin = String(pinnedModel || '').toLowerCase();
+    return win.kind === 'weekly' || isFable(win)
+      || (win.kind === 'model' && pin !== '' && String(win.model || '').toLowerCase() === pin);
+  }
+
   /** A stable text signature of an account object (cached: a state's objects never change). */
   function signature(account) {
     let sig = signatures.get(account);
@@ -186,5 +200,6 @@
   AD.accounts = {
     terminals, provider, autoswitch, display, active, frozen, ownerLabel, needsSignin, blocked,
     isFable, fableWindow, fableBoard, fableLeader, limits, columns, binding, SORTS, sorted, nextUp, bestPick, signature,
+    pinned, watched,
   };
 })();

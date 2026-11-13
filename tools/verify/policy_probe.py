@@ -49,6 +49,10 @@ show("   Alpha: weekly 96%. Beta's Fable 5.1 limit is out, Gamma has room in bot
      [fable("alpha", "Alpha", 96, 10, active=True), fable("beta", "Beta", 20, 100), fable("gamma", "Gamma", 60, 30)])
 show("   Alpha's Fable 5.1 limit is out and the user chose Alpha 5 seconds ago",
      [fable("alpha", "Alpha", 40, 100, active=True), fable("beta", "Beta", 30, 30)], {"manual_at": NOW - 5})
+show("   Alpha's week is out. Beta's Fable 5.1 limit is out and its week is not: Beta still works for the other models",
+     [fable("alpha", "Alpha", 100, 10, active=True), fable("beta", "Beta", 20, 100)])
+show("   Alpha's week is at 99%, so it still works. Beta's Fable 5.1 limit is out",
+     [fable("alpha", "Alpha", 99, 10, active=True), fable("beta", "Beta", 20, 100)])
 show("   Alpha's Sonnet limit is out: another model's limit is not acted on",
      [answered("alpha", "Alpha", {"seven_day": dict(week, utilization=40), "seven_day_sonnet": dict(week, utilization=100)}, active=True),
       fable("beta", "Beta", 30, 30)])

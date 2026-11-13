@@ -226,7 +226,7 @@
     const best = auto.enabled ? null : A.bestPick(state);
     const ctx = {
       nowMs, display: A.display(state), threshold: auto.enabled && Number.isFinite(auto.threshold) ? auto.threshold : null,
-      fableLeader: A.fableLeader(A.fableBoard(accounts, nowMs)), nextId: A.nextUp(state),
+      pinned: A.pinned(state), fableLeader: A.fableLeader(A.fableBoard(accounts, nowMs)), nextId: A.nextUp(state),
       bestId: best ? best.account.id : null, readonly, busy: !!state.pending,
     };
     AD.rows.patchRows(list, A.sorted(accounts, mode, nowMs), state, ctx);

@@ -369,7 +369,9 @@ class Engine:
             if row["provider"] == "claude_cli":
                 values = considered({"windows": (row["last_good_usage"] or {}).get("windows", [])}, self.prefs.public())
                 hot = any(used is not None and used >= 80 for _, used, _ in values)
-                exhausted = any(used is not None and used >= 100 for _, used, _ in values)
+                # Read less often only once the week is out. With a model's limit out the account still works
+                # for the other models, and only a new reading says when its week runs out too.
+                exhausted = any(used is not None and used >= 100 for _, used, window in values if window.get("kind") != "model")
             targets.append(Target(row["id"], row["provider"], row["identity"],
                                   active=row["identity"] == self.active_identity.get(row["provider"]),
                                   hot=hot, exhausted=exhausted, resets=resets, paused_until=row["paused_until"],

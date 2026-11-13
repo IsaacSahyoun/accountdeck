@@ -9,6 +9,9 @@
   when none qualifies but some are only too old, those are read again first (`refresh`);
 - once no account qualifies, every account is used up to DRAIN_CEILING (99 %): the active one stays
   until it reaches it, then a target with DRAIN_ROOM points left below it is used;
+- an account in use that works for no model (its week ran out, or it needs sign-in) is left, after every
+  account above, for one whose week can still be used while a model's limit is used up. An account in
+  use that still works is never left for such an account;
 - holds: an expired idle terminal token. An Anthropic incident never holds (the owner's choice,
   2026-10-09): a switch only needs the target's own fresh reading;
 - a window of the account in use whose reset time has passed has refilled, so its last number is not
@@ -24,6 +27,7 @@ import math
 
 from .core import is_frozen
 from .rules import clock_text
+from .usage import is_fable
 
 HOUR = 3600
 
@@ -32,14 +36,13 @@ def number(value):
     return value if type(value) in (int, float) and math.isfinite(value) else None
 
 
-FABLE = "fable"      # the Fable 5.1 weekly limit is the model limit whose model starts with this, as on the page
-
-
 def considered(account, settings):
     """The limits the rule acts on, the weekly one first: (name, % used or None, window). They are the weekly
-    limit, the Fable 5.1 weekly limit and the pinned model's, each only when the account's reading has it: a
-    model's limit is in Claude's answer after the first message to that model. Another model's limit is not
-    acted on. Claude has no 5-hour limit (`usage.claude_usage`)."""
+    limit, the Fable 5.1 weekly limit (`usage.is_fable`) and the pinned model's, each only when the account's
+    reading has it: a model's limit is in Claude's answer after the first message to that model. Another
+    model's limit is not acted on. Claude has no 5-hour limit (`usage.claude_usage`). `engine.targets` (how
+    often an account is read), `switch_cli.plan` (the sheet's warning) and the page's notch
+    (`AD.accounts.watched`) follow this list."""
     windows = account.get("windows") or []
     weekly = next((w for w in windows if w.get("kind") == "weekly"), {})
     values = [("weekly", number(weekly.get("used")), weekly)]
@@ -48,7 +51,7 @@ def considered(account, settings):
         if window.get("kind") != "model":
             continue
         model = str(window.get("model") or window.get("label", "").removesuffix(" weekly"))
-        if model.casefold().startswith(FABLE) or (pinned and model.casefold() == pinned):
+        if is_fable(window) or (pinned and model.casefold() == pinned):
             values.append((window.get("label") or f"{model} weekly", number(window.get("used")), window))
     return values
 
@@ -151,11 +154,16 @@ def _row(account, settings, threshold, now):
         # Room at its last reading, too old to act on: read it again when it is needed.
         skip, stale = f"reading {math.ceil(age / 60)} min old", True
     # Skipped only for being past the threshold (not health, freshness or choice): usable when all are.
-    drainable = (skip is None or past) and all(used <= DRAIN_CEILING - DRAIN_ROOM and not w.get("blocked")
-                                                for _, used, w in values)
+    usable = skip is None or past
+    spent = [(label, used, w) for label, used, w in values
+             if usable and (used > DRAIN_CEILING - DRAIN_ROOM or w.get("blocked"))]
+    # Only a model's limit is spent and the week is not: the account still works for the other models, so it
+    # is used when the account in use works for none. `week_only` names that limit.
+    week_only = (f"{spent[0][0]} limit is at {spent[0][1]:g}%"
+                 if spent and all(w.get("kind") == "model" for _, _, w in spent) else None)
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
-            "weekly_reset": reset(values[0][2]), "account": account, "values": values, "drainable": drainable,
-            "stale": stale}
+            "weekly_reset": reset(values[0][2]), "account": account, "values": values,
+            "drainable": usable and not spent, "week_only": week_only, "stale": stale}
 
 
 def _ordered(rows, settings):
@@ -242,6 +250,12 @@ def _leave(need, rows, active, history, threshold, now):
         why = f"reached {DRAIN_CEILING}%" if need["trigger"] == "threshold" else need["why"]
         return {"action": "switch", "target": drain[0]["id"], "kind": kind,
                 "reason": f"{label} {why}; every account is past {threshold}%, so {drain[0]['label']} is used up to {DRAIN_CEILING}%."}
+    # The account in use works for no model. One whose week can still be used works for all but the model
+    # whose limit ran out, so it is better than staying. While the account in use still works, it is not.
+    week_only = [row for row in rows if row["week_only"]] if not need["yields"] else []
+    if week_only:
+        return {"action": "switch", "target": week_only[0]["id"], "kind": kind,
+                "reason": f"{label} {need['why']}; {week_only[0]['label']}'s week can still be used, though its {week_only[0]['week_only']}."}
     return {"exhausted": True, "reason": "All terminal accounts are low." + _refills_first(rows, threshold, now)}
 
 

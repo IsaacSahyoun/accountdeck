@@ -9,9 +9,6 @@
   const { STRINGS, fill } = AD.format;
 
   const BADGE_ICONS = { good: 'check', warning: 'warning', critical: 'warning', accent: null, neutral: null, fable: null };
-  // The limits auto-switch acts on, which get its notch: the weekly one and the Fable 5.1 weekly one
-  // (cli_policy.considered). Another model's limit gets none.
-  const watched = (win) => win.kind === 'weekly' || AD.accounts.isFable(win);
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
   /** The share a meter shows, 0–100: used, or left when the page shows what is left. */
@@ -22,7 +19,8 @@
   }
 
   /** A usage meter for a state window. opts: account and nowMs (to derive the window at that time),
-   * display ('used' | 'left'), threshold (auto-switch's percentage, to draw its notch), size ('large'). */
+   * display ('used' | 'left'), threshold (auto-switch's percentage, to draw its notch on the limits it acts
+   * on), pinned (the pinned model, whose limit is one of them), size ('large'). */
   function meter(win, opts = {}) {
     const d = AD.model.deriveWindow(win, opts.account || {}, isNum(opts.nowMs) ? opts.nowMs : AD.app.clockNow());
     const display = opts.display === 'left' ? 'left' : 'used';
@@ -44,7 +42,7 @@
       node.setAttribute('aria-valuenow', String(Math.round(share)));
       node.appendChild(AD.dom.el('span', { class: 'meter-fill', style: { '--fill': `${d.state === 'out' ? (display === 'left' ? 0 : 100) : share}%` } }));
     }
-    if (isNum(opts.threshold) && watched(win) && share !== null) {
+    if (isNum(opts.threshold) && AD.accounts.watched(win, opts.pinned) && share !== null) {
       const at = display === 'left' ? 100 - opts.threshold : opts.threshold;
       node.appendChild(AD.dom.el('span', { class: 'meter-mark', 'aria-hidden': 'true', style: { '--at': `${at}%` } }));
     }
@@ -85,7 +83,7 @@
     return null;
   }
 
-  /** One limit of an account: label, value, meter and note. ctx: {nowMs, display, threshold, compact, bare}.
+  /** One limit of an account: label, value, meter and note. ctx: {nowMs, display, threshold, pinned, compact, bare}.
    * Compact (the overview) puts the note beside the label: one line of text, then the bar. Bare is the
    * bar alone, for the limit the card's big number already names.
    * A placeholder window (an account without a Fable 5.1 reading) keeps its slot and says so quietly. */
@@ -99,7 +97,7 @@
     }
     const d = AD.model.deriveWindow(win, account, ctx.nowMs);
     const value = AD.dom.el('span', { class: 'limit-value', text: limitValue(win, d, ctx.display) });
-    const bar = meter(win, { account, nowMs: ctx.nowMs, display: ctx.display, threshold: ctx.threshold });
+    const bar = meter(win, { account, nowMs: ctx.nowMs, display: ctx.display, threshold: ctx.threshold, pinned: ctx.pinned });
     const data = { state: d.state, severity: d.severity, binding: d.binding ? 'true' : null, fable: fable ? 'true' : null,
       extra: win.extra ? 'true' : null };
     if (ctx.bare) return AD.dom.el('div', { class: 'limit is-compact', dataset: Object.assign({ bare: 'true' }, data) }, bar);

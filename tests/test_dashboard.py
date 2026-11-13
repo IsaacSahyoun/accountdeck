@@ -694,18 +694,38 @@ class SwitchNotchTest(DashboardTestCase):
 
     def test_the_notch_is_on_the_weekly_and_the_fable_limit_only(self):
         state = fixtures.example_state("typical", now=time.time())
-        beta = self.account(state, "claude_cli", label="Beta")
-        weekly = dict(beta["windows"][0], binding=False)
+        beta, in_use = self.account(state, "claude_cli", label="Beta"), self.account(state, "claude_cli", active=True)
+        self.assertIsNot(beta, in_use)
+        for account in (beta, in_use):
+            weekly = dict(account["windows"][0], binding=False)
 
-        def model(wid, name, label, binding=False):
-            return dict(copy.deepcopy(weekly), id=wid, kind="model", model=name, label=label, short=name, binding=binding)
-        # a row shows another model's limit only while it is the one that binds
-        beta["windows"] = [weekly, model("seven_day_fable", "Fable", "Fable 5.1 weekly"),
-                           model("seven_day_sonnet", "Sonnet", "Sonnet weekly", binding=True)]
-        self.show(state)
-        drawn = self.browser.js(f"[...{row(beta)}.querySelectorAll('.limit')].map((part) => "
-                                "[part.querySelector('.limit-label').textContent, !!part.querySelector('.meter-mark')])")
-        self.assertEqual(drawn, [["Weekly", True], ["Fable 5.1 weekly", True], ["Sonnet weekly", False]])
+            def model(wid, name, label, binding=False):
+                return dict(copy.deepcopy(weekly), id=wid, kind="model", model=name, label=label, short=name, binding=binding)
+            # a row shows another model's limit only while it is the one that binds
+            account["windows"] = [weekly, model("seven_day_fable", "Fable", "Fable 5.1 weekly"),
+                                  model("seven_day_sonnet", "Sonnet", "Sonnet weekly", binding=True)]
+        # the row in the terminal table, and the card "In use by your terminals", whose bars carry their names
+        # for a screen reader ("Weekly: 70% used")
+        marks = ("[" + f"[...{row(beta)}.querySelectorAll('.limit')].map((part) => "
+                 "[part.querySelector('.limit-label').textContent, !!part.querySelector('.meter-mark')]), "
+                 "[...document.querySelectorAll('#overview .ov-inuse .limit-stack > .limit')].map((part) => "
+                 "[part.querySelector('.meter').getAttribute('aria-valuetext').split(':')[0], !!part.querySelector('.meter-mark')]).sort()]")
+
+        def want(sonnet):
+            return [[["Weekly", True], ["Fable 5.1 weekly", True], ["Sonnet weekly", sonnet]],
+                    [["Fable 5.1 weekly", True], ["Sonnet weekly", sonnet], ["Weekly", True]]]
+        server = self.show(state)
+        self.assertEqual(self.browser.js(marks), want(False))
+        # A settings bundle from an older build can carry a pinned model, and the rule then acts on its limit
+        # too. Nothing else in the state changes, so the row and the card are drawn again for the setting
+        # alone. And back.
+        for pinned, sonnet in (("sonnet", True), ("", False)):
+            with self.subTest(pinned_model=pinned):
+                server.engine.state = dict(copy.deepcopy(server.engine.state), rev=server.engine.state["rev"] + 1,
+                                           settings=dict(state["settings"], pinned_model=pinned))
+                self.browser.js("AD.api.poll()")
+                wanted = json.dumps(want(sonnet), separators=(",", ":"))
+                self.browser.wait(f"JSON.stringify({marks}) === {json.dumps(wanted)}", f"the notch for pinned_model={pinned!r}")
 
 
 class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):

@@ -51,7 +51,10 @@ terminals are using cannot be removed; switch to another one first.
 
 **Auto-switch:** This applies to Claude Code only. It starts on and needs at least two saved
 accounts. It moves your terminals when the account in use reaches 95% of its weekly limit or of
-its Fable 5.1 weekly limit, and it judges the account it moves to by both limits too. Change it in
+its Fable 5.1 weekly limit, and it judges the account it moves to by both limits too. One case is
+different: when the account in use has stopped working (its week ran out, or it needs sign-in) and
+no account has room in both limits, it moves to an account that has only its Fable 5.1 limit used
+up, because that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. It waits for a usable account with a recent reading. Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
 switch has a 10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
@@ -59,7 +62,8 @@ switch has a 10-minute **Undo**. Desktop, Codex and Muse only switch when you as
 **Early switch:** **Use weekly allowance before it resets** also starts on. With it on, AccountDeck
 can move Claude Code to another account long before 95%, for example when the account in use is
 only 20% used. It does this when the other account's weekly limit resets within 24 hours, sooner
-than the weekly limit of the account in use, and at least 20% of that week is still unused.
+than the weekly limit of the account in use, and at least 20% of that week is still unused. The
+other account also needs room in its Fable 5.1 limit.
 This happens at most once every 2 hours. Turn it off in **Settings → Auto-Switch** if you want
 switches only at your own percentage.
 

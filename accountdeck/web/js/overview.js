@@ -96,7 +96,7 @@
     const account = A.active(state);
     if (!account) return 'none';
     const derived = (account.windows || []).map((w) => AD.model.deriveWindow(w, account, ctx.nowMs).state);
-    return JSON.stringify([A.signature(account), derived, ctx.display, ctx.threshold, ctx.hide]);
+    return JSON.stringify([A.signature(account), derived, ctx.display, ctx.threshold, ctx.pinned, ctx.hide]);
   }
 
   // ---- Auto-switch ---------------------------------------------------------------------------------
@@ -281,7 +281,7 @@
     }
     const auto = A.autoswitch(state);
     const ctx = { nowMs, display: A.display(state), threshold: auto.enabled && isNum(auto.threshold) ? auto.threshold : null,
-      hide: AD.dom.hideEmails() };
+      pinned: A.pinned(state), hide: AD.dom.hideEmails() };
     const pick = resetPick(state, nowMs);
     AD.dom.patchSigned(host, [
       { key: 'inuse', sig: inUseSig(state, ctx), build: () => inUseCard(state, ctx) },

@@ -15,11 +15,11 @@ import math
 
 from .rules import countdown_text
 from .core import is_frozen
+from .usage import is_fable
 
 STALE = 3600            # a reading older than this makes its totals approximate
 OUT_LEFT = 0.5          # ≤ this much left is out (rules.band)
 MIN_GAIN = 0.05         # a refill must add at least this much to be the "next refill"
-FABLE = "Fable"         # the Fable 5.1 weekly window's model
 # Face thresholds, in accounts' worth: plenty from 2.0, watch from 0.75, alarm below; muted when nothing counts.
 PLENTY, WATCH = 2.0, 0.75
 
@@ -102,8 +102,7 @@ def left_at(window, at, now):
 def _windows(account):
     windows = [w for w in account.get("windows") or () if isinstance(w, dict)]
     weekly = next((w for w in windows if w.get("kind") == "weekly"), None)
-    fable = next((w for w in windows if w.get("kind") == "model" and str(w.get("model") or "").casefold()
-                  == FABLE.casefold()), None)
+    fable = next((w for w in windows if is_fable(w)), None)
     return weekly, fable
 
 

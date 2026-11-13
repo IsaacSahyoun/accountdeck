@@ -212,7 +212,7 @@
   function rowSig(account, state, ctx) {
     const derived = (account.windows || []).map((w) => AD.model.deriveWindow(w, account, ctx.nowMs).state);
     return JSON.stringify([A.signature(account), derived, state.pending ? state.pending.account || true : null,
-      ctx.display, ctx.threshold, AD.dom.hideEmails(), ctx.fableLeader === account.id, ctx.nextId === account.id,
+      ctx.display, ctx.threshold, ctx.pinned, AD.dom.hideEmails(), ctx.fableLeader === account.id, ctx.nextId === account.id,
       ctx.bestId === account.id, ctx.readonly, ctx.busy]);
   }
 
