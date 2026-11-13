@@ -99,6 +99,7 @@ The dashboard tests run in WebKit unless `ACCOUNTDECK_TEST_BROWSER=chrome`. A da
 
 - A long step list goes in a file, `$PROOF/steps.json`, passed in place of the JSON. The file is evidence too, and a single quote in a step no longer breaks the command.
 - A `shot` overwrites a picture of the same name. Point your tries at `$PROOF/explore` and keep `$PROOF` for the final run.
+- A `shot` grows the window to the page's height and back, which closes an open menu. `{"shot": "name", "view": true}` takes only what the window shows and leaves the menu open. `features/rows-and-menus.md` has the steps.
 - `drive.py` drives WebKit only. The Chrome side of a journey comes from a test run with `ACCOUNTDECK_TEST_BROWSER=chrome`.
 - `drive.py` removes the demo's fake disk when it ends. For a login change, the files on the fake disk are proven by the tests the feature file names. Say in your report that the page proof and the disk proof are two runs.
 - The demo runs from `$COPY`, and the helpers that find rows and buttons come from the repo's own `tests/test_dashboard.py`. On a copy of an older commit a row or a button may not be found.

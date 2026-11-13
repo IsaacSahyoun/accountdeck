@@ -38,6 +38,12 @@ Tests to reuse: `tests/test_dashboard.py`, `TerminalRowsTest`, `OtherClientsRows
 
 ## Gotchas
 - Two clients can hold an account with the same name. Always name the client.
+- A `shot` grows the window to the page's height, and the menu closes when the window changes size. The menu also fades in, so a picture taken right after `more` shows no menu. To picture an open menu, wait for the fade and keep the window as it is:
+  ```json
+  {"more": "Beta", "client": "claude"},
+  {"wait": "getComputedStyle(document.getElementById(\"menu\")).opacity === \"1\""},
+  {"shot": "menu-open", "view": true}
+  ```
 - Known flaw, in the 2.0.0 build and after the refactor: at the app window's first width (1180) the note beside a meter in the Desktop, Codex and Muse rows is cut in the middle of a letter ("Resets in 3d 1" for "Resets in 3d 17h"). `look_sweep.py` lists each one as `cut limit-note`. The words are whole in the page's text, so a test that reads text does not see it.
 - The page builds rows from account text with `textContent`, never as HTML. Keep it that way.
 

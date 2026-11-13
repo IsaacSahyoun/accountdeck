@@ -16,7 +16,9 @@ Steps, one key each (plus the options named):
   {"words": "sheet"}                     print the words in the menu, the sheet or a CSS selector
   {"accounts": true}                     print what the app itself says: client, name, in use (/api/state)
   {"in_use": "Gamma", "client": "claude"}  fail unless the app itself says that account is the one in use
-  {"shot": "before"}                     save <proof folder>/before.png, the whole page
+  {"shot": "before"}                     save <proof folder>/before.png, the whole page; the window grows for
+                                         it, which closes an open menu. "view": true takes only what the
+                                         window shows, and an open menu stays open
   {"dark": true}                         dark or light
 
 Clients: claude_cli (Claude Code), claude (Claude Desktop), codex, muse. Clicks are real mouse events and
@@ -82,6 +84,9 @@ def run(step, window, demo, proof):
         return [(a["provider"], a["label"], "in use" if a.get("active") else "") for a in
                 json.loads(demo.call("/api/state")[1])["accounts"]]
     if "shot" in step:
+        if step.get("view"):
+            window.window.call("shot", path=str(proof / f"{step['shot']}.png"))
+            return str(proof / f"{step['shot']}.png")
         tall = max(HEIGHT, window.js("document.documentElement.scrollHeight"))
         window.window.call("size", width=WIDTH, height=tall)
         window.window.call("shot", path=str(proof / f"{step['shot']}.png"))
