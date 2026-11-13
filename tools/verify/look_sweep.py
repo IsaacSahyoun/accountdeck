@@ -25,10 +25,11 @@ DRAWN = ("document.querySelectorAll('.section-title').length > 0"
          " && !document.body.innerText.includes('Loading your terminal accounts')")
 # Words the page cuts off: a box that hides what does not fit and holds more than fits. "dots" ends in an
 # ellipsis. "cut" ends in the middle of a letter: either the page never asked for an ellipsis, or it asked
-# on a flex or grid box, where browsers do not draw one.
+# on a flex or grid box, where browsers do not draw one. Text hidden on purpose for screen readers
+# (.sr-only) is not counted.
 CUT = """[...document.querySelectorAll('body *')].filter((e) => {
   const style = getComputedStyle(e);
-  return e.getClientRects().length && ['hidden', 'clip'].includes(style.overflowX)
+  return e.getClientRects().length && !e.closest('.sr-only') && ['hidden', 'clip'].includes(style.overflowX)
     && e.scrollWidth > e.clientWidth + 1 && e.textContent.trim();
 }).map((e) => { const style = getComputedStyle(e);
   const dots = style.textOverflow === 'ellipsis' && !/flex|grid/.test(style.display);
