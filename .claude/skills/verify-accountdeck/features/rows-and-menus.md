@@ -1,6 +1,6 @@
 # Account rows and the More menu
 
-Status: rename driven 2026-11-12 through `drive.py` in the WebKit window (below), on the app code of commit 0f7dc7c. Remove and Sign In Again are a draft. The tests named here are in the final check.
+Status: rename driven 2026-11-12 through `drive.py` in the WebKit window (below), on the app code of commit 5c9b5da. Remove and Sign In Again are a draft. The tests named here are in the final check.
 
 One row design serves all four clients (`accountdeck/web/js/rows.js`).
 
@@ -44,7 +44,7 @@ Tests to reuse: `tests/test_dashboard.py`, `TerminalRowsTest`, `OtherClientsRows
   {"wait": "getComputedStyle(document.getElementById(\"menu\")).opacity === \"1\""},
   {"shot": "menu-open", "view": true}
   ```
-- A limit's note sits under its bar in every row, and a note with no room ends in dots. `OtherClientsRowsTest.test_a_limits_note_is_whole_and_under_its_bar` and `test_a_note_with_no_room_ends_in_dots` hold that, since commit 10e8ca8. The 2.0.0 build put the note beside the bar in the Desktop, Codex and Muse rows and cut it in the middle of a letter at the app window's first width, 1180 ("Resets in 3d 1" for "Resets in 3d 17h"). `look_sweep.py` lists a cut note as `cut limit-note`. The words are whole in the page's text, so a test that reads only text does not see a cut.
+- A limit's note sits under its bar in every row, and a note with no room ends in dots. `OtherClientsRowsTest.test_a_limits_note_is_whole_and_under_its_bar` and `test_a_note_with_no_room_ends_in_dots` hold that, since commit 6020902. The 2.0.0 build put the note beside the bar in the Desktop, Codex and Muse rows and cut it in the middle of a letter at the app window's first width, 1180 ("Resets in 3d 1" for "Resets in 3d 17h"). `look_sweep.py` lists a cut note as `cut limit-note`. The words are whole in the page's text, so a test that reads only text does not see a cut.
 - The page builds rows from account text with `textContent`, never as HTML. Keep it that way.
 
 ## Only on the real Mac

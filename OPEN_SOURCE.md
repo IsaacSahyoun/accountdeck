@@ -14,7 +14,7 @@ AccountDeck is a Python/web implementation. These projects informed its design. 
 
 All listed projects are MIT except SnlperStripes/claude-account-switcher, which is Apache-2.0. No upstream graphical application or executable is installed by AccountDeck. The notice for adapted source is included below.
 
-Runtime dependency: [cryptography](https://github.com/pyca/cryptography), distributed under Apache-2.0 or BSD-3-Clause. Its installed package includes its license notices. Development-only dependency: [jsdom](https://github.com/jsdom/jsdom), MIT; npm's lockfile pins its dependency tree.
+Runtime dependency: [cryptography](https://github.com/pyca/cryptography), distributed under Apache-2.0 or BSD-3-Clause. Its installed package includes its license notices.
 
 Official interface references:
 

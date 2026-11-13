@@ -1,6 +1,6 @@
 # Claude Desktop: the plan sheet, switch now and switch when idle
 
-Status: Switch Now driven 2026-11-12 through `drive.py` in the WebKit window (the journey below), on the app code of commit 0f7dc7c, once by a reader who had only this skill. Switch When Claude Is Idle, Save Current Account and Add Account are a draft: their tests pass and nobody has driven them through this skill.
+Status: Switch Now driven 2026-11-12 through `drive.py` in the WebKit window (the journey below), on the app code of commit 5c9b5da, once by a reader who had only this skill. Switch When Claude Is Idle, Save Current Account and Add Account are a draft: their tests pass and nobody has driven them through this skill.
 
 Client id `claude`. A Desktop switch closes Claude, writes its cookies and settings under a write-ahead record, and opens Claude again. The account name comes off the settings first and goes back last, so a write that dies part way reads as signed out, never as a mix of two accounts.
 
@@ -68,7 +68,7 @@ Tests to reuse:
 - The progress list ends with a step named Done. To wait for the report, wait for a Done button, not the word.
 - The app names the old account as in use until the report comes. The row changes to the new account when "Checking the sign-in" ends.
 - The progress sheet is titled "Working…" when it opens straight from the plan, and "Switching to Gamma" when it is opened again from the banner. Seen 2026-11-12. The same code is in `main`.
-- Switch When Claude Is Idle, in `typical`, checks the saved sign-in and then waits on the working session "Refactor billing". Every step's name is in the list from the start, so wait on the active step: `(document.querySelector("#modal li.step[data-status=active]") || {innerText: ""}).innerText.includes("Waiting for Claude to finish")`. During the wait the banner reads "Switching to Gamma", and every Switch button on the page is greyed out, the Claude Code ones too. Driven this far on 2026-11-13 on commit 46fe98e. Nobody has driven the end of the wait or its Cancel.
+- Switch When Claude Is Idle, in `typical`, checks the saved sign-in and then waits on the working session "Refactor billing". Every step's name is in the list from the start, so wait on the active step: `(document.querySelector("#modal li.step[data-status=active]") || {innerText: ""}).innerText.includes("Waiting for Claude to finish")`. During the wait the banner reads "Switching to Gamma", and every Switch button on the page is greyed out, the Claude Code ones too. Driven this far on 2026-11-13 on commit 8c36701. Nobody has driven the end of the wait or its Cancel.
 - In the demo, the cookies Claude holds for the account in use are not the same bytes as that account's saved copy. Both count as that account's.
 - Claude leaves a settings journal beside its settings file. A test of a half-written login needs the journal there, written the way Claude writes it (`HalfWrittenDesktopLoginTest.claude_is_killed_mid_save`).
 - A test that cancels "during the second wait" must first wait until the job is held there (`watch_the_lane_wait`).

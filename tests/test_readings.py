@@ -128,7 +128,7 @@ def table():
 
 # The answers of the rule since Claude dropped its 5-hour limit (2026-11-13). Before that the table had a 5-hour
 # reading in every column, and a 5-hour limit that refilled within 10 minutes held the switch back. What it
-# keeps from the starting commit (1c1787b): a limit whose reset time passed 40 s ago is waited for (hW) and not
+# keeps from the starting commit (1fffff4): a limit whose reset time passed 40 s ago is waited for (hW) and not
 # acted on, and a manual choice or Undo in the last 2 hours holds the threshold switch (hm), but not an
 # account that ran out or needs sign-in.
 # weekly % used:                                        30         96         99         100

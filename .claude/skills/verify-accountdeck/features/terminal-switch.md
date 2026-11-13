@@ -1,6 +1,6 @@
 # Claude Code accounts: switch, auto-switch and Undo
 
-Status: driven 2026-11-12 through `drive.py` in the WebKit window (the journey below), on the app code of commit 0f7dc7c. The tests named here are in the final check.
+Status: driven 2026-11-12 through `drive.py` in the WebKit window (the journey below), on the app code of commit 5c9b5da. The tests named here are in the final check.
 
 Client id `claude_cli`. Every open terminal follows the one account in use. A switch writes Claude Code's login file and its name file as one step, under a write-ahead record.
 

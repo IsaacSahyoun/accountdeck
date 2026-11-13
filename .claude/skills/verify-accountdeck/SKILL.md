@@ -134,7 +134,7 @@ Traps when driving:
 - A test that acts "while the job is waiting" must wait for a signal that the job is held there, not sleep. `watch_the_lane_wait` in `tests/test_second_review.py` is the pattern.
 - Call `engine.sense_active()` before you ask the auto-switch policy anything, or it sees no account in use. `cli_policy.evaluate` is pure, so a decision can be run on hand-made readings.
 - In the demo, the cookies Claude Desktop holds for the account in use are not the same bytes as that account's saved copy. A test that asks "whose cookies are these" accepts both.
-- The server of commit f3a4e91, the 2.0.0 build, let only 5 requests wait, so a page load failed at random in Chrome (6 of 35 loads on 2026-11-12). A half-drawn dashboard on that build is this bug, not your change.
+- The server of commit 359ac07, the 2.0.0 build, let only 5 requests wait, so a page load failed at random in Chrome (6 of 35 loads on 2026-11-12). A half-drawn dashboard on that build is this bug, not your change.
 - `text-overflow: ellipsis` draws no dots on a flex or grid box. The words are cut in the middle of a letter instead. `look_sweep.py` lists those as `cut`.
 - In zsh, `kill $PIDS` does not split the variable. Keep pids in an array.
 
