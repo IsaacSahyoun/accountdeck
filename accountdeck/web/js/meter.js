@@ -9,8 +9,9 @@
   const { STRINGS, fill } = AD.format;
 
   const BADGE_ICONS = { good: 'check', warning: 'warning', critical: 'warning', accent: null, neutral: null, fable: null };
-  // Limits auto-switch watches: the weekly and model (Fable 5.1 / pinned model) limits.
-  const GATING = new Set(['weekly', 'model']);
+  // The limits auto-switch acts on, which get its notch: the weekly one and the Fable 5.1 weekly one
+  // (cli_policy.considered). Another model's limit gets none.
+  const watched = (win) => win.kind === 'weekly' || AD.accounts.isFable(win);
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
   /** The share a meter shows, 0–100: used, or left when the page shows what is left. */
@@ -43,7 +44,7 @@
       node.setAttribute('aria-valuenow', String(Math.round(share)));
       node.appendChild(AD.dom.el('span', { class: 'meter-fill', style: { '--fill': `${d.state === 'out' ? (display === 'left' ? 0 : 100) : share}%` } }));
     }
-    if (isNum(opts.threshold) && GATING.has(win.kind) && share !== null) {
+    if (isNum(opts.threshold) && watched(win) && share !== null) {
       const at = display === 'left' ? 100 - opts.threshold : opts.threshold;
       node.appendChild(AD.dom.el('span', { class: 'meter-mark', 'aria-hidden': 'true', style: { '--at': `${at}%` } }));
     }

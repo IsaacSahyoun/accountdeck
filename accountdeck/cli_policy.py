@@ -1,8 +1,8 @@
 """The terminal auto-switch policy the owner approved. Pure: no I/O or clock reads.
 
 `evaluate` decides, for the active terminal account, whether to switch now and to which account:
-- threshold: any considered window (weekly, the pinned model's weekly) at or past `cli_threshold`,
-  or projected to pass it before the next read can land (the burn-rate forecast);
+- threshold: any considered limit (weekly, Fable 5.1 weekly, the pinned model's weekly) at or past
+  `cli_threshold`, or projected to pass it before the next read can land (the burn-rate forecast);
 - out / login: a limit reached or a sign-in that needs renewing switches whatever the threshold;
 - eligible targets have a reading at most 15 minutes old and at least 10 points of room below the
   threshold in every considered window; left-out, frozen and needs-sign-in accounts never qualify;
@@ -14,8 +14,9 @@
 - a window of the account in use whose reset time has passed has refilled, so its last number is not
   acted on: the windows still running decide, and when none of them asks for a switch the rule holds
   and asks for a new reading of that account (`refresh`);
-- a manual choice, Undo included, is held for 2 hours against the threshold and the early switch. It is
-  not held against an account that ran out or needs sign-in;
+- a manual choice, Undo included, is held for 2 hours against the threshold, the early switch and a model's
+  limit that ran out (the account still works for the other models). It is not held against an account
+  whose week ran out or that needs sign-in;
 - the optional early switch spends weekly allowance that expires within 24 hours, at most every 2 hours.
 """
 from functools import cmp_to_key
@@ -31,17 +32,24 @@ def number(value):
     return value if type(value) in (int, float) and math.isfinite(value) else None
 
 
+FABLE = "fable"      # the Fable 5.1 weekly limit is the model limit whose model starts with this, as on the page
+
+
 def considered(account, settings):
-    """The limits the rule acts on, the weekly one first: (name, % used or None, window). Claude has no 5-hour
-    limit (`usage.claude_usage`)."""
+    """The limits the rule acts on, the weekly one first: (name, % used or None, window). They are the weekly
+    limit, the Fable 5.1 weekly limit and the pinned model's, each only when the account's reading has it: a
+    model's limit is in Claude's answer after the first message to that model. Another model's limit is not
+    acted on. Claude has no 5-hour limit (`usage.claude_usage`)."""
     windows = account.get("windows") or []
     weekly = next((w for w in windows if w.get("kind") == "weekly"), {})
-    models = {w.get("model") or w.get("label", "").removesuffix(" weekly"): w for w in windows if w.get("kind") == "model"}
     values = [("weekly", number(weekly.get("used")), weekly)]
     pinned = settings.get("pinned_model", "").casefold()
-    for label, window in models.items():
-        if pinned and label.casefold() == pinned:
-            values.append((label + " weekly", number(window.get("used")), window))
+    for window in windows:
+        if window.get("kind") != "model":
+            continue
+        model = str(window.get("model") or window.get("label", "").removesuffix(" weekly"))
+        if model.casefold().startswith(FABLE) or (pinned and model.casefold() == pinned):
+            values.append((window.get("label") or f"{model} weekly", number(window.get("used")), window))
     return values
 
 
@@ -175,7 +183,8 @@ def _ordered(rows, settings):
 def _need(active, threshold, now):
     """Why the account in use should be left, judged on its windows still running: `trigger` (login, out,
     threshold or None) and `why` in words. A window whose reset time has passed is left out; `refilled` names
-    those that ended at or past the threshold, whose new reading is waited for."""
+    those that ended at or past the threshold, whose new reading is waited for. `yields` says the user's own
+    choice outranks this need: the threshold, and a model's limit that ran out while the week has room."""
     account = active["account"]
     values = [value for value in active["values"] if not ended(value[2], now)]
     # A limit filling fast can pass the threshold, or run out, before the next read is allowed: act on the
@@ -185,10 +194,11 @@ def _need(active, threshold, now):
                  for label, used, w in values]
     over = [label for label, used, _ in values if used is not None and used >= threshold]
     soon = [label for label, used in projected if used is not None and used >= threshold]
+    out = [(label, w) for label, used, w in values if w.get("blocked") or (used is not None and used >= 100)]
     if account.get("health") == "needs_signin":
         trigger, why = "login", "needs sign-in"
-    elif account.get("out") or any(w.get("blocked") or (used is not None and used >= 100) for _, used, w in values):
-        trigger, why = "out", "reached a limit"
+    elif account.get("out") or out:
+        trigger, why = "out", f"reached its {out[0][0]} limit" if out else "reached a limit"
     elif over:
         trigger, why = "threshold", f"reached {threshold}% of its {over[0]} limit"
     elif soon:
@@ -196,6 +206,8 @@ def _need(active, threshold, now):
     else:
         trigger, why = None, ""
     return {"trigger": trigger, "why": why,
+            "yields": trigger == "threshold" or (trigger == "out" and not account.get("out")
+                                                 and all(w.get("kind") == "model" for _, w in out)),
             "peak": max((used for _, used in projected if used is not None), default=0),
             "refilled": [label for label, used, w in active["values"]
                          if ended(w, now) and (w.get("blocked") or (used is not None and used >= threshold))]}
@@ -211,9 +223,9 @@ def _leave(need, rows, active, history, threshold, now):
     account is low. Returns the fields of the result that change."""
     label = active["label"]
     kind = "refilled" if history.get("exhausted") else need["trigger"]
-    # The user's own choice outranks the threshold. It does not outrank an account that ran out or needs
-    # sign-in: staying there would stop their work.
-    if need["trigger"] == "threshold" and _held(history, now):
+    # The user's own choice outranks the threshold and a model's limit that ran out. It does not outrank an
+    # account whose week ran out or that needs sign-in: staying there would stop their work.
+    if need["yields"] and _held(history, now):
         return {"hold": MANUAL_HOLD}
     eligible = [row for row in rows if row["skip"] is None]
     if eligible:

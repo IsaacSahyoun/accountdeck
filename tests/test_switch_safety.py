@@ -363,6 +363,76 @@ class TerminalInterruptedSwitchTest(DeckCase):
         self.assertEqual(self.pending_records(), [])
 
 
+class TerminalFableLimitTest(DeckCase):
+    """Auto-switch and the Fable 5.1 weekly limit, through the real engine: who is signed in afterwards. The
+    rule's own answers are in `tests.test_readings` (the decision table and `FableLimitTest`)."""
+
+    def setUp(self):
+        super().setUp()
+        self.engine.sense_active()
+        self.first = self.active("claude_cli")
+        usable = [row for row in self.rows("claude_cli") if not row["active"] and row["switchable"]
+                  and row.get("health", "ok") == "ok" and not row.get("excluded")]
+        self.full, self.roomy = usable[:2]          # two accounts auto-switch may move to
+
+    def read(self, row, **reading):
+        support.with_reading(self.engine, row["id"], **reading)
+
+    def switched(self):
+        """Runs one check of auto-switch and the switch it starts. Returns the record of that switch. The demo
+        starts with the record of an earlier switch, so a check that switches nothing is told apart from it."""
+        before = self.engine.store.setting("cli_history", {}).get("last")
+        cli_auto.tick(self.engine)
+        self.assertTrue(self.engine.runner.wait(30))
+        last = self.engine.store.setting("cli_history", {}).get("last")
+        self.assertNotEqual(last, before, "auto-switch did not switch")
+        return last
+
+    def test_a_fable_limit_past_the_threshold_moves_the_terminals(self):
+        self.read(self.first, weekly=30, fable=96)
+        self.read(self.full, weekly=20, fable=20)
+        self.read(self.roomy, weekly=40, fable=20)
+        last = self.switched()
+        self.assertEqual(last["kind"], "threshold")
+        self.assertIn("reached 95% of its Fable 5.1 weekly limit", last["reason"])
+        self.assert_consistent("claude_cli", self.identity(self.full["id"]))
+
+    def test_it_never_moves_to_an_account_whose_fable_limit_is_out(self):
+        # `full` has the most room in its week, so the rule that looks at the week alone picks it
+        self.read(self.first, weekly=97, fable=10)
+        self.read(self.full, weekly=20, fable=100)
+        self.read(self.roomy, weekly=40, fable=20)
+        self.assertEqual(self.switched()["kind"], "threshold")
+        self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+
+    def test_a_fable_limit_the_shipped_version_saved_counts_on_the_first_check(self):
+        """Data the installed 2.0.0 wrote: until the next read, its saved reading is all the app knows."""
+        now = self.engine.clock()
+        for row, (weekly, fable) in ((self.first, (30.0, 100.0)), (self.full, (20.0, 100.0)), (self.roomy, (40.0, 20.0))):
+            self.engine.store.observe(row["id"], support.shipped_reading(now, 10.0, weekly, fable), at=now)
+        self.assertEqual(self.switched()["kind"], "out")
+        self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+
+    def test_an_undo_of_a_switch_made_for_the_fable_limit_stands(self):
+        """The reverse. The account auto-switch left still works for the other models, so the user's Undo is
+        not reversed at the next check. Without that rule the terminals were moved away again within seconds."""
+        self.read(self.first, weekly=30, fable=100)
+        self.read(self.roomy, weekly=40, fable=20)
+        self.read(self.full, weekly=60, fable=20)
+        self.assertEqual(self.switched()["kind"], "out")
+        self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+        plan = self.engine.action("cli-undo", {"provider": "claude_cli"})["plan"]
+        self.assertEqual(plan["blockers"], [])
+        self.engine.action("switch", {"id": self.first["id"], "provider": "claude_cli", "plan_id": plan["plan_id"]})
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["hold"]), ("none", "Your manual choice is held for 2 hours"))
+        cli_auto.tick(self.engine)
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+
 class TerminalAutoSwitchTest(DeckCase):
     def setUp(self):
         super().setUp()

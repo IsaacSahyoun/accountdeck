@@ -24,10 +24,11 @@ SETTINGS = {"cli_autoswitch": True, "cli_threshold": 95, "cli_order": "soonest_r
 
 def account(key, weekly, weekly_reset=3 * DAY, *, active=False, age=60, model=None, **fields):
     """One terminal account as `cli_auto.inputs` hands it to the rule. The reset is seconds from NOW; `age` is how
-    old the reading is (None: never read); `model` is the % used of a Fable weekly window."""
+    old the reading is (None: never read); `model` is the % used of its Fable 5.1 weekly limit, named as
+    `usage.claude_usage` names it. An account with no `model` has no such limit in its reading."""
     windows = [{"id": "seven_day", "kind": "weekly", "used": weekly, "reset": NOW + weekly_reset}]
     if model is not None:
-        windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable weekly",
+        windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable 5.1 weekly",
                         "used": model, "reset": NOW + weekly_reset})
     return {"id": key, "label": key.capitalize(), "active": active, "forecast": {}, "owner": "v2", "excluded": False,
             "health": "ok", "live_expired": False, "last_good_at": None if age is None else NOW - age,
@@ -87,6 +88,13 @@ ROWS = {
     "Alpha belongs to the PC": ([beta()], {}, {}, {"owner": "on_pc"}),
     "Alpha's weekly is forecast at 97%": ([beta()], {}, {}, {"forecast": {"seven_day": 97.0}}),
     "Alpha's pinned Fable limit is at 96%": ([beta()], {}, {"pinned_model": "fable"}, {"model": 96}),
+    "Alpha's Fable limit is at 96%": ([beta()], {}, {}, {"model": 96}),
+    "Alpha's Fable limit is at 100%": ([beta()], {}, {}, {"model": 100}),
+    "Alpha's Fable limit is forecast at 97%": ([beta()], {}, {}, {"model": 50, "forecast": {"seven_day_fable": 97.0}}),
+    "Undo pressed 5 s ago, Alpha's Fable limit is at 100%": ([beta()], UNDONE, {}, {"model": 100}),
+    "Beta's Fable limit is at 90%": ([beta(model=90)], {}, {}, {}),
+    "Beta's Fable limit is at 100%": ([beta(model=100)], {}, {}, {}),
+    "Beta's Fable limit is at 100%, Gamma has room, most room first": ([beta(model=100), gamma()], {}, {"cli_order": "most_room"}, {}),
     "Beta's week ends in 12 h": ([beta(**SOON)], {}, {}, {}),
     "Beta's week ends in 12 h, 85% used": ([beta(**dict(SOON, weekly=85))], {}, {}, {}),
     "Beta's week ends in 12 h, left 10 min ago": ([beta(**SOON)], {"left": "beta", "left_at": NOW - 600}, {}, {}),
@@ -163,6 +171,15 @@ EXPECTED = {
     "Alpha belongs to the PC":                         ".. .. .. .. .. .. .. .. .. .. .. ..",
     "Alpha's weekly is forecast at 97%":               "Tb Tb .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Alpha's pinned Fable limit is at 96%":            "Tb Tb hW Tb Tb hW Tb Tb hW Ob Ob hW",
+    # The Fable 5.1 weekly limit with settings as a new install has them. A manual choice holds against it
+    # even when it is out, because the account still works for the other models.
+    "Alpha's Fable limit is at 96%":                   "Tb Tb hW Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Alpha's Fable limit is at 100%":                  "Ob Ob hW Ob Ob hW Ob Ob hW Ob Ob hW",
+    "Alpha's Fable limit is forecast at 97%":          "Tb Tb .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Undo pressed 5 s ago, Alpha's Fable limit is at 100%": "hm hm hW hm hm hW hm hm hW Ob Ob hW",
+    "Beta's Fable limit is at 90%":                    ".. .. .. hd hd hW Tb Tb hW Ob Ob hW",
+    "Beta's Fable limit is at 100%":                   ".. .. .. hd hd hW XX XX hW XX XX hW",
+    "Beta's Fable limit is at 100%, Gamma has room, most room first": ".. .. .. Tg Tg hW Tg Tg hW Og Og hW",
     "Beta's week ends in 12 h":                        "Eb .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 12 h, 85% used":              ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 12 h, left 10 min ago":       ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
@@ -172,7 +189,7 @@ EXPECTED = {
 
 
 class AutoSwitchTableTest(unittest.TestCase):
-    """Every decision of `cli_policy.evaluate` for 34 situations times 12 readings of the account in use."""
+    """Every decision of `cli_policy.evaluate` for 41 situations times 12 readings of the account in use."""
     maxDiff = None
 
     def test_the_decision_table(self):
@@ -191,6 +208,11 @@ class AutoSwitchWordsTest(unittest.TestCase):
         said = {
             "threshold": self.result("Beta has room", weekly=96)["reason"],
             "out": self.result("Beta has room", weekly=100)["reason"],
+            "marked out": self.result("Alpha is marked out")["reason"],
+            "Fable threshold": self.result("Alpha's Fable limit is at 96%")["reason"],
+            "Fable out": self.result("Alpha's Fable limit is at 100%")["reason"],
+            "Fable forecast": self.result("Alpha's Fable limit is forecast at 97%")["reason"],
+            "Fable has refilled": self.result("Alpha's Fable limit is at 96%", reset=-40)["hold"],
             "login": self.result("Alpha needs sign-in")["reason"],
             "forecast": self.result("Alpha's weekly is forecast at 97%")["reason"],
             "drain": self.result("Beta's weekly is at 90%", weekly=99)["reason"],
@@ -204,7 +226,12 @@ class AutoSwitchWordsTest(unittest.TestCase):
         }
         self.assertEqual(said, {
             "threshold": "Alpha reached 95% of its weekly limit; Beta is first in your eligible order.",
-            "out": "Alpha reached a limit; Beta is first in your eligible order.",
+            "out": "Alpha reached its weekly limit; Beta is first in your eligible order.",
+            "marked out": "Alpha reached a limit; Beta is first in your eligible order.",
+            "Fable threshold": "Alpha reached 95% of its Fable 5.1 weekly limit; Beta is first in your eligible order.",
+            "Fable out": "Alpha reached its Fable 5.1 weekly limit; Beta is first in your eligible order.",
+            "Fable forecast": "Alpha will pass 95% of its Fable 5.1 weekly limit before the next check; Beta is first in your eligible order.",
+            "Fable has refilled": "Alpha's Fable 5.1 weekly limit has refilled. Waiting for its new reading.",
             "login": "Alpha needs sign-in; Beta is first in your eligible order.",
             "forecast": "Alpha will pass 95% of its weekly limit before the next check; Beta is first in your eligible order.",
             "drain": "Alpha reached 99%; every account is past 95%, so Beta is used up to 99%.",
@@ -250,6 +277,91 @@ class AutoSwitchWordsTest(unittest.TestCase):
                          ["iota", "beta", "gamma"])
         self.assertEqual(set(cli_policy.evaluate([active], SETTINGS, {}, NOW)["next_up"][0]),
                          {"id", "label", "skip", "room", "weekly_reset"})
+
+
+class FableLimitTest(unittest.TestCase):
+    """Auto-switch acts on the Fable 5.1 weekly limit with settings as a new install has them (Isaac's
+    decision, 2026-11-13). Settings and the notch on the bar had said so all along, and the rule had acted on
+    it only for a `pinned_model` no control sets."""
+    WEEK = "2027-01-20T00:00:00Z"
+
+    def terminal(self, key, answer, *, active=False):
+        return {"id": key, "label": key.capitalize(), "provider": "claude_cli", "active": active, "health": "ok",
+                "last_good_at": NOW - 60, "windows": claude_usage(answer, now=NOW)["windows"]}
+
+    def answers(self, weekly, fable):
+        """Claude's answer in both shapes it has had, with these percents used."""
+        named = {"seven_day": {"utilization": weekly, "resets_at": self.WEEK},
+                 "seven_day_fable": {"utilization": fable, "resets_at": self.WEEK}}
+        listed = {"limits": [{"kind": "weekly_all", "percent": weekly, "resets_at": self.WEEK},
+                             {"kind": "weekly_scoped", "percent": fable, "resets_at": self.WEEK,
+                              "scope": {"model": {"display_name": "Fable 5.1"}}}]}
+        return (("named keys", named), ("limits list", listed))
+
+    def test_it_leaves_an_account_whose_fable_limit_passed_the_threshold_in_both_shapes_of_claudes_answer(self):
+        for (shape, over), (_, roomy) in zip(self.answers(40, 96), self.answers(30, 30)):
+            with self.subTest(shape=shape):
+                alpha, beta = self.terminal("alpha", over, active=True), self.terminal("beta", roomy)
+                self.assertEqual([name for name, _used, _window in cli_policy.considered(alpha, SETTINGS)],
+                                 ["weekly", "Fable 5.1 weekly"])
+                result = cli_policy.evaluate([alpha, beta], SETTINGS, {}, NOW)
+                self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "beta", "threshold"))
+                self.assertEqual(result["reason"], "Alpha reached 95% of its Fable 5.1 weekly limit; Beta is first in your eligible order.")
+
+    def test_it_never_moves_to_an_account_whose_fable_limit_is_out(self):
+        for (shape, low), (_, out), (_, roomy) in zip(self.answers(96, 10), self.answers(20, 100), self.answers(60, 30)):
+            with self.subTest(shape=shape):
+                result = cli_policy.evaluate([self.terminal("alpha", low, active=True), self.terminal("beta", out),
+                                              self.terminal("gamma", roomy)], {**SETTINGS, "cli_order": "most_room"}, {}, NOW)
+                self.assertEqual((result["action"], result["target"]), ("switch", "gamma"))
+                self.assertEqual([(row["id"], row["skip"], row["room"]) for row in result["next_up"]],
+                                 [("gamma", None, 35), ("alpha", "in use by your terminals", -1),
+                                  ("beta", "Fable 5.1 weekly at 100%", -5)])
+
+    def test_an_account_with_no_fable_reading_is_judged_on_its_week(self):
+        """The limit appears in Claude's answer after the first Fable 5.1 message. Until then there is nothing to act on."""
+        week_only = {"seven_day": {"utilization": 30, "resets_at": self.WEEK}}
+        _, over = self.answers(96, 10)[0]
+        result = cli_policy.evaluate([self.terminal("alpha", over, active=True), self.terminal("beta", week_only)], SETTINGS, {}, NOW)
+        self.assertEqual((result["action"], result["target"]), ("switch", "beta"))
+        stays = cli_policy.evaluate([self.terminal("beta", week_only, active=True), self.terminal("alpha", over)], SETTINGS, {}, NOW)
+        self.assertEqual((stays["action"], stays["hold"]), ("none", None))
+
+    def test_another_models_limit_is_not_acted_on(self):
+        sonnet_out = {"seven_day": {"utilization": 30, "resets_at": self.WEEK},
+                      "seven_day_sonnet": {"utilization": 100, "resets_at": self.WEEK}}
+        _, roomy = self.answers(30, 30)[0]
+        alpha = self.terminal("alpha", sonnet_out, active=True)
+        self.assertEqual([name for name, _used, _window in cli_policy.considered(alpha, SETTINGS)], ["weekly"])
+        result = cli_policy.evaluate([alpha, self.terminal("beta", roomy)], SETTINGS, {}, NOW)
+        self.assertEqual((result["action"], result["hold"]), ("none", None))
+        pinned = cli_policy.considered(alpha, {**SETTINGS, "pinned_model": "sonnet"})
+        self.assertEqual([name for name, _used, _window in pinned], ["weekly", "Sonnet weekly"], "a pinned model still counts")
+
+    def test_a_setting_that_pins_fable_counts_the_limit_once(self):
+        """Data an older version wrote: `pinned_model` could come in with a settings bundle."""
+        _, over = self.answers(40, 96)[0]
+        alpha = self.terminal("alpha", over, active=True)
+        for pinned in ("Fable", "fable"):
+            with self.subTest(pinned_model=pinned):
+                self.assertEqual([name for name, _used, _window in cli_policy.considered(alpha, {**SETTINGS, "pinned_model": pinned})],
+                                 ["weekly", "Fable 5.1 weekly"])
+
+    def test_a_manual_choice_holds_against_a_fable_limit_that_is_out_but_not_against_the_week(self):
+        """With its Fable 5.1 limit out an account still works for the other models, so the user's own choice
+        of it stands for the 2 hours. An account whose week is out works for nothing."""
+        chosen = {"manual_at": NOW - 5}
+        _, roomy = self.answers(30, 30)[0]
+        for name, (weekly, fable), want in (("the Fable limit is out", (40, 100), ("none", None, "Your manual choice is held for 2 hours")),
+                                            ("the week is out", (100, 100), ("switch", "beta", None))):
+            with self.subTest(name):
+                _, answer = self.answers(weekly, fable)[0]
+                result = cli_policy.evaluate([self.terminal("alpha", answer, active=True), self.terminal("beta", roomy)],
+                                             SETTINGS, dict(chosen), NOW)
+                self.assertEqual((result["action"], result["target"], result["hold"]), want)
+        later = cli_policy.evaluate([self.terminal("alpha", self.answers(40, 100)[0][1], active=True), self.terminal("beta", roomy)],
+                                    SETTINGS, {"manual_at": NOW - 2 * HOUR - 5}, NOW)
+        self.assertEqual((later["action"], later["target"], later["kind"]), ("switch", "beta", "out"), "the hold ends after 2 hours")
 
 
 class ClaudeHasNoFiveHourLimitTest(unittest.TestCase):

@@ -49,9 +49,10 @@ in its row) with **Rename…** and **Remove…**. Remove makes AccountDeck forge
 The account itself is not affected, and you can add it again. The Claude Code account your
 terminals are using cannot be removed; switch to another one first.
 
-**Auto-switch:** This applies to Claude Code only. It starts on at 95% used and needs at least
-two saved accounts. Change it in **Settings → Auto-Switch**, or turn it off. It waits for a usable
-account with a recent reading. Right after a weekly limit refills, it waits for a new reading of the
+**Auto-switch:** This applies to Claude Code only. It starts on and needs at least two saved
+accounts. It moves your terminals when the account in use reaches 95% of its weekly limit or of
+its Fable 5.1 weekly limit, and it judges the account it moves to by both limits too. Change it in
+**Settings → Auto-Switch**, or turn it off. It waits for a usable account with a recent reading. Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
 switch has a 10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
 
@@ -63,7 +64,9 @@ This happens at most once every 2 hours. Turn it off in **Settings → Auto-Swit
 switches only at your own percentage.
 
 **Your own choice:** When you switch Claude Code accounts yourself, or choose **Undo**, auto-switch
-leaves that choice alone for 2 hours. It still switches if that account runs out or needs sign-in.
+leaves that choice alone for 2 hours. It still switches if that account's week runs out or it
+needs sign-in. A Fable 5.1 limit that ran out does not undo your choice, because the account still
+works for the other models.
 
 **Start at login:** Turn it on in **Settings → Menu Bar & Login**. Closing the dashboard leaves
 usage checks running. Choose **Quit AccountDeck 2** from its menu to stop them.

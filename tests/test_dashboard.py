@@ -3,6 +3,7 @@ scenario drawn in a browser, and the rows clicked with real mouse and key events
 of the app's own window, or headless Chrome with ACCOUNTDECK_TEST_BROWSER=chrome. Synthetic data only.
 The dashboard tests skip, loudly, when the browser they need is missing (see tests/support.in_chrome)."""
 import base64
+import copy
 import http.client
 import json
 import os
@@ -685,6 +686,26 @@ class OtherClientsRowsTest(DashboardTestCase):
                     const style = getComputedStyle(note);
                     return [note.scrollWidth > note.clientWidth, style.overflowX, style.textOverflow, /flex|grid/.test(style.display)]; }})()""")
                 self.assertEqual(squeezed, [True, "hidden", "ellipsis", False])
+
+
+class SwitchNotchTest(DashboardTestCase):
+    """The notch on a bar marks where auto-switch moves the terminals on. It is drawn on the limits the rule
+    acts on (`cli_policy.considered`), the weekly one and the Fable 5.1 weekly one, and on no other model's."""
+
+    def test_the_notch_is_on_the_weekly_and_the_fable_limit_only(self):
+        state = fixtures.example_state("typical", now=time.time())
+        beta = self.account(state, "claude_cli", label="Beta")
+        weekly = dict(beta["windows"][0], binding=False)
+
+        def model(wid, name, label, binding=False):
+            return dict(copy.deepcopy(weekly), id=wid, kind="model", model=name, label=label, short=name, binding=binding)
+        # a row shows another model's limit only while it is the one that binds
+        beta["windows"] = [weekly, model("seven_day_fable", "Fable", "Fable 5.1 weekly"),
+                           model("seven_day_sonnet", "Sonnet", "Sonnet weekly", binding=True)]
+        self.show(state)
+        drawn = self.browser.js(f"[...{row(beta)}.querySelectorAll('.limit')].map((part) => "
+                                "[part.querySelector('.limit-label').textContent, !!part.querySelector('.meter-mark')])")
+        self.assertEqual(drawn, [["Weekly", True], ["Fable 5.1 weekly", True], ["Sonnet weekly", False]])
 
 
 class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):

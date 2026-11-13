@@ -40,18 +40,28 @@ def demo_engine(case, scenario):
     return engine
 
 
-def shipped_reading(now, five, weekly):
-    """A Claude account's reading as the 2.0.0 build saved it, with a 5-hour limit in it. It is what that
-    build's own `usage.claude_usage` made of an answer, written out here so the new parser has no part in it."""
+def fable_window(used, reset):
+    """A Fable 5.1 weekly limit as `usage.claude_usage` saves it, in the 2.0.0 build and now."""
+    return {"id": "seven_day_fable", "kind": "model", "label": "Fable 5.1 weekly", "short": "Fable 5.1", "model": "Fable",
+            "used": used, "known": True, "reset": reset, "minutes": 10080, "started": True, "blocked": None, "group": None,
+            "scope": "Fable", "primary": True, "severity_hint": None, "is_active": None}
+
+
+def shipped_reading(now, five, weekly, fable=None):
+    """A Claude account's reading as the 2.0.0 build saved it, with a 5-hour limit in it, and with a Fable 5.1
+    weekly limit when `fable` gives its percent used. It is what that build's own `usage.claude_usage` made of
+    an answer, written out here so the new parser has no part in it."""
     def window(wid, kind, label, short, minutes, used, reset):
         return {"id": wid, "kind": kind, "label": label, "short": short, "model": None, "used": used, "known": True,
                 "reset": reset, "minutes": minutes, "started": True, "blocked": None, "group": None, "scope": None,
                 "primary": True, "severity_hint": None, "is_active": None}
+    model = [] if fable is None else [fable_window(fable, now + 4 * 86400)]
     return {"checked": now, "credits": [], "reset_credits": [], "tokens": None,
             "raw_windows": [{"key": "five_hour", "used": five, "reset": now + 7200},
-                            {"key": "seven_day", "used": weekly, "reset": now + 4 * 86400}],
+                            {"key": "seven_day", "used": weekly, "reset": now + 4 * 86400}]
+                           + [{"key": "seven_day_fable", "used": fable, "reset": now + 4 * 86400} for _ in model],
             "windows": [window("five_hour", "session", "5-hour", "5h", 300, five, now + 7200),
-                        window("seven_day", "weekly", "Weekly", "7d", 10080, weekly, now + 4 * 86400)]}
+                        window("seven_day", "weekly", "Weekly", "7d", 10080, weekly, now + 4 * 86400)] + model}
 
 
 @contextlib.contextmanager
@@ -114,14 +124,18 @@ def once_the_login_is(engine, refresh_token, then):
     return fired
 
 
-def with_reading(engine, key, *, weekly):
-    """Give a Claude account a reading taken this second, with this percent of its week used."""
+def with_reading(engine, key, *, weekly, fable=None):
+    """Give a Claude account a reading taken this second, with this percent of its week used. `fable` is the
+    percent used of its Fable 5.1 weekly limit. Without it the reading has no such limit."""
     now = engine.clock()
     usage = copy.deepcopy(engine.store.account(key)["last_good_usage"])
     usage["checked"] = now
     for window in usage["windows"]:
         if window.get("kind") == "weekly":
             window.update(used=float(weekly), reset=now + 4 * 86400)
+    usage["windows"] = [w for w in usage["windows"] if w.get("kind") != "model"]
+    if fable is not None:
+        usage["windows"].append(fable_window(float(fable), now + 4 * 86400))
     engine.store.observe(key, usage, at=now)
 
 
