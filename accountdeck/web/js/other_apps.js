@@ -46,7 +46,7 @@
     }
     const readonly = state.read_only === true ? STRINGS.accounts.readOnlyOther : null;
     const busy = !!(state.pending || state.login);
-    const ctx = { nowMs, display: AD.accounts.display(state), threshold: null, compact: true, readonly, busy };
+    const ctx = { nowMs, display: AD.accounts.display(state), threshold: null, ownLimits: true, readonly, busy };
     for (const part of sections) {
       const accounts = (state.accounts || []).filter((a) => a.provider === part.provider);
       for (const node of part.buttons) node.disabled = !!readonly || busy;

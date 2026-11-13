@@ -171,17 +171,18 @@
     return lines;
   }
 
-  /** The row's limits. A table with column heads (ctx.compact off) shows the same three in every row;
-   * a list without them shows the limits the account has, each with its own label. */
+  /** The row's limits. A table with column heads shows the same limits in every row. A list without them
+   * (ctx.ownLimits) shows the limits the account has, each with its own label. Both put a limit's note
+   * under its bar: beside the label a row has no room for it. */
   function limitCells(account, ctx) {
     if (A.frozen(account)) return null;
     if (A.needsSignin(account)) return el('p', { text: T.blockedSignin });
-    return (ctx.compact ? account.windows || [] : A.limits(account)).map((win) => AD.meter.limit(win, account, ctx));
+    return (ctx.ownLimits ? account.windows || [] : A.limits(account)).map((win) => AD.meter.limit(win, account, ctx));
   }
 
   // ---- A row ------------------------------------------------------------------------------------
 
-  /** One account row. ctx: {nowMs, display, threshold, compact, readonly, busy} and, for the list that
+  /** One account row. ctx: {nowMs, display, threshold, ownLimits, readonly, busy} and, for the list that
    * auto-switch works on, {fableLeader, nextId, bestId}. */
   function row(account, state, ctx) {
     const action = primaryAction(account, state, ctx);

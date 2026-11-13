@@ -664,6 +664,28 @@ class OtherClientsRowsTest(DashboardTestCase):
                 words = self.browser.js(f"{row(account)}.innerText")
                 self.assertEqual(words.count("Paused"), 1, words)
 
+    def test_a_limits_note_is_whole_and_under_its_bar(self):
+        """Found by the screenshot compare of 2026-11-12: beside the label a note had no room, and the row
+        showed "Starts with yo" and "Back in 1h 3"."""
+        self.show(fixtures.example_state("typical", now=time.time()))
+        notes = self.browser.js("""[...document.querySelectorAll('#other-accounts .row .limit-note')].map((note) =>
+            [note.textContent.trim(), note.scrollWidth <= note.clientWidth + 1,
+             !!note.previousElementSibling && note.previousElementSibling.matches('.meter')])""")
+        self.assertGreater(len(notes), 8, notes)
+        self.assertEqual([note for note in notes if not (note[1] and note[2])], [])
+
+    def test_a_note_with_no_room_ends_in_dots(self):
+        """`text-overflow` draws no dots on a flex or grid box. The words stop in the middle of a letter."""
+        self.show(fixtures.example_state("typical", now=time.time()))
+        for place in ("#other-accounts .row .limit", "#overview .limit.is-compact"):
+            with self.subTest(place=place):
+                squeezed = self.browser.js(f"""(() => {{
+                    const note = [...document.querySelectorAll('{place} .limit-note')].find((n) => n.textContent.trim().length > 10);
+                    note.closest('.limit').style.width = '70px';
+                    const style = getComputedStyle(note);
+                    return [note.scrollWidth > note.clientWidth, style.overflowX, style.textOverflow, /flex|grid/.test(style.display)]; }})()""")
+                self.assertEqual(squeezed, [True, "hidden", "ellipsis", False])
+
 
 CLIENTS = ("claude_cli", "claude", "codex", "muse")
 APPS = {"claude_cli": "Claude Code", "claude": "Claude Desktop", "codex": "Codex", "muse": "Muse Code"}
