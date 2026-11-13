@@ -653,6 +653,17 @@ class OtherClientsRowsTest(DashboardTestCase):
                                          " && b.getAttribute('aria-haspopup') !== 'menu').map((b) => b.textContent)"), [])
         self.assertEqual(self.browser.js("[...document.querySelectorAll('#accounts [data-primary]')].filter((b) => !b.disabled).length"), 0)
 
+    def test_a_row_says_a_provider_incident_once(self):
+        """Found by the screenshot compare of 2026-11-12: the row said it in a badge and again under the name."""
+        state = fixtures.example_state("outage", now=time.time())
+        self.show(state)
+        paused = [a for a in state["accounts"] if (a.get("error") or {}).get("outage")]
+        self.assertTrue(paused, "the outage scenario has no paused account")
+        for account in paused:
+            with self.subTest(account=account["label"]):
+                words = self.browser.js(f"{row(account)}.innerText")
+                self.assertEqual(words.count("Paused"), 1, words)
+
 
 CLIENTS = ("claude_cli", "claude", "codex", "muse")
 APPS = {"claude_cli": "Claude Code", "claude": "Claude Desktop", "codex": "Codex", "muse": "Muse Code"}
