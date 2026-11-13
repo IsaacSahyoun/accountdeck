@@ -411,7 +411,11 @@ class Claude:
             config.pop(key, None)
         # The account's name comes off before its cookies change and goes back on last. A write that dies
         # part way then reads as signed out, never as one account's name beside another account's cookies.
+        # A journal Claude left can name the account too, so it goes with the name (its settings are in
+        # `config` already).
         tx.write(self.base / "config.json", json_bytes(config))
+        if journal["present"]:
+            tx.write(self.base / JOURNAL, None)
         config.update({key: value for key, value in auth.items() if key in scope.auth_keys})
         network = self.cookie_dir
         for name in scope.cookie_files[1:]:
@@ -422,8 +426,6 @@ class Claude:
         for path in removals:
             tx.write(path, None)
         tx.write(self.base / "config.json", json_bytes(config))
-        if journal["present"]:
-            tx.write(self.base / JOURNAL, None)
 
     def clear_for_login(self, tx, scope=None):
         """Signs Desktop out for an add-account login by removing only the scope's sign-in data."""

@@ -6,6 +6,7 @@ import os
 os.environ["ACCOUNTDECK_SAFE_MODE"] = "1"
 os.environ["ACCOUNTDECK_DEMO"] = "1"
 
+import contextlib  # noqa: E402
 import copy  # noqa: E402
 import glob  # noqa: E402
 import json  # noqa: E402
@@ -15,8 +16,9 @@ import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
+from unittest import mock  # noqa: E402
 
-from accountdeck import demo, diagnostics  # noqa: E402
+from accountdeck import demo, diagnostics, recovery  # noqa: E402
 from accountdeck.operations import Operation  # noqa: E402
 from accountdeck.server import Server  # noqa: E402
 
@@ -31,6 +33,21 @@ def demo_engine(case, scenario):
     engine = demo.build_demo(root, scenario, start=False, inline=True)
     case.addCleanup(engine.stop)
     return engine
+
+
+@contextlib.contextmanager
+def recover_reads(order):
+    """Recover looks the open records up again when it is pressed. Inside this block that look returns
+    `order`. Yields the records Recover then reached, in the order it reached them."""
+    reached = []
+
+    def look(vault):
+        for key in order:
+            reached.append(key)
+            yield key
+
+    with mock.patch.object(recovery, "recover_transactions", look):
+        yield reached
 
 
 def terminal_rows(engine):

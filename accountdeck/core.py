@@ -233,8 +233,8 @@ class Vault:
         cannot be read or applied stops counting as pending, and what it holds is kept. Returns the new key."""
         name = SET_ASIDE + key
         with self.lock:
+            os.utime(self._file(key))        # kept for RECORD_TTL from now, however old the record already was
             os.replace(self._file(key), self._file(name))
-            os.utime(self._file(name))       # kept for RECORD_TTL from now, however old the record already was
         return name
 
     def prune(self, now=None):

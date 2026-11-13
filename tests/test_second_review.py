@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -17,8 +18,8 @@ from tests.test_one_writer import Beside, WaitThenWrite, until
 from tests.test_switch_safety import Crash, DeckCase, Waiting
 
 from accountdeck import cli_auto, switch_claude, switch_cli, switching
-from accountdeck.core import MAX_PAUSE, DeckError, FileTransaction, Store
-from accountdeck.operations import OperationRunner
+from accountdeck.core import MAX_PAUSE, DeckError, FileTransaction, Store, json_bytes
+from accountdeck.operations import Operation, OperationRunner
 from accountdeck.providers import claude as claude_provider
 
 
@@ -237,6 +238,7 @@ class DesktopLoginCase(DeckCase):
             switch_claude.restore_profile(self.ctx, account["id"], record)
         except Crash:
             pass
+        self.written = [Path(path).name for path in made]
         return len(made)
 
     def recover_once(self):
@@ -259,20 +261,30 @@ class HalfWrittenDesktopLoginTest(DesktopLoginCase):
     Recover saves the login it finds before it puts the previous one back."""
 
     def fresh_mac(self, journal):
-        """A new fake Mac. With `journal`, Claude was killed mid-save before all this: its settings journal
-        holds the newer copy of config.json, as on a real Mac after a hard stop."""
+        """A new fake Mac. With `journal`, Claude was killed mid-save before all this, as on a real Mac after
+        a hard stop: its settings journal holds the newer copy of config.json. "a setting" changed the theme.
+        "the sign-in" is the save that signed the account in, so config.json itself still says signed out and
+        the account's name is in the journal only."""
         self.setUp()
         if journal:
             config = Path(self.paths.claude_profile) / "config.json"
-            body = json.dumps({**json.loads(config.read_text()), "userThemeMode": "dark"}).encode()
+            newer = json.loads(config.read_text())
+            if journal == "the sign-in":
+                config.write_bytes(json_bytes({key: value for key, value in newer.items()
+                                               if key not in self.ctx.claude.scope.auth_keys}))
+            else:
+                newer["userThemeMode"] = "dark"
+            body = json.dumps(newer).encode()
             head = f"{hashlib.sha256(body).hexdigest()} {hashlib.sha256(config.read_bytes()).hexdigest()} 1\n"
             (config.parent / claude_provider.JOURNAL).write_bytes(head.encode() + body)
-            self.assertEqual(self.ctx.claude.capture()["journal"], {"present": True, "consistent": True, "used": True})
+            live = self.ctx.claude.capture()
+            self.assertEqual(live["journal"], {"present": True, "consistent": True, "used": True})
+            self.assertEqual(live["identity"], self.identity(self.outgoing["id"]))
 
     def at_every_write(self, scene):
         """Runs `scene(n)` and then one Recover, on a fresh fake Mac for each write `n` a login write can die
         before. The last round makes every write and never closes the record."""
-        for journal in (False, True):
+        for journal in (False, "a setting", "the sign-in"):
             self.fresh_mac(journal)
             writes = self.write_login(self.target, self.record("switch"))
             self.assertGreater(writes, 1)
@@ -281,6 +293,18 @@ class HalfWrittenDesktopLoginTest(DesktopLoginCase):
                     self.fresh_mac(journal)
                     scene(n)
                     self.recover_once()
+
+    def test_a_login_that_stopped_before_its_account_name_names_nobody(self):
+        """Also when the old account's name was in Claude's journal and not in config.json itself."""
+        for journal in (False, "a setting", "the sign-in"):
+            with self.subTest(journal=journal):
+                self.fresh_mac(journal)
+                self.write_login(self.target, self.record("switch"))
+                the_name = max(n for n, file in enumerate(self.written) if file == "config.json")
+                self.fresh_mac(journal)
+                self.write_login(self.target, self.record("switch"), dies_before=the_name)
+                self.assertIn("Cookies", self.written)
+                self.assertIsNone(self.ctx.claude.capture(config_only=True)["identity"])
 
     def test_a_switch_that_died_before_any_of_its_writes_is_put_right_by_one_recover(self):
         self.at_every_write(lambda n: self.write_login(self.target, self.record("switch"), dies_before=n))
@@ -291,6 +315,41 @@ class HalfWrittenDesktopLoginTest(DesktopLoginCase):
             self.write_login(self.outgoing, self.record("recover"), dies_before=n)   # so did the first Recover
 
         self.at_every_write(scene)
+
+
+class RecordsOfTheShippedVersionTest(DesktopLoginCase):
+    """The shipped 2.0.0 wrote a Desktop login in another order: the cookies first, the account name last. A
+    record it left open when it died between the two is on disk when this version starts, with one account's
+    name beside another account's cookies. Recover must not save that as anyone's login."""
+
+    def shipped_version_wrote(self, account, record, *, the_name_too):
+        claude, saved = self.ctx.claude, self.vault.get(account["id"])
+        for name in claude.scope.cookie_files[1:]:
+            record.write(claude.cookie_dir / name, None)
+        record.write(claude.cookie_dir / claude.scope.cookie_files[0], claude_provider._checked_cookies(saved["cookies"]))
+        if the_name_too:
+            path = Path(self.paths.claude_profile) / "config.json"
+            config = {key: value for key, value in json.loads(path.read_text()).items() if key not in claude.scope.auth_keys}
+            record.write(path, json_bytes({**config, **saved["auth"]}))
+
+    def test_a_switch_that_died_before_the_account_name(self):
+        self.shipped_version_wrote(self.target, self.record("switch"), the_name_too=False)
+        self.recover_once()
+
+    def test_a_recover_that_died_before_the_account_name(self):
+        self.shipped_version_wrote(self.target, self.record("switch"), the_name_too=True)       # the switch, whole
+        self.shipped_version_wrote(self.outgoing, self.record("recover"), the_name_too=False)   # its undo, part way
+        self.recover_once()
+
+    def test_a_switch_that_wrote_everything_still_has_its_renewed_login_kept(self):
+        """The reverse: a whole login that Claude renewed since is saved under its own account, as before."""
+        self.shipped_version_wrote(self.target, self.record("switch"), the_name_too=True)
+        path = Path(self.paths.claude_profile) / "config.json"
+        renewed = {**json.loads(path.read_text()), "userThemeMode": "dark"}     # Claude ran and saved its settings again
+        path.write_bytes(json_bytes(renewed))
+        before = self.vault.get(self.target["id"])["captured"]
+        self.recover_once()
+        self.assertGreater(self.vault.get(self.target["id"])["captured"], before, "the login Claude held was not kept")
 
 
 class TerminalRecoverCase(DeckCase):
@@ -423,6 +482,22 @@ class SetAsideRecordsAreKeptTest(TerminalRecoverCase):
     """The notice says a record that was set aside is kept for 30 days. That has to hold for a record that
     was already older than that when it was set aside."""
 
+    def test_a_record_is_dated_before_it_gets_its_set_aside_name(self):
+        """A crash or another look between the two steps must not find an old record under its new name."""
+        key = "transaction-" + "1" * 32
+        self.vault.path(key).write_bytes(b"not a vault record")
+        long_ago = time.time() - 45 * 86400
+        os.utime(self.vault.path(key), (long_ago, long_ago))
+        rename, ages = os.replace, []
+
+        def renamed(source, target):
+            ages.append(time.time() - os.stat(source).st_mtime)
+            return rename(source, target)
+
+        with mock.patch.object(os, "replace", renamed):
+            self.vault.set_aside(key)
+        self.assertLess(ages[0], 60, "the record got its set-aside name while it still looked 45 days old")
+
     def test_an_old_record_is_not_deleted_in_the_press_that_sets_it_aside(self):
         key = "transaction-" + "0" * 32
         self.vault.path(key).write_bytes(b"not a vault record")
@@ -476,6 +551,22 @@ class CodexRecoverWaitsForUsageChecksTest(DeckCase):
         self.assert_consistent("codex", self.identity(outgoing["id"]))
 
 
+class WaitThenClose(Operation):
+    """Another client's switch: it waits for its sessions, then starts to close the client. Both steps can
+    still be cancelled."""
+
+    def __init__(self):
+        super().__init__("switch", provider="codex", label="stand-in", consent="idle",
+                         steps=(("wait", "Waiting for sessions"), ("stop", "Closing Codex")))
+        self.sessions_closed, self.finish = threading.Event(), threading.Event()
+
+    def run(self):
+        with self.step("wait", phase="waiting_idle", message="Waiting for sessions to close…"):
+            self.sessions_closed.wait(60)
+        with self.step("stop", phase="stopping", message="Closing Codex…"):
+            self.finish.wait(60)
+
+
 class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
     """The dashboard, clicked in headless Chrome against the real engine. An Undo confirmed while another
     client waits for its sessions runs beside that wait. The sheet must not turn into the progress view of
@@ -507,6 +598,45 @@ class UndoBesideAWaitTest(DeckCase, test_dashboard.DashboardTestCase):
         self.assertNotIn("cancel", offered, "the sheet offers to cancel the Codex wait as if it were the Undo")
         self.assertEqual(self.engine.snapshot()["pending"]["id"], waiting.id)
         self.assertEqual(self.browser.problems, [])
+
+
+    def test_nor_when_the_other_job_leaves_its_wait_while_the_undo_is_confirmed(self):
+        """Third review: the page cannot go by the last state it saw. By the time the Undo's answer is back,
+        the other job may have left its wait, and it is the app that knows the Undo ran beside it."""
+        self.engine.update_settings({"cli_early_switch": False})
+        self.engine.sense_active()
+        first = self.active("claude_cli")
+        support.with_reading(self.engine, first["id"], session=97)
+        for row in self.engine.store.accounts():
+            if row["provider"] == "claude_cli" and row["id"] != first["id"] and row["last_good_usage"]:
+                support.with_reading(self.engine, row["id"], session=20, weekly=20)
+        other = WaitThenClose()
+        for event in (other.sessions_closed, other.finish):
+            self.addCleanup(event.set)
+        self.engine.submit(other)
+        self.wait_for_phase("waiting_idle")
+        cli_auto.tick(self.engine)
+        self.assertTrue(until(lambda: self.engine.store.setting("cli_history", {}).get("last")))
+        self.browser.open(test_dashboard.serve(self, self.engine))
+        # The page gets the Undo's answer only once it has seen the other job leave its wait.
+        self.browser.js("""(() => { const post = AD.api.action; AD.api.action = async (name, body) => {
+            const answer = await post(name, body);
+            if (name === 'switch') await new Promise((go) => { window.seenTheOtherJobMove = go; });
+            return answer; }; })()""")
+        self.browser.click("document.querySelector('[data-cli-undo]')", "the Undo button")
+        self.browser.click(f"{test_dashboard.SHEET}.open && {test_dashboard.SHEET}.querySelector('[data-choice=now]')",
+                           "the button that confirms the Undo")
+        self.assertTrue(until(lambda: support.terminal_on_disk(self.engine)["name"] == self.identity(first["id"])),
+                        "the Undo did not run")
+        other.sessions_closed.set()
+        self.browser.wait("AD.app.state.pending && AD.app.state.pending.phase === 'stopping' && !!window.seenTheOtherJobMove",
+                          "the other job closing its client")
+        self.browser.js("window.seenTheOtherJobMove()")
+        time.sleep(0.5)
+        offered = self.browser.js(f"{test_dashboard.SHEET}.open ? [...{test_dashboard.SHEET}.querySelectorAll('button')]"
+                                  ".map((b) => b.dataset.choice || b.textContent.trim()) : []")
+        self.assertNotIn("cancel", offered, "the sheet offers to cancel the Codex switch as if it were the Undo")
+        self.assertEqual(self.engine.snapshot()["pending"]["id"], other.id)
 
 
 class RemoveTheSignedOutAccountTest(DeckCase, test_dashboard.DashboardTestCase):

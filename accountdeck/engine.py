@@ -221,8 +221,9 @@ class Engine:
         self.bump()
 
     def submit(self, op):
-        """Runs an operation on `ad2-ops`; DeckError `busy` while another one runs."""
-        result = {"op": self.runner.submit(op)}
+        """Runs an operation on `ad2-ops`; DeckError `busy` while another one runs. `beside` in the answer
+        says it runs beside another client's wait: that wait stays the pending job, and this one never is."""
+        result = {"op": self.runner.submit(op), "beside": op.beside}
         self.bump()
         return result
 

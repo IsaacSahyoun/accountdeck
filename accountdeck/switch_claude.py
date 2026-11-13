@@ -11,6 +11,7 @@ signal goes through `procs`. Whether Claude came back as the target is `claude_v
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,7 @@ from .claude_verify import (NOT_OPENED, OPEN_IT, BackgroundVerifier, Verdict, Ve
                             _SERVER_COUNT)
 from .rules import (DORMANT_DAYS, PRESERVED, age_text, clock_text, countdown_text, headroom_line, plan_current,
                     plan_target)
-from .core import DeckError, FileTransaction, is_frozen
+from .core import OPEN_STATUSES, DeckError, FileTransaction, is_frozen, recover_transactions
 from .diagnostics import Manifest
 from .operations import Operation, OperationCancelled
 from .platform import facts_mac
@@ -1209,6 +1210,7 @@ class Recover(ClaudeJob):
         self._stop()
         self._point_of_no_return("Putting the previous sign-in back…")
         with self.step("restore", phase="restoring", message="Putting the previous sign-in back…", cancellable=False):
+            self.half_written = _half_written(ctx)
             done = recovery.press(ctx.engine, "claude", self._recover_one)
             self.manifest.set("recovered", len(done.sentences)).set("config_keys_after", config_keys(ctx.claude))
         if self.was_running:
@@ -1231,7 +1233,8 @@ class Recover(ClaudeJob):
         if not outgoing or ctx.store.account(outgoing) is None:
             tx.rollback()        # no saved account to go back to: the files as they were, if nothing changed them
             return "Claude's sign-in files are back as they were."
-        self._keep_live_tokens()
+        if not self.half_written:
+            self._keep_live_tokens()
         undo = self._new_transaction(status="prepared")
         try:
             restore_profile(ctx, outgoing, undo)
@@ -1276,6 +1279,34 @@ class Recover(ClaudeJob):
             partial.save()
             return "preserved_newer_sessions"
         return "rolled_back"
+
+
+def _half_written(ctx) -> bool:
+    """True when an open record of a Desktop switch, or of an undo that died, replaced Claude's cookies and
+    never wrote the account name after them. Claude's files may then be part one account and part another,
+    so Recover does not save them as anyone's login: it writes the previous account from the vault. A record
+    the shipped 2.0.0 left can be in that state (it wrote the name last without taking it off first)."""
+    cookies = ctx.claude.scope.cookie_files[0]
+    for key in recover_transactions(ctx.vault):
+        try:
+            doc = ctx.vault.get(key)
+        except DeckError:
+            continue
+        if doc.get("provider", "claude") != "claude" or doc.get("status") not in OPEN_STATUSES:
+            continue
+        changes = doc.get("changes") or []
+        names = [Path(change["path"]).name for change in changes]
+        if cookies not in names:
+            continue
+        last = len(names) - 1 - names[::-1].index(cookies)
+        named = [change for change in changes[last + 1:] if Path(change["path"]).name == "config.json"]
+        if not named:
+            return True
+        path, before = Path(named[-1]["path"]), named[-1]["before"]
+        current = path.read_bytes() if path.exists() else None
+        if current == (base64.b64decode(before) if before is not None else None):
+            return True         # the write of the name was recorded and never made
+    return False
 
 
 def restore_enrollment(engine):

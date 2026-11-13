@@ -917,8 +917,10 @@ class DesktopInterruptedSwitchTest(DeckCase):
             with self.subTest(switch_record_first=order[0] == tx.key):
                 tx.close("prepared")
                 first.close("prepared")
-                self.engine.recovery = order
-                self.assertEqual(self.act("claude", "recover")["outcome"], "success")
+                self.pending_records()
+                with support.recover_reads(order) as reached:
+                    self.assertEqual(self.act("claude", "recover")["outcome"], "success")
+                self.assertEqual(reached, order)
                 self.assert_settled(self.outgoing)
 
     def test_a_record_that_cannot_be_applied_is_set_aside_by_one_press(self):

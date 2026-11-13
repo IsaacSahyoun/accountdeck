@@ -17,6 +17,8 @@ import unittest
 from unittest import mock
 import uuid
 
+from tests import support
+
 from accountdeck import diagnostics
 from accountdeck.config import Paths, Timings
 from accountdeck.core import DeckError, FileTransaction, Vault, atomic_write, json_bytes, read_json, recover_transactions
@@ -763,11 +765,12 @@ class ReviewFindingsTest(EngineCase):
                     self.act("switch", key)
                 pending = recover_transactions(engine.vault)
                 self.assertEqual(len(pending), 2)
-                engine.recovery = sorted(pending, key=lambda k: engine.vault.get(k)["purpose"] == "recover",
-                                         reverse=undo_record_first)
+                order = sorted(pending, key=lambda k: engine.vault.get(k)["purpose"] == "recover", reverse=undo_record_first)
                 plan = self.plan("recover")
-                engine.action("recover", {"provider": "muse", "plan_id": plan["plan_id"], "consent": "now"})
-                self.assertTrue(engine.runner.wait(30))
+                with support.recover_reads(order) as reached:
+                    engine.action("recover", {"provider": "muse", "plan_id": plan["plan_id"], "consent": "now"})
+                    self.assertTrue(engine.runner.wait(30))
+                self.assertEqual(reached, order)
                 self.assertEqual(engine.snapshot()["report"]["outcome"], "success")
                 self.assertEqual(identity_key(read_json(self.auth)), "main@example.test")
 
