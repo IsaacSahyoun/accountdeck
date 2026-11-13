@@ -269,8 +269,9 @@ class TakeFixOutTest(unittest.TestCase):
         cases, held, sums = self.copy / "cases.json", self.copy / "held", self.copy / "app" / "sums.py"
         cases.write_text(json.dumps([{"name": "the fix", "file": "app/sums.py", "old": "return n * 2", "new": "return n * 1",
                                       "test": "tests.test_sums.SumsTest.test_held"}]))
+        temp = scratch(self)                # the run's temp folder is this test's, so what a killed run leaves is in here
         run = subprocess.Popen([sys.executable, "-E", "-s", str(VERIFY / "take_fix_out.py"), str(self.copy), sys.executable, str(cases)],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                               env=dict(os.environ, TMPDIR=str(temp)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(run.wait)
         self.addCleanup(run.kill)
         deadline = time.monotonic() + 60
@@ -284,6 +285,7 @@ class TakeFixOutTest(unittest.TestCase):
         self.assertEqual(sums.read_text().count("return n * 2"), 1, "the killed run left the copy with the fix taken out")
         self.assertEqual(run.returncode, 143)
         self.assertNotEqual(subprocess.run(["kill", "-0", test], capture_output=True).returncode, 0, "the test it started still runs")
+        self.assertEqual(os.listdir(temp), [], "the killed run left its compiled files behind")
 
     def test_a_cases_file_with_no_case_is_an_error(self):
         with self.assertRaisesRegex(SystemExit, "names no case"):
