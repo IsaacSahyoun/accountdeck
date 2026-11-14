@@ -81,8 +81,9 @@ def after(seconds):
                                                                 "reason": "", "undo_until": NOW - seconds + 600}}
 show("   5 seconds after that switch, Beta in use", moved, after(5), cli_order="most_room")
 show("   2 hours after that switch", moved, after(7200), cli_order="most_room")
-print("G. Alpha's week ran out. Beta is first in the order, its reading is 4 minutes old and the last try to read it failed. Gamma is ready:")
+print("G. Beta is first in the order, its reading is 4 minutes old and the last try at a new one failed a minute ago. Gamma is ready:")
 out = ends_in("alpha", "Alpha", 100, 6, active=True)
-unread = dict(ends_in("beta", "Beta", 30, 2), last_good_at=NOW - 240, unread=True)
-show("   Gamma is used, and Beta is not waited for", [out, unread, ends_in("gamma", "Gamma", 10, 4)])
-show("   Alpha is at 96% and still works: Beta is waited for", [full, unread, ends_in("gamma", "Gamma", 10, 4)])
+unread = dict(ends_in("beta", "Beta", 30, 2), last_good_at=NOW - 240, tried_at=NOW - 60)
+show("   Alpha's week ran out: Gamma is used, and Beta is not waited for", [out, unread, ends_in("gamma", "Gamma", 10, 4)])
+show("   Alpha is at 96%: the same", [full, unread, ends_in("gamma", "Gamma", 10, 4)])
+show("   Alpha's week ran out and Beta is the only other account: it is read again", [out, unread])

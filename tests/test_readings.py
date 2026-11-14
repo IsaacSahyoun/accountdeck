@@ -306,7 +306,7 @@ class SoonestWeekFirstTest(unittest.TestCase):
 
     def test_it_moves_to_a_week_that_ends_sooner_however_far_off_its_end_is(self):
         for name, ends in (("12 hours", 12 * HOUR), ("25 hours", 25 * HOUR), ("2 days", 2 * DAY), ("5 days", 5 * DAY),
-                           ("an hour and a minute before Alpha's", 6 * DAY - HOUR - 60)):
+                           ("an hour and 6 minutes before Alpha's", 6 * DAY - HOUR - 360)):
             with self.subTest(ends_in=name):
                 self.assertEqual(self.moves(account("beta", 40, ends)), ("switch", "beta", "early", None))
 
@@ -320,10 +320,26 @@ class SoonestWeekFirstTest(unittest.TestCase):
     def test_it_never_moves_to_a_week_that_ends_later_or_with_the_one_in_use(self):
         """Weeks that end within the hour of each other end together, as they do in the order
         (`cli_policy._ordered`): an hour of allowance is not worth a switch."""
-        for name, ends in (("an hour before", 6 * DAY - HOUR), ("a minute before", 6 * DAY - 60), ("with Alpha's", 6 * DAY),
+        for name, ends in (("an hour and 5 minutes before", 6 * DAY - HOUR - 300), ("an hour before", 6 * DAY - HOUR),
+                           ("a minute before", 6 * DAY - 60), ("with Alpha's", 6 * DAY),
                            ("a minute after", 6 * DAY + 60), ("a day after", 7 * DAY)):
             with self.subTest(ends=name):
                 self.assertEqual(self.moves(account("beta", 40, ends)), ("none", None, None, None))
+
+    def test_weeks_an_hour_apart_do_not_trade_places_when_a_reset_time_reads_a_second_later(self):
+        """Beta's week ends exactly an hour before Gamma's, which is a tie, and Gamma has more room, so the
+        terminals went to Gamma. Claude's reset time for one week differs by a second from reading to reading
+        (`cli_policy.SAME_RESET`). When Gamma's reads a second later, the two are more than an hour apart. That
+        must not send the terminals on to Beta: to leave an account, the other week has to end sooner by the
+        hour and by more than such a difference."""
+        beta = account("beta", 40, 2 * DAY)
+        first = self.decide(beta, account("gamma", 20, 2 * DAY + HOUR))
+        self.assertEqual((first["action"], first["target"]), ("switch", "gamma"))
+        for name, later in (("a second", 1), ("5 minutes", 300)):
+            with self.subTest(reads=name + " later"):
+                on_gamma = [account("alpha", 20, 6 * DAY), beta, account("gamma", 20, 2 * DAY + HOUR + later, active=True)]
+                result = cli_policy.evaluate(on_gamma, SETTINGS, {}, NOW)
+                self.assertEqual((result["action"], result["hold"]), ("none", None))
 
     def test_two_weeks_that_end_together_never_trade_places(self):
         """Claude's reset time for one week differs by a second from reading to reading (`cli_policy.SAME_RESET`).
@@ -419,27 +435,41 @@ class SoonestWeekFirstTest(unittest.TestCase):
         self.assertEqual(decides(96, old_beta, gamma), ("switch", "gamma", "threshold", None, []))
         self.assertEqual(decides(96, old_beta, gamma, cli_order="most_room"), ("switch", "gamma", "threshold", None, []))
 
-    def test_an_account_that_ran_out_does_not_wait_for_a_reading_that_could_not_be_taken(self):
+    def test_an_account_that_could_not_be_read_is_not_switched_to_until_a_read_works(self):
         """A switch is made on a reading at most 3 minutes old (`cli_policy.READY`), and `cli_auto.tick` reads an
-        older one again first. Beta's reading is 4 minutes old and the last try to read it failed, as after an
-        HTTP 429 that pauses its reads. Alpha's week ran out. Waiting for Beta would keep the terminals on an
-        account that works for no model while Gamma is ready, so they go to Gamma. Beta is first under "soonest
-        reset first" and in the user's own order here."""
-        unread_beta, gamma = account("beta", 30, 2 * DAY, age=240, unread=True), account("gamma", 10, 4 * DAY)
+        older one again first. Beta's reading is 4 minutes old and the last try at a new one failed, a minute
+        ago, as after an HTTP 429 that pauses its reads. A switch to Beta would wait for a read that does not
+        come, on an account that has run out. So Beta is skipped, with words the page shows, and Gamma is next."""
+        unread_beta, gamma = account("beta", 30, 2 * DAY, age=240, tried_at=NOW - 60), account("gamma", 10, 4 * DAY)
+        for alpha, kind in (((100, 6 * DAY), "out"), ((96, 6 * DAY), "threshold")):
+            for order in ("soonest_reset", "manual"):           # Beta is first in both
+                with self.subTest(kind=kind, order=order):
+                    result = self.decide(unread_beta, gamma, alpha=alpha, cli_order=order, cli_manual_order=["beta", "gamma"])
+                    self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", kind))
+                    self.assertEqual(result["reason"].partition("; ")[2], "Gamma is first in your eligible order.")
+                    self.assertEqual([(row["id"], row["skip"]) for row in result["next_up"] if row["id"] == "beta"], [("beta", "usage check failed")])
+        # The early switch passes it over too.
+        self.assertEqual(self.moves(unread_beta, account("gamma", 10, 4 * DAY)), ("switch", "gamma", "early", None))
+        # Beta is used when its reading is new enough to switch on, and when the last try was the one that gave
+        # its reading: the next read is there a few seconds later.
         out = dict(alpha=(100, 6 * DAY))
-        for order in ("soonest_reset", "manual"):
-            with self.subTest(order=order):
-                result = self.decide(unread_beta, gamma, cli_order=order, cli_manual_order=["beta", "gamma"], **out)
-                self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", "out"))
-                self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta could not be read again, so Gamma is next.")
-        # Beta is used when its reading is new enough to switch on, and when its last read worked: the new
-        # reading is there a few seconds later.
-        self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=120, unread=True), gamma, **out)[:3], ("switch", "beta", "out"))
+        self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=120, tried_at=NOW - 60), gamma, **out)[:3], ("switch", "beta", "out"))
+        self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240, tried_at=NOW - 240), gamma, **out)[:3], ("switch", "beta", "out"))
         self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240), gamma, **out)[:3], ("switch", "beta", "out"))
-        # It is waited for when no other account is ready, and while the account in use still works.
-        self.assertEqual(self.moves(unread_beta, **out)[:3], ("switch", "beta", "out"))
-        self.assertEqual(self.moves(unread_beta, account("gamma", 10, 4 * DAY, age=240, unread=True), **out)[:3], ("switch", "beta", "out"))
-        self.assertEqual(self.moves(unread_beta, gamma, alpha=(96, 6 * DAY))[:3], ("switch", "beta", "threshold"))
+        # With no other account ready it is read again, like a reading that is too old.
+        result = self.decide(unread_beta, **out)
+        self.assertEqual((result["action"], result["hold"], result["refresh"]), ("none", "Checking Beta before switching", ["beta"]))
+        # Past 15 minutes the words are those of an old reading.
+        result = self.decide(account("beta", 30, 2 * DAY, age=1200, tried_at=NOW - 60), gamma, **out)
+        self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], ["reading 20 min old"])
+        # An account past the threshold is used up as a last resort, and one of those that could not be read
+        # does not keep a ready one waiting either.
+        result = self.decide(account("beta", 90, 2 * DAY, age=240, tried_at=NOW - 60), account("gamma", 92, 4 * DAY), **out)
+        self.assertEqual((result["action"], result["target"]), ("switch", "gamma"))
+        # The other way round: Beta has room and could not be read, and Gamma, past the threshold, is ready.
+        result = self.decide(unread_beta, account("gamma", 92, 4 * DAY), **out)
+        self.assertEqual((result["action"], result["target"], result["reason"]),
+                         ("switch", "gamma", "Alpha reached its weekly limit; Beta needs a new reading first, so Gamma is used up to 99%."))
 
     def test_of_weeks_that_end_together_the_early_switch_moves_to_the_one_the_order_puts_first(self):
         """Beta's week ends half an hour before Gamma's, and Gamma has more room. The order calls that a tie and

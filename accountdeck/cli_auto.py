@@ -57,8 +57,9 @@ def inputs(engine):
                      "health": row["flags"].get("health", "ok"),
                      "live_expired": row["flags"].get("live_expired", False),
                      "last_good_at": row["last_good_at"],
-                     # The last try to read it failed: a good reading clears the error (`Store.observe`).
-                     "unread": bool(row["error"]),
+                     # When it was last tried. A try later than the last good reading is one that failed. The row's
+                     # `error` does not say so: a save of the login clears it (`CLIAccounts.save`).
+                     "tried_at": row["flags"].get("checked"),
                      "windows": (row["last_good_usage"] or {}).get("windows", [])})
     return rows
 

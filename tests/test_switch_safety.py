@@ -508,6 +508,32 @@ class TerminalSoonestWeekTest(DeckCase):
         self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.later["id"]))
         self.assert_consistent("claude_cli", self.identity(self.later["id"]))
 
+    def test_a_login_save_does_not_hide_that_an_account_could_not_be_read(self):
+        """Every switch files the login of the account the terminals leave, and that save clears the row's
+        `error` while the reads of the account stay paused. So the rule does not go by `error`. The row keeps
+        the time of the last try (`flags["checked"]`), and a try later than the last good reading is one that
+        failed. Here Claude refuses a read of the account in use, the user switches away from it, and the
+        account they switched to runs out. The paused account is first in the order, and the terminals go
+        past it to one that is ready."""
+        def refused(credentials):
+            raise DeckError("Too many requests.", "rate_limited", 900)
+        self.act("claude_cli", "switch", account=self.soonest["id"])
+        self.engine.clock.advance(200)
+        self.engine.cli.adapter.usage = refused
+        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "rate_limited")
+        del self.engine.cli.adapter.usage
+        self.assertIsNotNone(self.engine.store.account(self.soonest["id"])["error"])
+        self.act("claude_cli", "switch", account=self.first["id"])
+        paused = self.engine.store.account(self.soonest["id"])
+        self.assertIsNone(paused["error"], "the save of its login no longer clears the error: this test proves nothing")
+        self.assertGreater(paused["paused_until"], self.engine.clock())
+        self.engine.clock.advance(40)
+        self.read(self.first, weekly=100, ends=6 * self.DAY - 240)
+        self.read(self.later, weekly=10, ends=4 * self.DAY - 240)
+        last = self.switched()
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.later["id"]))
+        self.assert_consistent("claude_cli", self.identity(self.later["id"]))
+
     def test_with_the_setting_off_the_terminals_stay(self):
         self.engine.prefs.update({"cli_early_switch": False})
         self.assertEqual(cli_auto.decision(self.engine)["action"], "none")

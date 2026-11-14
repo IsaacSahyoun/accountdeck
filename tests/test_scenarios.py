@@ -66,6 +66,15 @@ class ScenarioTest(unittest.TestCase):
                 engine = None
                 try:
                     engine = demo.build_demo(root, scenario, start=False, inline=True)
+                    # `terminal` and `resets-soon` are built with a switch at the threshold, and the early switch
+                    # waits 2 hours after any automatic switch. A demo runs longer than that. So the switches in
+                    # the history are dated 3 hours back here, and no wait hides a move the demo would make later.
+                    with cli_auto.history(engine) as past:
+                        for key in ("left_at", "early_at", "early_tried"):
+                            if key in past:
+                                past[key] -= 3 * 3600
+                        if past.get("last"):
+                            past["last"]["at"] -= 3 * 3600
                     submitted = []       # kept, never run: the job, its client and why auto-switch started it
                     engine.submit = lambda op: submitted.append((op.kind, op.provider, getattr(op, "auto_kind", None)))
                     engine.tick()
