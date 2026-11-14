@@ -1,5 +1,5 @@
-/* AccountDeck 2 — an account row, the same for all four clients (Claude Code, Claude Desktop, Codex
- * and Muse Code). A row shows the account (monogram, name, badges, a status or detail line), its
+/* AccountDeck 2 — an account row, the same for all three clients (Claude Code, Codex and Muse
+ * Code). A row shows the account (monogram, name, badges, a status or detail line), its
  * limits, its one button and its More menu. Rows are keyed by account id and rebuilt only when
  * their data changed; countdowns are [data-reset] text the shell's clock patches.
  *
@@ -146,9 +146,7 @@
   /** What a saved account still needs before it can be switched to, when signing in again is not it. */
   function setupNote(account) {
     if (account.saved === false || account.switchable || A.needsSignin(account)) return null;
-    const desktop = account.provider === 'claude';
-    if (desktop && account.imported_from === 'pc') return T.setup.importing;
-    return desktop && account.active ? T.setup.saving : T.setup.signIn;
+    return T.setupSignIn;
   }
 
   /** Under the name: the status when something needs a look, else plan and email; then any notes. */

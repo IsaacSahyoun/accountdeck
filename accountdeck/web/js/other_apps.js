@@ -1,4 +1,4 @@
-/* AccountDeck 2 — the Claude Desktop, Codex and Muse Code sections. Each has a title, Save Current
+/* AccountDeck 2 — the Codex and Muse Code sections. Each has a title, Save Current
  * Account and Add Account, and its accounts as rows (rows.js draws them, the same rows as the terminal
  * section). Drawing changes no login: every button opens a plan to review first. */
 (function () {
@@ -8,8 +8,6 @@
   const el = (...args) => AD.dom.el(...args);
 
   const CLIENTS = [
-    { provider: 'claude', hint: 'Save Chat and Cowork work before switching. Desktop may close and reopen.',
-      empty: 'Sign in to Claude Desktop first, then choose Save Current Account. Or use Add Account to sign in to another account.' },
     { provider: 'codex', hint: 'Close Codex sessions before switching. Settings and history stay shared.',
       empty: 'Sign in to Codex first, then choose Save Current Account. Or use Add Account. Codex must use file storage for its login.' },
     { provider: 'muse', hint: 'Close Muse sessions before switching. Settings and history stay shared.',
@@ -36,7 +34,7 @@
     return { provider, node, buttons, list, empty: none };
   }
 
-  /** Render the three sections at nowMs. */
+  /** Render the two sections at nowMs. */
   function render(state, nowMs) {
     const host = document.getElementById('other-accounts');
     if (!host) return;

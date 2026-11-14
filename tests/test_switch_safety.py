@@ -1,4 +1,4 @@
-"""Everything that acts on a login, for all four clients: switching, waiting, recovery and the stored copies.
+"""Everything that acts on a login, for all three clients: switching, waiting, recovery and the stored copies.
 Each test runs a whole engine on the demo's fake data in safe mode; the real apps, their logins and the
 Keychain are never touched."""
 import dataclasses
@@ -15,8 +15,7 @@ import uuid
 
 from tests import support
 
-from accountdeck import cli_auto, switch_claude, switch_cli, switching
-from accountdeck.claude_verify import Verdict, Verifier
+from accountdeck import cli_auto, switch_cli, switching
 from accountdeck.config import Paths
 from accountdeck.core import DeckError, FileTransaction, Vault, read_json, recover_transactions
 from accountdeck.operations import Operation, OperationRunner
@@ -56,13 +55,11 @@ def codex_login(email, *, now, refresh="synthetic-refresh-side", lifetime=9 * 86
 
 
 class DeckCase(unittest.TestCase):
-    """The `terminal` demo (accounts of all four clients) with its tick thread off."""
+    """The `terminal` demo (accounts of all three clients) with its tick thread off."""
 
     def setUp(self):
         self.engine = support.demo_engine(self, "terminal")
         self.paths, self.procs, self.vault = self.engine.paths, self.engine.procs, self.engine.vault
-        # The Desktop stop ladder waits `idle_hold` seconds on real clocks; tests need the steps, not the wait.
-        self.engine.timings = dataclasses.replace(self.engine.timings, idle_hold=0.2, idle_poll=0.05)
 
     # ---- accounts ----
     def rows(self, provider):
@@ -86,10 +83,6 @@ class DeckCase(unittest.TestCase):
             if row.kind.startswith("codex"):
                 self.procs.exit_process(row.pid)
 
-    def close_claude(self):
-        for row in self.procs.claude_desktop():
-            self.procs.exit_process(row.pid)
-
     # ---- who is signed in, read from each client's own files ----
     def signed_in(self, provider):
         if provider == "claude_cli":
@@ -100,7 +93,7 @@ class DeckCase(unittest.TestCase):
             return codex_module.identity_key(read_json(Path(self.paths.codex_home) / "auth.json"))
         if provider == "muse":
             return muse_identity(read_json(Path(self.paths.muse_config) / "auth.json"))
-        return read_json(Path(self.paths.claude_profile) / "config.json").get("lastKnownAccountUuid")
+        raise AssertionError(f"AccountDeck manages no client named {provider}")
 
     def identity(self, key):
         return self.engine.store.account(key)["identity"]
@@ -629,8 +622,8 @@ class TerminalAutoSwitchTest(DeckCase):
         return False
 
     def test_it_acts_while_each_other_client_waits_for_its_sessions(self):
-        """Act on 4, for a Desktop, a Codex and a Muse wait."""
-        for provider in ("claude", "codex", "muse"):
+        """Act on 4, for a Codex and a Muse wait."""
+        for provider in ("codex", "muse"):
             with self.subTest(waiting=provider):
                 self.setUp()
                 waiting = self.start(Waiting(provider))
@@ -764,12 +757,6 @@ class WaitDeadlineTest(DeckCase):
         side, main = self.add_codex_account(), self.active("codex")
         self.act("codex", "switch", side, consent="idle", wait=False)
         self.assert_the_wait_ended("codex", self.identity(main["id"]))
-
-    def test_a_desktop_wait(self):
-        outgoing = self.active("claude")
-        self.act("claude", "switch", self.spare("claude")["id"], consent="idle", wait=False)
-        self.assert_the_wait_ended("claude", self.identity(outgoing["id"]))
-        self.assertTrue(self.procs.claude_desktop(), "Claude was closed though the wait never ended")
 
     def test_a_muse_wait(self):
         outgoing = self.active("muse")
@@ -1007,177 +994,6 @@ class CodexRenewalTest(DeckCase):
         self.assertEqual(self.work_folders(), [], "the renewed login was left in a plain-text folder")
 
 
-class DesktopSwitchTest(DeckCase):
-    def setUp(self):
-        super().setUp()
-        self.outgoing, self.target = self.active("claude"), self.spare("claude")
-        self.procs.relaunch_identity = self.identity(self.target["id"])
-
-    def test_a_switch_closes_claude_writes_the_selected_login_and_reopens_it(self):
-        report = self.act("claude", "switch", self.target["id"])
-        self.assertEqual(report["outcome"], "success", report)
-        self.assert_consistent("claude", self.identity(self.target["id"]))
-        self.assertTrue(self.procs.claude_desktop(), "Claude was not reopened")
-        self.assertEqual(self.pending_records(), [])
-
-    def test_a_switch_waits_for_busy_sessions_when_asked_to(self):
-        busy = [s for s in self.engine.snapshot()["providers"]["claude"]["running"]["sessions"] if s["status"] == "busy"]
-        self.assertTrue(busy)
-        self.act("claude", "switch", self.target["id"], consent="idle", wait=False)
-        self.wait_for_phase("waiting_idle")
-        self.assertEqual(self.signed_in("claude"), self.identity(self.outgoing["id"]))
-        for session in busy:
-            self.procs.set_session_status(session["pid"], "idle", age_s=60)
-        self.assertTrue(self.engine.runner.wait(120))
-        self.assertEqual(self.engine.snapshot()["report"]["outcome"], "success")
-        self.assert_consistent("claude", self.identity(self.target["id"]))
-
-    def test_one_press_of_recover_settles_a_switch_the_app_died_in(self):
-        self.close_claude()
-        tx = FileTransaction(self.vault, self.engine.roots())
-        tx.doc.update(provider="claude", purpose="switch", outgoing_id=self.outgoing["id"], target_id=self.target["id"])
-        tx.save()
-        switch_claude.restore_profile(switching.context(self.engine), self.target["id"], tx)
-        self.assertEqual(self.signed_in("claude"), self.identity(self.target["id"]))
-        self.assertEqual(len(self.pending_records()), 1)
-        report = self.act("claude", "recover")
-        self.assertEqual(report["outcome"], "success", report)
-        self.assertEqual(self.pending_records(), [])
-        self.assert_consistent("claude", self.identity(self.outgoing["id"]))
-
-
-class DesktopBackgroundCheckTest(DeckCase):
-    """Consider 4: the check that keeps watching an unconfirmed Desktop switch only waits while another job
-    runs. It used to be dropped then, and with it the wrong-account verdict and the offer to recover."""
-
-    def setUp(self):
-        super().setUp()
-        self.engine.timings = dataclasses.replace(self.engine.timings, verify_soft_every=0.01, verify_soft_count=10 ** 6)
-        self.target = self.spare("claude")
-        unsure = Verdict("pending", "unconfirmed", "Claude opened, but the sign-in couldn't be confirmed yet.")
-        with mock.patch.object(Verifier, "run", return_value=unsure):   # Claude reopens and does not say who is signed in
-            report = self.act("claude", "switch", self.target["id"])
-        self.assertEqual((report["outcome"], report["verified"]), ("success", "unconfirmed"), report)
-        self.assertEqual(len(self.engine.background_verifiers), 1)
-        self.check = self.engine.background_verifiers[0]
-        self.wrong = Verdict("failed", "mismatch", "Claude opened a different account.")
-        self.other = Waiting("codex")
-        self.addCleanup(self.other.release.set)
-
-    def start_another_job(self):
-        self.engine.submit(self.other)
-        self.wait_for_phase("waiting_idle")
-
-    def finish_the_other_job(self):
-        self.other.release.set()
-        self.assertTrue(self.engine.runner.wait(10))
-
-    def tick(self):
-        self.engine._tick_verifiers(self.engine.clock() + 1)
-
-    def assert_recovery_is_offered(self):
-        self.assertEqual(self.engine.background_verifiers, [])
-        self.assertEqual(len(self.pending_records()), 1, "the switch could not be undone")
-        self.assertTrue(any("Recovery is available" in n["message"] for n in self.engine.snapshot()["notices"]))
-
-    def test_it_waits_while_a_job_of_another_client_runs_and_looks_again_after(self):
-        self.start_another_job()
-        with mock.patch.object(self.check.verifier, "check", return_value=self.wrong) as look:
-            self.tick()
-            look.assert_not_called()
-            self.assertEqual(self.engine.background_verifiers, [self.check], "the check was dropped")
-            self.finish_the_other_job()
-            self.tick()
-        self.assert_recovery_is_offered()
-
-    def test_a_wrong_account_seen_just_as_a_job_starts_is_looked_at_again_not_dropped(self):
-        def look():
-            if not self.engine.runner.busy and not self.other.release.is_set():
-                self.start_another_job()
-            return self.wrong
-        with mock.patch.object(self.check.verifier, "check", side_effect=look):
-            self.tick()
-            self.assertEqual(self.engine.background_verifiers, [self.check], "the check was dropped")
-            self.assertEqual(self.pending_records(), [])
-            self.finish_the_other_job()
-            self.tick()
-        self.assert_recovery_is_offered()
-
-
-class DesktopInterruptedSwitchTest(DeckCase):
-    """Act on 1 for Claude Desktop: one press of Recover after the app died at each step of a switch."""
-
-    def setUp(self):
-        super().setUp()
-        self.outgoing, self.target = self.active("claude"), self.spare("claude")
-        self.ctx = switching.context(self.engine)
-        self.close_claude()
-
-    def die_after_the_login_is_written(self, status="prepared"):
-        tx = FileTransaction(self.vault, self.engine.roots())
-        tx.doc.update(provider="claude", purpose="switch", outgoing_id=self.outgoing["id"], target_id=self.target["id"])
-        tx.save()
-        switch_claude.restore_profile(self.ctx, self.target["id"], tx)
-        tx.close(status)
-        return tx
-
-    def assert_settled(self, expected):
-        self.assertEqual(self.pending_records(), [], "a record still waits after one press of Recover")
-        self.assert_consistent("claude", self.identity(expected["id"]))
-        self.assertEqual(self.plan("claude", "switch", self.spare("claude")["id"])["blockers"], [])
-
-    def test_the_app_dies_at_each_step(self):
-        for status in ("prepared", "verifying", "conflict"):       # written; Claude reopened; a failed undo
-            with self.subTest(status=status):
-                self.setUp()
-                self.die_after_the_login_is_written(status)
-                self.pending_records()
-                self.assertEqual(self.act("claude", "recover")["outcome"], "success")
-                self.assert_settled(self.outgoing)
-
-    def test_a_recovery_that_died_is_not_replayed_over_the_right_account(self):
-        """Consider 10: the first Recover wrote the old login back and died before it closed its records."""
-        tx = self.die_after_the_login_is_written()
-        first = FileTransaction(self.vault, self.engine.roots())
-        first.doc.update(provider="claude", purpose="recover", outgoing_id=None)
-        first.save()
-        switch_claude.restore_profile(self.ctx, self.outgoing["id"], first)
-        for order in ([tx.key, first.key], [first.key, tx.key]):
-            with self.subTest(switch_record_first=order[0] == tx.key):
-                tx.close("prepared")
-                first.close("prepared")
-                self.pending_records()
-                with support.recover_reads(order) as reached:
-                    self.assertEqual(self.act("claude", "recover")["outcome"], "success")
-                self.assertEqual(reached, order)
-                self.assert_settled(self.outgoing)
-
-    def test_a_record_that_cannot_be_applied_is_set_aside_by_one_press(self):
-        tx = self.die_after_the_login_is_written()
-        tx.doc["outgoing_id"] = None                   # nobody saved to go back to, and the files changed since
-        tx.save()
-        config = Path(self.paths.claude_profile) / "config.json"
-        config.write_text(json.dumps({**json.loads(config.read_text()), "userThemeMode": "dark"}))
-        self.pending_records()
-        self.act("claude", "recover")
-        self.assertEqual(self.pending_records(), [])
-        self.assertTrue(self.vault.path("set-aside-" + tx.key).exists())
-        self.assertIn("could not undo an interrupted Claude switch", self.engine.snapshot()["notices"][-1]["message"])
-
-    def test_a_switch_stops_when_claude_starts_again_before_the_write(self):
-        """Consider 1."""
-        saved = switch_claude.ClaudeJob._save_current
-
-        def then_claude_starts(job, **kwargs):
-            profile = saved(job, **kwargs)
-            self.procs.add_claude_desktop()
-            return profile
-        with mock.patch.object(switch_claude.ClaudeJob, "_save_current", then_claude_starts):
-            report = self.act("claude", "switch", self.target["id"])
-        self.assertEqual(report["outcome"], "failed")
-        self.assert_settled(self.outgoing)
-
-
 class MuseSwitchTest(DeckCase):
     def setUp(self):
         super().setUp()
@@ -1406,8 +1222,7 @@ class CodexHelperFolderTest(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix="ad-switch-safety-"))
         self.addCleanup(shutil.rmtree, root, True)
         paths = Paths.synthetic(root)
-        build_fake_home(paths, claude_identity=str(uuid.uuid4()), claude_org=str(uuid.uuid4()),
-                        codex_identity=str(uuid.uuid4()))
+        build_fake_home(paths, codex_identity=str(uuid.uuid4()))
         procs = FakeProcessController(paths)
         seen, original = [], procs.spawn_helper
 

@@ -83,15 +83,28 @@ def shipped_both_names(now, weekly, named, listed, *, reset=None):
 @contextlib.contextmanager
 def recover_reads(order):
     """Recover looks the open records up again when it is pressed. Inside this block that look returns
-    `order`. Yields the records Recover then reached, in the order it reached them."""
-    reached = []
+    `order`. Yields the records the press then reached, in the order it reached them. The app's own look at
+    what is pending (recovery.pending: for a plan, and as each press ends) gets the same order and is not
+    counted."""
+    reached, pressing, press = [], [], recovery.press
+
+    def watched_press(*args, **kwargs):
+        pressing.append({"looked": False})
+        try:
+            return press(*args, **kwargs)
+        finally:
+            pressing.pop()
 
     def look(vault):
+        counted = bool(pressing) and not pressing[-1]["looked"]      # the first look of a press is its own
+        if counted:
+            pressing[-1]["looked"] = True
         for key in order:
-            reached.append(key)
+            if counted:
+                reached.append(key)
             yield key
 
-    with mock.patch.object(recovery, "recover_transactions", look):
+    with mock.patch.object(recovery, "recover_transactions", look), mock.patch.object(recovery, "press", watched_press):
         yield reached
 
 
@@ -157,7 +170,7 @@ def with_reading(engine, key, *, weekly, fable=None):
 
 class WaitingOperation(Operation):
     """Stands in for another client's "switch when idle": an operation that sits in its waiting step until
-    the test releases it, as a Desktop or Codex switch does while a session stays busy."""
+    the test releases it, as a Codex or Muse switch does while a session stays open."""
 
     def __init__(self, provider="codex"):
         super().__init__("switch", provider=provider, label="stand-in", consent="idle",

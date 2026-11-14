@@ -69,9 +69,6 @@ def classify_key(key, value):
     return kind, label, short, model, kind in PRIMARY_KINDS
 
 
-CLAUDE_CLIENTS = frozenset({"claude", "claude_cli"})
-
-
 def is_fable(window):
     """True for the Fable 5.1 weekly limit: a model's limit whose model starts with "Fable", the test the page
     uses. Claude's named key calls the model "Fable" and its list can call it "Fable 5.1"."""
@@ -86,7 +83,7 @@ def saved_reading(provider, reading):
       (`claude_usage`) and is left out.
     - An older build saved a model's limit from Claude's list beside the same limit from its named key. The
       named key's is left out, as `claude_usage` leaves it out now (`_one_per_model`)."""
-    if provider not in CLAUDE_CLIENTS or not isinstance(reading, dict) or not isinstance(reading.get("windows"), list):
+    if provider != "claude_cli" or not isinstance(reading, dict) or not isinstance(reading.get("windows"), list):
         return reading
     kept = [w for w in reading["windows"] if not (isinstance(w, dict) and w.get("kind") == "session")]
     kept = _one_per_model(kept, _from_keys(reading.get("raw_windows")))

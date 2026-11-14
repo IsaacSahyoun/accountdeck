@@ -1,11 +1,5 @@
-"""Facts about this Mac besides processes: the data folder's permissions,
-Claude Desktop's data folder and launch id, the Codex CLI and the file-release probe.
-
-Claude Desktop keeps one data folder (~/Library/Application Support/Claude), opens by the bundle id read
-from the installed app at runtime, and macOS has no mandatory file locks, so "released" means: no Claude
-Desktop process is alive and the controller's per-file probe (libproc's open-file scan plus `lsof`) answers
-"free" for every sign-in file. Doubt is always "not released". Machine locations come from config; process
-control lives only in procs.
+"""Facts about this Mac besides processes: the data folder's permissions and where the Codex CLI and Muse
+Code are installed. Machine locations come from config; process control lives only in procs.
 """
 from __future__ import annotations
 
@@ -18,11 +12,6 @@ import stat
 from .. import config
 from ..core import DeckError
 
-# On macOS Chromium keeps Cookies in the profile folder itself; Network/ is checked too in case it appears.
-DATA_FOLDER_FILES = (("Cookies",), ("Cookies-journal",), ("Network", "Cookies"), ("Network", "Cookies-journal"),
-                     ("config.json",), ("Local State",))
-DATA_FOLDER_KIND = "Application Support"
-CLAUDE_APP = "Claude.app"
 CODEX_APP = "ChatGPT.app"                                   # the Codex app on macOS
 CODEX_IN_APP = ("Contents", "Resources", "codex-cli", "bin", "codex")
 CODEX_PACKAGE = (".local", "share", "openai-codex", "current", "bin", "codex")
@@ -80,34 +69,6 @@ def remove_work_directory(path, root) -> None:
 
     if path.exists():
         shutil.rmtree(path, onexc=retry)
-
-
-# ---- Claude Desktop's identity, data folder and launch id ----
-
-def claude_launch_id(paths, *, applications=None) -> str | None:
-    """How macOS opens Claude Desktop: the CFBundleIdentifier of the installed Claude.app, read now from its
-    Info.plist (never hard-coded; expect com.anthropic.claudefordesktop). None when no installed app has a
-    readable one. Synthetic paths answer `paths.claude_family`, the demo's stand-in id."""
-    if paths.mode != "live":
-        return paths.claude_family
-    folders = config.mac_applications(paths.home) if applications is None else tuple(applications)
-    for folder in folders:
-        found = config.bundle_id(Path(folder) / CLAUDE_APP)
-        if found:
-            return found
-    return None
-
-
-def claude_base(paths) -> tuple[Path, str, str]:
-    """(folder, kind, reason): Claude Desktop keeps one data folder, ~/Library/Application Support/Claude
-    (reason "single"; "synthetic" for a test or demo home)."""
-    return Path(paths.claude_profile), DATA_FOLDER_KIND, "single" if paths.mode == "live" else "synthetic"
-
-
-def data_folder_files(paths) -> list[Path]:
-    """The files Claude must have released before its sign-in state is touched."""
-    base = claude_base(paths)[0]
-    return [base.joinpath(*parts) for parts in DATA_FOLDER_FILES]
 
 
 # ---- Codex ----
@@ -199,31 +160,3 @@ def _launcher_targets(script: Path, home: Path) -> list[Path]:
         if target.is_absolute() and target != script:
             found.append(target)
     return found + [home.joinpath(*CODEX_PACKAGE)]
-
-
-# ---- files and Claude's own preference ----
-
-def file_is_free(path) -> bool:
-    """Without asking about processes this module can only say "free" for a file that does not exist, or for
-    a synthetic file of a test or the demo (no real process can hold one; the fake controller models holds
-    itself). Anything else is "cannot tell", which counts as held: the real probe is the live controller's
-    `file_is_free`."""
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    from ..procs import is_test_owned_path        # procs imports this module
-    return config.safe_mode() and is_test_owned_path(path)
-
-
-def files_released(paths, procs) -> bool:
-    """The settle check: no Claude desktop process is alive, and the controller's probe answers
-    exactly True for every sign-in file. A failing or doubtful probe means "not released"."""
-    try:
-        if procs.claude_desktop():
-            return False
-        return all(procs.file_is_free(path) is True for path in data_folder_files(paths))
-    except (DeckError, OSError):
-        return False

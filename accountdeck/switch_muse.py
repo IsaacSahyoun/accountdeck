@@ -100,14 +100,11 @@ def build_plan(ctx, account, purpose="switch", *, ignore_op=None):
                 warnings.append(note("incomplete", INCOMPLETE_NOTE))
     except DeckError as exc:
         blockers.append(note(exc.code, str(exc)))
-    running = {"desktop": False, "sessions": [], "busy": 0, "unknown": 0, "foreign_claude": 0,
-               "codex_consumers": muse_consumers(consumers, {})}
     saved = current is not None and not current["saved"] and purpose == "switch"
     result = assemble(ctx, provider="muse", purpose=purpose, account=account, target=plan_target(target) if target else None,
-                      current=plan_current(current) if current else None, headroom=None, running=running,
-                      pairs=found.pairs, blockers=blockers, warnings=warnings, tip=None, will=list(WILL[purpose]),
-                      preserved=["Muse settings, trusted folders and session history"], account_bound=[],
-                      invisible=None, stop_tier="not_running", saves_outgoing=saved)
+                      current=plan_current(current) if current else None, consumers=muse_consumers(consumers, {}),
+                      pairs=found.pairs, blockers=blockers, warnings=warnings, will=list(WILL[purpose]),
+                      preserved=["Muse settings, trusted folders and session history"], saves_outgoing=saved)
     result.entry["identity"] = engine.active_identity["muse"]
     return result
 

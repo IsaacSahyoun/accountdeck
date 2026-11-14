@@ -17,7 +17,7 @@
 
   const STRINGS = freeze({
     app: 'AccountDeck 2',
-    apps: { claude: 'Claude Desktop', codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse Code' },
+    apps: { codex: 'Codex', claude_cli: 'Claude Code', muse: 'Muse Code' },
 
     shell: {
       version: 'AccountDeck {version}', updated: 'Updated {age} ago', updatedNow: 'Updated just now',
@@ -94,11 +94,7 @@
       blockedSignin: 'Usage is unavailable until you sign in again.',
       liveExpired: 'Usage updates after your next message in Claude Code.',
       checked: 'Checked {age} ago', paused: 'Checks paused until {clock}',
-      setup: {
-        importing: 'Open Claude Desktop once on this Mac to finish importing this account.',
-        saving: 'Close Claude Desktop, then choose Save Current Account to finish saving this login.',
-        signIn: 'Use Add Account to sign in to this account again before switching.',
-      },
+      setupSignIn: 'Use Add Account to sign in to this account again before switching.',
       menu: {
         leaveOut: 'Leave Out of Auto-Switch', include: 'Let Auto-Switch Use It', rename: 'Rename…', remove: 'Remove…',
         removeActive: 'Switch to another account before removing this one.',
@@ -118,8 +114,7 @@
     },
 
     button: {
-      switchIdle: 'Switch When Claude Is Idle', switchNow: 'Switch Now', switchAnyway: 'Switch Now Anyway',
-      continueIdle: 'Continue When Claude Is Idle', continueNow: 'Continue Now', continueAnyway: 'Continue Anyway',
+      switchNow: 'Switch Now', continueNow: 'Continue Now',
       cancel: 'Cancel', done: 'Done', hide: 'Hide', progress: 'Show Progress', review: 'Review…',
       retry: 'Try Again', viewReport: 'Show Report', explain: 'Explain Last Switch', recover: 'Recover…',
       refresh: 'Refresh', resume: 'Resume Checks', dismiss: 'Dismiss', reset: 'Reset', quit: 'Quit',
@@ -127,24 +122,19 @@
     },
     modal: {
       switchTerminals: 'Switch your terminals to {label}?',
-      switchClaude: 'Switch Claude to {label}?', switchCodex: 'Switch Codex to {label}?', switchMuse: 'Switch Muse to {label}?',
-      managed: 'Claude will close and reopen on its own. If it does not close within 10 seconds it will be closed by force.',
-      graceful: 'Claude will close by itself and reopen.',
-      interrupt: 'Switch now and interrupt {names}?', interruptOther: 'Continue now and interrupt {names}?',
-      reconfirm: "Claude's sessions changed — please confirm again.",
+      switchCodex: 'Switch Codex to {label}?', switchMuse: 'Switch Muse to {label}?',
+      reconfirm: 'The running sessions changed. Please confirm again.',
       savesOutgoing: "Your current account ({label}) isn't saved yet — it will be saved so you can switch back.",
-      sessions: '{n} Code sessions are open: {names}. Switching will end them.',
-      sessionsOne: '1 Code session is open: {names}. Switching will end it.',
-      running: 'Running now', will: 'What will happen', stays: 'What stays with you', bound: 'Tied to each account',
-      headsUp: 'Heads-up', rowNow: 'Now', rowAfter: 'After', remember: "Don't ask again when Claude is idle",
+      running: 'Running now', will: 'What will happen', stays: 'What stays with you',
+      headsUp: 'Heads-up', remember: "Don't ask again when Claude is idle",
       blocked: 'This cannot start yet.',
       consumers: '{n} Codex sessions are running. Switch when they finish, or end them one by one.',
       museConsumers: '{n} Muse sessions are open. The switch waits until you close them.',
       progressTitle: 'Working…',
       purpose: {
-        add: 'Add a Claude account', capture: 'Save the account Claude is signed in to?',
-        recover: 'Recover the previous sign-in?', 'finish-login': 'Save the new account?',
-        'cancel-login': 'Stop adding the account?', quit: 'Close Claude?',
+        add: 'Add a Codex account', capture: 'Save the account Codex is signed in to?',
+        recover: 'Recover the previous sign-in?', 'finish-login': 'Save the new Codex account?',
+        'cancel-login': 'Stop adding the Codex account?',
       },
       purposeMuse: {
         add: 'Add a Muse account', capture: 'Save the account Muse is signed in to?',
@@ -162,20 +152,15 @@
     },
     session: { busy: 'working', idle: 'idle', unknown: 'status unknown' },
     report: {
-      switched: 'Switched to {label}', verified: 'Claude is signed in as {label}',
-      unconfirmed: 'Claude opened — still confirming the sign-in in the background',
-      failed: 'Claude opened a different account. Recovery is available.',
-      title: 'Last switch', carried: 'Carried over', failedTitle: "The switch didn't finish", cancelledTitle: 'Switch cancelled',
+      switched: 'Switched to {label}',
+      title: 'Last switch', failedTitle: "The switch didn't finish", cancelledTitle: 'Switch cancelled',
     },
     login: {
-      claudeTitle: 'Sign in to the new account in Claude',
-      claude: 'When you have signed in, choose Save Account. Claude closes briefly to save the sign-in.',
       codexTitle: 'Finish signing in with ChatGPT', codex: 'Your new Codex account appears here once you have signed in.',
       museTitle: 'Finish signing in with Meta',
       muse: 'Open the sign-in page, check the code matches, and approve it. Then choose Save Sign-In.',
-      open: 'Open Sign-In Page', save: 'Save Account', saveCodex: 'Save Sign-In', cancel: 'Cancel Sign-In',
+      open: 'Open Sign-In Page', saveCodex: 'Save Sign-In', cancel: 'Cancel Sign-In',
       deviceCode: 'Device code: {code}',
-      hint: 'Sign in with the account you intend to add; a browser already signed in to another Claude account can approve the wrong one.',
     },
     outage: { link: 'Open the status page' },
     alerts: {

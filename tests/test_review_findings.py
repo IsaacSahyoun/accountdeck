@@ -98,7 +98,7 @@ class TerminalSwitchSafetyTest(unittest.TestCase):
 
 
 class AutoSwitchWhileAnotherClientWaitsTest(unittest.TestCase):
-    """Act on 4. A Desktop, Codex or Muse switch can wait up to 30 minutes for a session to close. The terminal
+    """Act on 4. A Codex or Muse switch can wait up to 30 minutes for a session to close. The terminal
     auto-switch keeps working during that wait."""
 
     def test_the_terminal_auto_switch_acts_during_another_clients_wait(self):
@@ -278,7 +278,7 @@ class DashboardRowsTest(unittest.TestCase):
         page, errors = support.render(self, state)
         self.assertEqual(errors, [])
         providers = {a["provider"] for a in state["accounts"]}
-        self.assertEqual(providers, {"claude_cli", "claude", "codex", "muse"})
+        self.assertEqual(providers, {"claude_cli", "codex", "muse"})
         for account in state["accounts"]:
             with self.subTest(provider=account["provider"], account=account["label"]):
                 row = support.element(page, "li", f'data-id="{account["id"]}"')

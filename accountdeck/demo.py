@@ -4,10 +4,9 @@
 returns the started `Engine`; `run.py --demo <scenario>` serves it. Everything the demo touches is
 synthetic and inside `root`:
 
-- the machine is `Paths.synthetic(root)` with a Claude Desktop profile (macOS format, under a synthetic
-  "Claude Safe Storage" password), a Codex home and a Muse config folder that `providers.fake` writes, and
-  `procs.FakeProcessController` (an in-memory Mac process table);
-- the providers are `FakeClaude` / `FakeCodex` / `FakeMuse` / `DemoCLI` following scripts, so usage moves as the
+- the machine is `Paths.synthetic(root)` with a Codex home and a Muse config folder that `providers.fake`
+  writes, and `procs.FakeProcessController` (an in-memory Mac process table);
+- the providers are `FakeCodex` / `FakeMuse` / `DemoCLI` following scripts, so usage moves as the
   virtual clock runs: windows pass their reset, refill and start over, as they would for real accounts;
 - the clock is `DemoClock`: real time from a start (`--now`) on, so a demo shows the moment it was
   meant to; tests move it with `advance()`.
@@ -29,7 +28,7 @@ import threading
 import time
 import uuid
 
-from . import diagnostics, fixtures
+from . import diagnostics, fixtures, rules
 from .config import Paths, SafetyViolation
 from .core import DeckError, Vault, atomic_write, json_bytes
 from .diagnostics import Manifest
@@ -39,8 +38,7 @@ from .procs import FakeProcessController, filetime, is_test_owned_path
 from .providers.claude_cli import ClaudeCLI, object_file, profile as cli_profile
 from .providers.errors import ProviderError
 from .switch_cli import CLISwitch
-from .providers.fake import (FakeClaude, FakeCodex, FakeMuse, FakeStatusSource, Timeline, build_fake_home,
-                             test_cipher)
+from .providers.fake import FakeCodex, FakeMuse, FakeStatusSource, Timeline, build_fake_home, test_cipher
 from .usage import claude_usage, codex_usage, muse_usage
 
 __all__ = ["DemoClock", "DemoProcesses", "build_demo", "SCENARIOS"]
@@ -53,8 +51,7 @@ FROZEN = 6 * 3600.0             # accounts a scenario shows as stale or broken a
 LOADING_S = 25.0                # the `loading` scenario's first readings arrive after this long
 OUTAGE_S = 600.0                # the `outage` scenario's incident ends after this long
 HISTORY_OFFSETS = (1800, 3600, 2 * 3600, 6 * 3600, 12 * 3600, 86400, 2 * 86400, 3 * 86400)
-DEFAULT_WINDOWS = {"claude": (("seven_day", 20.0, 400000.0),),
-                   "claude_cli": (("seven_day", 20.0, 400000.0),),
+DEFAULT_WINDOWS = {"claude_cli": (("seven_day", 20.0, 400000.0),),
                    "codex": (("codex:primary", 10.0, 10000.0), ("codex:secondary", 15.0, 300000.0)),
                    "muse": (("muse:window", 8.0, 10000.0), ("muse:weekly", 20.0, 300000.0))}
 
@@ -87,15 +84,6 @@ class _Gate:
             if self.clock() >= self.opens or (self.engine is not None and self.engine.stopping.is_set()):
                 return
             time.sleep(0.05)
-
-
-class DemoClaude(FakeClaude):
-    gate = None
-
-    def _payload(self, profile):
-        if self.gate is not None:
-            self.gate.wait()
-        return super()._payload(profile)
 
 
 class DemoCodex(FakeCodex):
@@ -140,17 +128,6 @@ class DemoCLI(ClaudeCLI):
 
 class DemoProcesses(FakeProcessController):
     """The demo's machine. Opening a folder or a terminal is a no-op that stays inside the demo folder."""
-
-    def add_session(self, name, status, *, since, cwd_name, parent, entrypoint="claude-desktop", version="2.1.284"):
-        """A Code-tab session of Claude Desktop whose registry row carries the demo's own timestamps."""
-        path = Path(self.paths.claude_profile) / "claude-code" / version / "claude"
-        row = self.add_row("claude", path=path, parent=parent)
-        self._write_session(row.pid, {
-            "pid": row.pid, "sessionId": str(uuid.uuid4()), "cwd": str(Path(self.paths.home) / "projects" / cwd_name),
-            "startedAt": int(since * 1000), "procStart": str(row.ctime), "version": version, "kind": "interactive",
-            "entrypoint": entrypoint, "name": name, "status": status, "updatedAt": int(since * 1000),
-            "statusUpdatedAt": int(since * 1000)})
-        return row
 
     def age(self, pid, started):
         """Backdates a process to `started` (Unix seconds); returns its row."""
@@ -285,9 +262,10 @@ def _script(provider, account, base, windows):
         entry for entry in rolling if entry[0] > recover]
 
 
-class _UnheldLock:
-    """The owner lock as seen by a second AccountDeck 2: someone else holds it."""
-    held = False
+class _OtherOwner:
+    """The owner lock of the `read-only` demo. The demo holds it while it saves the scenario's accounts, then
+    another AccountDeck 2 has it and this one only shows usage."""
+    held = True
 
 
 # ---- the pending operation and the report ----
@@ -323,47 +301,40 @@ class _Showcase(Operation):
         if frozen["phase"] == "needs_reconfirm":
             raise DeckError(frozen["message"], "needs_reconfirm", plan=self._plan())
 
-    def _sessions(self):
-        return self.engine.snapshot()["providers"]["claude"]["running"]["sessions"]
+    def _consumers(self):
+        return self.engine.snapshot()["providers"]["codex"]["running"]["consumers"]
 
     def _working(self):
-        return [{"pid": s["pid"], "name": s["name"], "status": s["status"]} for s in self._sessions()
-                if s["status"] != "idle"]
+        return [{"pid": c["pid"], "name": "codex", "status": "busy"} for c in self._consumers()]
 
     def _plan(self):
-        """The fresh plan of a switch to this account with one more busy session (the fixture `busy` plan,
+        """The fresh plan of a switch to this account with one more Codex session open (the fixture `busy` plan,
         fitted to this demo's accounts and sessions)."""
         state, now = self.engine.snapshot(), self.engine.clock()
         plan = fixtures.example_plan("busy", now)
         accounts = {a["id"]: a for a in state["accounts"]}
         target = accounts.get(self.account)
-        current = accounts.get(state["providers"]["claude"]["active"])
+        current = accounts.get(state["providers"]["codex"]["active"])
         if target is not None:
-            plan["target"] = {"id": target["id"], "label": target["label"], "email": target["email"], "plan": target["plan"],
-                              "windows": target["windows"], "checked": target["checked"], "age_tier": target["age_tier"],
-                              "dormant_days": target["credential"]["dormant_days"]}
+            plan["target"] = rules.plan_target(target)
         if current is not None:
-            plan["current"] = {"id": current["id"], "label": current["label"], "windows": current["windows"]}
-        sessions = [{k: s[k] for k in ("pid", "name", "status", "since")} for s in self._sessions()]
-        sessions.append({"pid": 5120, "name": "New session", "status": "busy", "since": now - 15})
-        busy = [s for s in sessions if s["status"] != "idle"]
-        plan["running"].update(sessions=sessions, busy=len(busy))
-        plan["process_set"] = [[s["pid"], 133812345678901234 + s["pid"]] for s in sessions]
+            plan["current"] = rules.plan_current(current)
+        consumers = [{k: c[k] for k in ("pid", "kind", "started", "parent")} for c in self._consumers()]
+        consumers.append({"pid": 9120, "kind": "tui", "started": now - 15, "parent": None})
+        plan["running"]["codex_consumers"] = consumers
+        plan["process_set"] = [[c["pid"], 133812345678901234 + c["pid"]] for c in consumers]
         plan["signature"] = "sha256:" + hashlib.sha256(json.dumps(sorted(plan["process_set"])).encode()).hexdigest()
-        names = ", ".join(f'"{s["name"]}"' for s in busy)
-        plan["warnings"][0] = {"code": "busy", "message": f"{len(busy)} Code sessions are working: {names}."}
         return plan
 
 
 class _Finished(Operation):
-    """A switch that already ended, for the `report` and `outage` scenarios: the engine records it like any
-    other, so the report card, the event log and "Explain last switch" all have something to show."""
-    STEPS = (("prepare", "planning", "Checking the saved sign-in"), ("stop", "stopping", "Closing Claude"),
-             ("capture", "saving", "Saving the current sign-in"), ("restore", "restoring", "Restoring the account"),
-             ("launch", "launching", "Opening Claude"), ("verify", "verifying", "Checking the sign-in"))
+    """A Codex switch that already ended, for the `report` scenario: the engine records it like any other, so
+    the report card, the event log and "Explain last switch" all have something to show."""
+    STEPS = (("wait", "waiting_idle", "Waiting for Codex sessions"), ("save", "saving", "Saving the current sign-in"),
+             ("restore", "restoring", "Restoring the selected sign-in"), ("verify", "verifying", "Checking the sign-in"))
 
     def __init__(self, engine, report, *, account):
-        super().__init__("switch", provider="claude", account=account, label=report["label"], consent="now",
+        super().__init__("switch", provider="codex", account=account, label=report["label"], consent="now",
                          steps=[(sid, text) for sid, _phase, text in self.STEPS])
         self.engine, self.fixture = engine, report
 
@@ -374,15 +345,10 @@ class _Finished(Operation):
         fixture = self.fixture
         directory = Path(self.engine.paths.data_dir) / "logs" / "manifests"
         manifest = Manifest.start(self.id, "switch", directory=directory)
-        manifest.set("stop.tier", fixture["stop_tier"]).set("stop.ms", fixture["stop_ms"])
-        manifest.set("stop.helpers_self_exited", fixture["helpers_self_exited"]).set("verification.result", "unconfirmed")
-        manifest.set("verification.reason", fixture["verify_reason"])
-        for item in fixture["carried"]:
-            manifest.append("carried", {"label": item["label"], "detail": item["detail"]})
+        manifest.set("verification.result", "unconfirmed").set("verification.reason", fixture["verify_reason"])
         manifest.finish()
-        self.report.update({key: fixture[key] for key in ("verified", "verified_at", "verify_reason", "stop_tier", "stop_ms",
-                                                          "helpers_self_exited", "stragglers", "summary", "carried",
-                                                          "account_bound")}, manifest=self.id)
+        self.report.update({key: fixture[key] for key in ("verified", "verified_at", "verify_reason", "summary")},
+                           manifest=self.id)
 
 
 # ---- the builder ----
@@ -409,30 +375,28 @@ class _Builder:
     def _active(self, provider):
         return next((a for a in self.accounts if a["provider"] == provider and a["active"]), None)
 
-    def _home(self, claude=None, codex=None, muse=None):
-        claude = claude or self._uuid("spare-claude")
+    def _home(self, codex=None, muse=None):
         codex = codex or self._uuid("spare-codex")
-        return build_fake_home(self.paths, claude_identity=claude, claude_org=self._org(claude), codex_identity=codex,
-                               now=self.base, codex_exp_offset=9 * 86400, muse_email=muse,
-                               muse_storage=None)
+        return build_fake_home(self.paths, codex_identity=codex, now=self.base, codex_exp_offset=9 * 86400,
+                               muse_email=muse, muse_storage=None)
 
     # -- the world --
     def build(self):
         diagnostics.setup(self.paths)
         signed_in = {p: (self.ids[a["id"]] if (a := self._active(p)) else None) for p in fixtures.PROVIDERS}
         if any(signed_in.values()):
-            self._home(signed_in["claude"], signed_in["codex"], signed_in["muse"])
+            self._home(signed_in["codex"], signed_in["muse"])
         if self.scenario == "first-run":
             self._sign_out(signed_in)          # nothing is seeded, so sign out what the scenario has no account for
         self.gate = None if self.inline or self.scenario != "loading" else _Gate(self.clock, self.base + LOADING_S)
-        claude, codex, cli, muse = self._providers()
+        codex, cli, muse = self._providers()
         self.procs = self._machine()
         if self._active("claude_cli"):
             self._cli_live(self._active("claude_cli"))
         # `read-only`: another AccountDeck 2 holds the owner lock, so this one only shows usage.
-        owner_lock = _UnheldLock() if self.scenario == "read-only" else None
+        owner_lock = _OtherOwner() if self.scenario == "read-only" else None
         engine = Engine(self.paths, owner_lock=owner_lock,
-                        providers={"claude": claude, "codex": codex, "claude_cli": cli, "muse": muse}, procs=self.procs,
+                        providers={"codex": codex, "claude_cli": cli, "muse": muse}, procs=self.procs,
                         vault=Vault(self.paths.data_dir / "vault", protect=test_cipher),
                         status_sources=self._status_sources(), clock=self.clock, start=False, inline=self.inline,
                         mode="demo")
@@ -448,6 +412,8 @@ class _Builder:
                 self._state(engine, key, a)
             self._settings(engine)
             self._extras(engine)
+            if owner_lock is not None:
+                owner_lock.held = False
             engine.sense_active()
             engine.bump()
             if self.start:
@@ -459,7 +425,7 @@ class _Builder:
 
     # -- providers and scripts --
     def _providers(self):
-        claude_scripts, codex_scripts, identities, cli_scripts, muse_scripts = {}, {}, {}, {}, {}
+        codex_scripts, cli_scripts, muse_scripts = {}, {}, {}
         for a in self.accounts:
             identity, provider = self.ids[a["id"]], a["provider"]
             windows = _windows(a, provider, self.base)
@@ -472,14 +438,11 @@ class _Builder:
                     script.sort(key=lambda entry: entry[0])
                 cli_scripts[a["id"]] = script
                 continue
-            {"claude": claude_scripts, "codex": codex_scripts, "muse": muse_scripts}[provider][identity] = script
-            if provider == "claude":
-                identities[identity] = {"email": a["email"], "plan": a["plan"] or "max", "org": self._org(identity)}
-        claude = DemoClaude(self.paths, scripts=claude_scripts, identities=identities, now=self.clock)
+            {"codex": codex_scripts, "muse": muse_scripts}[provider][identity] = script
         codex = DemoCodex(self.paths, scripts=codex_scripts, now=self.clock)
         muse = DemoMuse(self.paths, scripts=muse_scripts, now=self.clock)
-        claude.gate = codex.gate = muse.gate = self.gate
-        return claude, codex, DemoCLI(self.paths, cli_scripts, self.clock, self.ids), muse
+        codex.gate = muse.gate = self.gate
+        return codex, DemoCLI(self.paths, cli_scripts, self.clock, self.ids), muse
 
     def _cli_profile(self, account):
         key = account["id"]
@@ -500,22 +463,13 @@ class _Builder:
     def _status_sources(self):
         if self.scenario != "outage":
             return {}
-        status = self.spec["providers"]["claude"]["status"]
+        status = self.spec["providers"]["claude_cli"]["status"]
         incident = {"level": "outage", "incident": status["incident"], "since": status["since"]}
-        return {"claude": FakeStatusSource([(0, incident), (OUTAGE_S, "ok")], now=self.clock, url=status["url"])}
+        return {"claude_cli": FakeStatusSource([(0, incident), (OUTAGE_S, "ok")], now=self.clock, url=status["url"])}
 
     # -- the machine --
     def _machine(self):
-        # The quit request is SIGTERM, which Claude (Electron) answers with its own quit.
         procs = DemoProcesses(self.paths)
-        running = self.spec["providers"]["claude"]["running"]
-        if running["desktop"]:
-            main = procs.add_claude_desktop(helpers=max(0, running["desktop_pids"] - 1))
-            for s in running["sessions"]:
-                procs.add_session(s["name"], s["status"], since=s["since"], cwd_name=s["cwd_short"] or "project",
-                                  parent=main.pid)
-        for _ in range(running["foreign_claude"]):
-            procs.add_foreign_claude()
         codex = self.spec["providers"]["codex"]["running"]
         if codex["daemon"]:
             procs.add_codex("codex_daemon")
@@ -545,14 +499,13 @@ class _Builder:
                 self.keys[a["id"]] = engine.cli.save(profile, source="demo")
                 continue
             if a["active"]:
-                self._home(signed_in["claude"], signed_in["codex"], signed_in["muse"])
+                self._home(signed_in["codex"], signed_in["muse"])
             else:
-                self._home(self.ids[a["id"]] if provider == "claude" else None,
-                           self.ids[a["id"]] if provider == "codex" else None,
+                self._home(self.ids[a["id"]] if provider == "codex" else None,
                            a["email"] if provider == "muse" else None)
-            self.keys[a["id"]] = engine.accounts.capture(provider, label=a["label"], claude_running=False)
+            self.keys[a["id"]] = engine.accounts.capture(provider, label=a["label"])
         if any(signed_in.values()):
-            self._home(signed_in["claude"], signed_in["codex"], signed_in["muse"])
+            self._home(signed_in["codex"], signed_in["muse"])
         self._sign_out(signed_in)
         if self._active("claude_cli"):
             self._cli_live(self._active("claude_cli"))
@@ -565,8 +518,6 @@ class _Builder:
     def _sign_out(self, signed_in):
         """A provider with no signed-in account in the scenario has nobody signed in on the machine either."""
         if any(signed_in.values()):
-            if signed_in["claude"] is None:
-                (Path(self.paths.claude_profile) / "config.json").unlink(missing_ok=True)
             if signed_in["codex"] is None:
                 (Path(self.paths.codex_home) / "auth.json").unlink(missing_ok=True)
             if signed_in["muse"] is None:

@@ -8,7 +8,6 @@ build on it:
   start time only for this user's processes; for anyone else's there is the short record without it, and a
   row without a start time is an unknown identity that callers refuse to act on;
 - argv (`sysctl KERN_PROCARGS2`), never past argc: the environment that follows can hold secrets;
-- open descriptors (`PROC_PIDLISTFDS` + `proc_pidfdinfo`): who holds a file open;
 - a kqueue EVFILT_PROC/NOTE_EXIT watch, the macOS stand-in for a process handle: it follows the process,
   not its number, so "verify, then signal" cannot hit a recycled pid unnoticed.
 
@@ -40,20 +39,13 @@ BUNDLE_ID_PATTERN = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")   # reverse
 
 # ---- <sys/proc_info.h>, <sys/resource.h>, <sys/sysctl.h> ----
 
-PROC_PIDLISTFDS = 1
 PROC_PIDTBSDINFO = 3
 PROC_PIDT_SHORTBSDINFO = 13
-PROC_PIDFDVNODEPATHINFO = 2
-PROX_FDTYPE_VNODE = 1
 CTL_KERN, KERN_ARGMAX, KERN_PROCARGS2 = 1, 8, 49
 SZOMB = 5                                       # pbi_status of a zombie
 PATH_MAX = 4096                                 # PROC_PIDPATHINFO_MAXSIZE
 BSDINFO = struct.Struct("<12I16s32s5IiQQ")      # struct proc_bsdinfo, 136 bytes
 SHORTINFO = struct.Struct("<4I16s8I")           # struct proc_bsdshortinfo, 64 bytes
-FDINFO = struct.Struct("<iI")                   # struct proc_fdinfo: fd, type
-VNODE_PATH_INFO_SIZE = 1200                     # struct vnode_fdinfowithpath
-VNODE_DEV_INO = struct.Struct("<I4xQ")          # vst_dev, vst_ino at offset 24
-VNODE_DEV_INO_OFFSET = 24
 NOTE_EXIT = 0x80000000
 MAX_ARGV_BYTES = 4 << 20
 
@@ -222,7 +214,6 @@ class LibSystem:
         for name, argtypes in (
                 ("proc_listallpids", [c_void_p, c_int]),
                 ("proc_pidinfo", [c_int, c_int, ctypes.c_uint64, c_void_p, c_int]),
-                ("proc_pidfdinfo", [c_int, c_int, c_int, c_void_p, c_int]),
                 ("proc_pidpath", [c_int, c_void_p, ctypes.c_uint32]),
                 ("sysctl", [ctypes.POINTER(c_int), ctypes.c_uint, c_void_p, ctypes.POINTER(ctypes.c_size_t),
                             c_void_p, ctypes.c_size_t])):
@@ -273,28 +264,6 @@ class LibSystem:
         if self.lib.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
             return None
         return buffer.raw[:size.value]
-
-    def fds(self, pid: int) -> tuple[list[tuple[int, int]] | None, int]:
-        """(fd, type) of every open descriptor; (None, errno) when they cannot be read."""
-        ctypes.set_errno(0)
-        needed = self.lib.proc_pidinfo(pid, PROC_PIDLISTFDS, 0, None, 0)
-        for _ in range(3):
-            if needed <= 0:
-                return None, ctypes.get_errno() or errno.ESRCH
-            size = needed + 64 * FDINFO.size
-            buffer = ctypes.create_string_buffer(size)
-            ctypes.set_errno(0)
-            filled = self.lib.proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buffer, size)
-            if filled <= 0:
-                return None, ctypes.get_errno() or errno.ESRCH
-            if filled < size:
-                return [FDINFO.unpack_from(buffer.raw, offset) for offset in range(0, filled, FDINFO.size)], 0
-            needed = size * 2
-        return None, errno.EOVERFLOW
-
-    def fdinfo(self, pid: int, fd: int, flavor: int, size: int) -> bytes | None:
-        buffer = ctypes.create_string_buffer(size)
-        return buffer.raw if self.lib.proc_pidfdinfo(pid, fd, flavor, buffer, size) == size else None
 
     def exit_watch(self) -> ExitWatch:
         return ExitWatch()
@@ -381,34 +350,3 @@ def descends_from_self(pid: int, ctime: int) -> bool:
     except (DeckError, OSError):
         return False
     return False
-
-
-def file_holders(path) -> set[int] | None:
-    """Pids of this user's processes that hold `path` open (matched by device and inode); None when that
-    cannot be said for certain (the file vanished mid-scan, or one of this user's processes refused)."""
-    try:
-        status = os.stat(path)
-        lib = api()
-        pids = lib.listpids()
-    except (DeckError, OSError):
-        return None
-    key = (status.st_dev & 0xFFFFFFFF, status.st_ino)
-    me = os.getuid()
-    holders = set()
-    for pid in pids:
-        descriptors, error = lib.fds(pid)
-        if descriptors is None:
-            if error == errno.ESRCH:
-                continue
-            owner = parse_shortinfo(lib.shortinfo(pid))
-            if owner is None or owner.uid != me:
-                continue                      # gone, or another user's: it cannot open this user's files
-            return None
-        for fd, kind in descriptors:
-            if kind != PROX_FDTYPE_VNODE:
-                continue
-            raw = lib.fdinfo(pid, fd, PROC_PIDFDVNODEPATHINFO, VNODE_PATH_INFO_SIZE)
-            if raw is not None and VNODE_DEV_INO.unpack_from(raw, VNODE_DEV_INO_OFFSET) == key:
-                holders.add(pid)
-                break
-    return holders

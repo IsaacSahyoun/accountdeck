@@ -4,9 +4,9 @@ prove proves nothing (the idea is called mutation testing).
 Usage: take_fix_out.py <scratch copy> <python> <cases.json>
 
 The cases file is a JSON list. Each case names one fix and the test that should catch its loss:
-  {"name": "the journal goes with the account name", "file": "accountdeck/providers/claude.py",
+  {"name": "a record stays while the login is mixed", "file": "accountdeck/switch_cli.py",
    "old": "<the exact text of the fix, found once in the file>", "new": "<what the code was before, or empty>",
-   "test": "tests.test_second_review.HalfWrittenDesktopLoginTest.test_a_login_that_stopped_before_its_account_name_names_nobody"}
+   "test": "tests.test_second_review.TerminalRecordStaysWhileTheLoginIsMixedTest.test_a_recover_that_cannot_read_the_login_keeps_the_record"}
 
 Each test first runs on the copy as it is, and has to pass there. Then each fix is taken out, its test is run,
 and the file is put back. A case proves its fix only when the test ran and failed. A case proves nothing, and

@@ -16,8 +16,7 @@
   const offPage = (b) => b.provider === 'codex' || b.provider === 'muse';
   const LOOK = {
     outage: ['warning', 'warning'], degraded: ['warning', 'warning'], recovery: ['warning', 'warning'],
-    paused: ['pause', 'info'], self_protect: ['stop', 'warning'], read_only: ['lock', 'warning'],
-    move_import: ['import', 'info'],
+    paused: ['pause', 'info'], read_only: ['lock', 'warning'],
   };
   const NOTICE_ICONS = { info: 'info', good: 'check-circle', warning: 'warning', critical: 'warning' };
   const DEMO_STEP_MS = 15 * 60000;
@@ -220,7 +219,7 @@
 
   function actionButton(name, b) {
     const run = {
-      recover: () => AD.switch.openPurpose(b.provider || 'claude', 'recover'),
+      recover: () => AD.switch.openPurpose(b.provider || 'claude_cli', 'recover'),
       refresh: () => AD.api.action('refresh', {}),
     }[name];
     if (!run) return null;

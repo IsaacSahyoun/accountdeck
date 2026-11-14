@@ -359,7 +359,7 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-/* The Desktop, Codex and Muse lists have no column heads, so their labels stay visible at every width. */
+/* The Codex and Muse lists have no column heads, so their labels stay visible at every width. */
 .row .limit[data-extra] .limit-label,
 .other-provider .row .limit-label { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
 .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }

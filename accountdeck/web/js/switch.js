@@ -1,7 +1,7 @@
 /* AccountDeck 2 — switching and sign-in flows in the one modal.
  * Every flow that changes an app's sign-in first asks the service for a plan (switch-plan), shows
  * it, and sends the plan id with the user's consent ("idle" or "now"); the service checks the plan
- * again before acting. Views: plan (a sheet), confirm-now and confirm-end (alerts), progress,
+ * again before acting. Views: plan (a sheet), confirm-end (an alert), progress,
  * report and login. The progress, report and login views have banner stand-ins (banners.js) while
  * the modal is closed. Button order is the Mac's: the default button last (rightmost), Cancel
  * beside it, any alternative on the far left. */
@@ -12,11 +12,9 @@
 
   // The action that carries out each plan purpose.
   const ACTIONS = {
-    switch: 'switch', quit: 'quit-claude', add: 'add', capture: 'capture', recover: 'recover',
+    switch: 'switch', add: 'add', capture: 'capture', recover: 'recover',
     'finish-login': 'finish-login', 'cancel-login': 'cancel-login',
   };
-  // Warnings the "Running now" lines already say.
-  const SAID = new Set(['busy', 'unknown', 'consumers']);
   const STEP_ICONS = { done: 'check', active: 'refresh', warning: 'warning', failed: 'x' };
   // An operation started here normally shows in the next state; give up waiting for it after this.
   const SHOW_UP_MS = 10000;
@@ -34,11 +32,6 @@
 
   // ---- Building blocks ----------------------------------------------------------------------------
 
-  function sessionsText(sessions) {
-    return fill(sessions.length === 1 ? STRINGS.modal.sessionsOne : STRINGS.modal.sessions,
-      { n: sessions.length, names: AD.format.sessionNames(sessions) });
-  }
-
   function section(title, content) {
     return el('section', 'plan-section', el('h3', { class: 'plan-heading', text: title }), content);
   }
@@ -55,10 +48,8 @@
 
   function planTitle(plan) {
     if (plan.provider === 'claude_cli' && plan.target) return fill(STRINGS.modal.switchTerminals, { label: mask(plan.target.label) });
-    if (plan.purpose === 'switch' && plan.target) {
-      const title = { codex: STRINGS.modal.switchCodex, muse: STRINGS.modal.switchMuse }[plan.provider] || STRINGS.modal.switchClaude;
-      return fill(title, { label: mask(plan.target.label) });
-    }
+    const title = { codex: STRINGS.modal.switchCodex, muse: STRINGS.modal.switchMuse }[plan.provider];
+    if (plan.purpose === 'switch' && plan.target && title) return fill(title, { label: mask(plan.target.label) });
     if (plan.provider === 'muse' && STRINGS.modal.purposeMuse[plan.purpose]) return STRINGS.modal.purposeMuse[plan.purpose];
     return STRINGS.modal.purpose[plan.purpose] || STRINGS.modal.progressTitle;
   }
@@ -74,14 +65,6 @@
         el('p', { class: 'plan-target-meta', text: meta.filter(Boolean).join(' · ') })));
   }
 
-  function headroomRows(plan) {
-    const rows = [];
-    if (plan.current && plan.headroom.now) rows.push([STRINGS.modal.rowNow, plan.current.label, plan.headroom.now]);
-    if (plan.target && plan.headroom.after) rows.push([STRINGS.modal.rowAfter, plan.target.label, plan.headroom.after]);
-    return el('dl', 'headroom', rows.map(([when, label, text]) => el('div', 'headroom-row',
-      el('dt', { text: when }), el('dd', null, el('strong', { text: mask(label) }), el('span', { text })))));
-  }
-
   /** A Codex session can be ended from here; a Muse one is never signalled (the switch waits for it). */
   function consumerRow(plan, consumer) {
     const kinds = plan.provider === 'muse' ? STRINGS.modal.museConsumerKind : STRINGS.modal.consumerKind;
@@ -93,39 +76,30 @@
   }
 
   function planBody(plan, options) {
-    const running = plan.running || {};
-    const sessions = running.sessions || [];
-    const consumers = running.codex_consumers || [];
+    const consumers = (plan.running || {}).codex_consumers || [];
     const parts = [];
     if (options.reconfirm) parts.push(el('p', 'plan-reconfirm', AD.dom.svgIcon('info'), el('span', { text: STRINGS.modal.reconfirm })));
     if (options.error) parts.push(el('p', { class: 'modal-error', role: 'alert', text: options.error }));
     if (plan.target) parts.push(targetLine(plan));
-    const stop = plan.provider === 'claude' ? { managed: STRINGS.modal.managed, graceful: STRINGS.modal.graceful }[plan.stop_tier] : null;
-    if (stop) parts.push(el('p', { class: 'plan-lead', text: stop }));
     if (plan.saves_outgoing && plan.current) {
       parts.push(el('p', { class: 'plan-note', text: fill(STRINGS.modal.savesOutgoing, { label: mask(plan.current.label) }) }));
     }
     const now = [];
-    if (sessions.length) now.push(el('p', { text: sessionsText(sessions) }));
     if (consumers.length) {
       now.push(el('p', { text: fill(plan.provider === 'muse' ? STRINGS.modal.museConsumers : STRINGS.modal.consumers,
         { n: consumers.length }) }));
       now.push(el('ul', 'consumer-list', consumers.map((consumer) => consumerRow(plan, consumer))));
     }
-    if (plan.invisible) now.push(el('p', { class: 'plan-muted', text: plan.invisible }));
-    if (plan.headroom) now.push(headroomRows(plan));
     if (now.length) parts.push(section(STRINGS.modal.running, now));
-    const stays = (plan.preserved || []).map((text) => item('check', text))
-      .concat((plan.account_bound || []).map((text) => item('info', text)));
+    const stays = (plan.preserved || []).map((text) => item('check', text));
     if ((plan.will || []).length || stays.length) {
       parts.push(el('details', { class: 'disclosure', 'data-keep': 'plan-more' }, el('summary', { text: STRINGS.modal.will }),
         (plan.will || []).length ? el('ol', 'plan-steps', plan.will.map((text) => el('li', { text: mask(text) }))) : null,
         stays.length ? el('p', { class: 'plan-heading', text: STRINGS.modal.stays }) : null,
         stays.length ? el('ul', 'plan-list', stays) : null));
     }
-    const heads = (plan.warnings || []).filter((w) => !SAID.has(w.code)).map((w) => item('warning', w.message));
+    const heads = (plan.warnings || []).map((w) => item('warning', w.message));
     if (heads.length) parts.push(section(STRINGS.modal.headsUp, el('ul', 'plan-list', heads)));
-    if (plan.tip) parts.push(el('p', { class: 'plan-tip', text: mask(plan.tip) }));
     if ((plan.blockers || []).length) {
       parts.push(el('div', { class: 'plan-blockers', role: 'alert' }, el('p', { class: 'plan-blocked', text: STRINGS.modal.blocked }),
         plan.blockers.map((b) => el('p', { text: b.message }))));
@@ -146,16 +120,16 @@
       cancel.setAttribute('data-autofocus', '');
       return [cancel];
     }
+    // Only a Codex or Muse switch has sessions to wait for. While one is open, waiting is the one way on.
     const consumers = ((plan.running || {}).codex_consumers || []).length;
     const switching = plan.purpose === 'switch';
-    const idleOffered = plan.provider === 'claude' || (switching && consumers);
+    const idleOffered = switching && consumers > 0;
     const preferIdle = idleOffered && plan.default_button === 'idle';
-    const waits = plan.provider === 'codex' || plan.provider === 'muse';
-    const idle = idleOffered ? AD.dom.button(waits ? STRINGS.button.waitCodex
-      : (switching ? STRINGS.button.switchIdle : STRINGS.button.continueIdle),
-    () => execute(plan, 'idle', remembered()), { kind: preferIdle ? 'primary' : undefined, dataset: { choice: 'idle' } }) : null;
-    const now = AD.dom.button(switching ? STRINGS.button.switchNow : STRINGS.button.continueNow, () => confirmNow(plan),
-      { kind: preferIdle ? undefined : 'primary', disabled: switching && waits && consumers > 0, dataset: { choice: 'now' } });
+    const idle = idleOffered ? AD.dom.button(STRINGS.button.waitCodex, () => execute(plan, 'idle', remembered()),
+      { kind: preferIdle ? 'primary' : undefined, dataset: { choice: 'idle' } }) : null;
+    const now = AD.dom.button(switching ? STRINGS.button.switchNow : STRINGS.button.continueNow,
+      () => execute(plan, 'now', remembered()),
+      { kind: preferIdle ? undefined : 'primary', disabled: idleOffered, dataset: { choice: 'now' } });
     const preferred = preferIdle ? idle : now;
     (preferred.disabled ? cancel : preferred).setAttribute('data-autofocus', '');
     // The default button goes last; the other choice sits on the far left.
@@ -167,26 +141,6 @@
   function showPlan(plan, options = {}) {
     if (!plan) return;
     AD.dom.openModal({ title: planTitle(plan), body: planBody(plan, options), actions: planActions(plan), view: 'plan' });
-  }
-
-  /** "Switch Now" while Code sessions work asks once more, naming them. */
-  function confirmNow(plan) {
-    const running = plan.running || {};
-    if (plan.provider !== 'claude' || !((running.busy || 0) + (running.unknown || 0))) return execute(plan, 'now', remembered());
-    const sessions = running.sessions || [];
-    const working = sessions.filter((s) => s.status !== 'idle');
-    const shown = working.length ? working : sessions;
-    const switching = plan.purpose === 'switch';
-    AD.dom.openModal({
-      title: fill(switching ? STRINGS.modal.interrupt : STRINGS.modal.interruptOther, { names: shown.map((s) => `“${s.name}”`).join(', ') }),
-      body: el('p', { text: sessionsText(sessions) }), view: 'confirm-now', size: 'alert',
-      actions: [
-        AD.dom.button(STRINGS.button.cancel, () => showPlan(plan), { dataset: { choice: 'cancel' }, attrs: { 'data-autofocus': '' } }),
-        AD.dom.button(switching ? STRINGS.button.switchAnyway : STRINGS.button.continueAnyway, () => execute(plan, 'now'),
-          { kind: 'danger', dataset: { choice: 'now' } }),
-      ],
-    });
-    return undefined;
   }
 
   function confirmEnd(plan, consumer) {
@@ -241,7 +195,7 @@
     openProgress(last && last.pending);
   }
 
-  /** Desktop, Codex and Muse always review the plan. Only the terminal flow may skip review
+  /** Codex and Muse always review the plan. Only the terminal flow may skip review
    * when the service says no confirmation is needed ("Ask before switching when Claude is idle" off). */
   async function open(accountId) {
     let result;
@@ -259,7 +213,7 @@
     showPlan(plan);
   }
 
-  /** Start a flow other than a switch: finish-login, cancel-login, recover, capture or quit. */
+  /** Start a flow other than a switch: add, capture, recover, finish-login or cancel-login. */
   async function openPurpose(provider, purpose) {
     let result;
     try {
@@ -381,22 +335,10 @@
   function reportBody(report) {
     const parts = [];
     if (report.summary) parts.push(el('p', { class: 'plan-lead', text: mask(report.summary) }));
-    if (report.kind === 'switch' && report.provider === 'claude' && report.outcome === 'success') {
-      const verified = report.verified === 'verified';
-      const wrong = report.verified === 'failed';
-      parts.push(el('p', null, AD.meter.badge(verified ? 'good' : (wrong ? 'critical' : 'neutral'),
-        verified ? fill(STRINGS.report.verified, { label: mask(report.label) }) : (wrong ? STRINGS.report.failed : STRINGS.report.unconfirmed),
-        { icon: verified || wrong ? undefined : 'hourglass' })));
-    }
     if (report.verify_reason && report.verified !== 'verified') parts.push(el('p', { class: 'plan-muted', text: mask(report.verify_reason) }));
     if (report.error && report.error.message) {
       parts.push(el('p', { class: 'modal-error', role: 'alert', text: mask(AD.format.errorText(report.error.code, report.error.message)) }));
     }
-    const carried = (report.carried || []).map((c) => item(c.status === 'carried' ? 'check' : 'warning',
-      c.detail ? `${c.label} — ${c.detail}` : c.label));
-    if (carried.length) parts.push(section(STRINGS.report.carried, el('ul', 'plan-list', carried)));
-    const bound = (report.account_bound || []).map((b) => item('info', b.detail ? `${b.label} — ${b.detail}` : b.label));
-    if (bound.length) parts.push(section(STRINGS.modal.bound, el('ul', 'plan-list', bound)));
     return el('div', 'report', parts);
   }
 
@@ -458,35 +400,27 @@
       rel: 'noopener noreferrer', 'data-keep': 'login-open' }, STRINGS.login.open, AD.dom.svgIcon('external'));
   }
 
-  /** The title and lead text of a sign-in in progress, by provider. */
+  /** The title and lead text of a sign-in in progress: Muse's or Codex's. */
   function loginText(login) {
-    if (login.provider === 'codex') return [STRINGS.login.codexTitle, STRINGS.login.codex];
     if (login.provider === 'muse') return [STRINGS.login.museTitle, STRINGS.login.muse];
-    return [STRINGS.login.claudeTitle, STRINGS.login.claude];
+    return [STRINGS.login.codexTitle, STRINGS.login.codex];
   }
 
-  /** The controls of a sign-in in progress (the login view and its banner): Codex and Muse open the
-   * provider's page; Claude saves or cancels through a plan, since both close Claude. options.small for a banner. */
+  /** The controls of a sign-in in progress (the login view and its banner): cancel, the provider's sign-in
+   * page and Save Sign-In. options.small for a banner. */
   function loginActions(login, options = {}) {
     const small = !!options.small;
     const actions = [AD.dom.button(STRINGS.login.cancel, () => openPurpose(login.provider, 'cancel-login'),
       { small, attrs: { 'data-keep': 'login-cancel' } })];
-    if (login.provider === 'codex' || login.provider === 'muse') {
-      const link = signInLink(login.url, small);
-      if (link) actions.push(link);
-      actions.push(AD.dom.button(STRINGS.login.saveCodex, () => openPurpose(login.provider, 'finish-login'), { kind: 'primary', small }));
-    } else {
-      actions.push(AD.dom.button(STRINGS.login.save, () => openPurpose('claude', 'finish-login'),
-        { kind: 'primary', small, attrs: { 'data-keep': 'login-save' } }));
-    }
+    const link = signInLink(login.url, small);
+    if (link) actions.push(link);
+    actions.push(AD.dom.button(STRINGS.login.saveCodex, () => openPurpose(login.provider, 'finish-login'), { kind: 'primary', small }));
     return actions;
   }
 
   function loginBody(login) {
-    const claude = login.provider === 'claude';
     return [el('p', { text: loginText(login)[1] }),
-      login.user_code ? el('p', { class: 'move-path', text: fill(STRINGS.login.deviceCode, { code: login.user_code }) }) : null,
-      claude ? el('p', { class: 'modal-hint', text: STRINGS.login.hint }) : null];
+      login.user_code ? el('p', { class: 'move-path', text: fill(STRINGS.login.deviceCode, { code: login.user_code }) }) : null];
   }
 
   function openLogin(login) {

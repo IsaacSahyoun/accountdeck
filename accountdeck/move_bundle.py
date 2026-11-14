@@ -85,6 +85,8 @@ _INFO_CHECK = b"accountdeck-move/v1/check"
 _CODE_LABEL = b"accountdeck-move-confirm"
 _MIN_PASSPHRASE = 12
 
+# The clients a bundle can hold. This is the bundle format's own list, not the clients this build manages
+# (contract.PROVIDERS): a PC still packs Claude Desktop accounts, and the import leaves those out (move_import).
 PROVIDERS = ("claude", "claude_cli", "codex")
 # `secret.type` per provider: the Claude Desktop portable profile, the Claude Code
 # terminal record and the Codex auth.json copy. The record itself (`secret.data`) is opaque here.

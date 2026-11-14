@@ -530,7 +530,7 @@ class ScenariosDrawTest(DashboardTestCase):
                 self.assertEqual(sorted(shown), sorted(a["label"] for a in state["accounts"]))
                 self.assertEqual(self.browser.problems, [])
                 titles = self.browser.js("[...document.querySelectorAll('.section-title')].map((t) => t.textContent)")
-                self.assertEqual(titles, ["Claude Code", "Claude Desktop", "Codex", "Muse Code"])
+                self.assertEqual(titles, ["Claude Code", "Codex", "Muse Code"])
 
 
 class TerminalRowsTest(DashboardTestCase):
@@ -635,36 +635,35 @@ class OtherClientsRowsTest(DashboardTestCase):
                  for a in state["accounts"] if a["provider"] != "claude_cli"}
         self.assertEqual(words, {(a["provider"], a["label"]): None if a["active"] else "Switch…"
                                  for a in state["accounts"] if a["provider"] != "claude_cli"})
-        for count, provider in enumerate(("claude", "muse"), 1):
-            account = self.account(state, provider, active=False)
-            self.browser.click(f"{row(account)}.querySelector('[data-primary]')")
-            self.assertEqual(self.posted(server, count)[-1], ("switch-plan", {"id": account["id"]}))
+        account = self.account(state, "muse", active=False)
+        self.browser.click(f"{row(account)}.querySelector('[data-primary]')")
+        self.assertEqual(self.posted(server), [("switch-plan", {"id": account["id"]})])
         self.assertEqual(self.browser.problems, [])
 
     def test_the_account_in_use_and_not_saved_offers_save_and_no_menu(self):
         state = fixtures.example_state("first-run", now=time.time())
         server = self.show(state)
-        unsaved = self.account(state, "claude", saved=False)
+        unsaved = self.account(state, "codex", saved=False)
         self.assertEqual(self.browser.js(f"[...{row(unsaved)}.querySelectorAll('button')].map((b) => b.textContent)"),
                          ["Save Current Account"])
         self.browser.click(button("Save Current Account", row(unsaved)))
-        self.assertEqual(self.posted(server), [("switch-plan", {"provider": "claude", "purpose": "capture"})])
+        self.assertEqual(self.posted(server), [("switch-plan", {"provider": "codex", "purpose": "capture"})])
 
     def test_an_account_that_needs_sign_in_offers_sign_in_again(self):
         state = fixtures.example_state("needs-signin", now=time.time())
         server = self.show(state)
-        beta = self.account(state, "claude", label="Beta")
-        self.assertEqual(beta["state"], "needs_signin")
-        self.browser.click(button("Sign In Again", row(beta)))
-        self.assertEqual(self.posted(server), [("switch-plan", {"provider": "claude", "purpose": "add"})])
+        spare = self.account(state, "codex", label="Codex spare")
+        self.assertEqual(spare["state"], "needs_signin")
+        self.browser.click(button("Sign In Again", row(spare)))
+        self.assertEqual(self.posted(server), [("switch-plan", {"provider": "codex", "purpose": "add"})])
 
     def test_each_client_section_offers_save_and_add_and_says_how_to_start_when_empty(self):
         state = fixtures.example_state("empty", now=time.time())
         server = self.show(state)
         sections = "[...document.querySelectorAll('#other-accounts .other-provider')]"
         self.assertEqual(self.browser.js(f"{sections}.map((s) => s.querySelector('.empty-text').textContent.slice(0, 12))"),
-                         ["Sign in to C", "Sign in to C", "Use Add Acco"])
-        for index, provider in enumerate(("claude", "codex", "muse")):
+                         ["Sign in to C", "Use Add Acco"])
+        for index, provider in enumerate(("codex", "muse")):
             self.browser.click(button("Add Account", f"{sections}[{index}]"))
             self.browser.click(button("Save Current Account", f"{sections}[{index}]"))
             self.assertEqual(self.posted(server, 2 * index + 2)[-2:], [("switch-plan", {"provider": provider, "purpose": "add"}),
@@ -695,7 +694,7 @@ class OtherClientsRowsTest(DashboardTestCase):
         notes = self.browser.js("""[...document.querySelectorAll('#other-accounts .row .limit-note')].map((note) =>
             [note.textContent.trim(), note.scrollWidth <= note.clientWidth + 1,
              !!note.previousElementSibling && note.previousElementSibling.matches('.meter')])""")
-        self.assertGreater(len(notes), 8, notes)
+        self.assertGreaterEqual(len(notes), 6, notes)          # two limits on each Codex and Muse row
         self.assertEqual([note for note in notes if not (note[1] and note[2])], [])
 
     def test_a_note_with_no_room_ends_in_dots(self):
@@ -704,7 +703,8 @@ class OtherClientsRowsTest(DashboardTestCase):
         for place in ("#other-accounts .row .limit", "#overview .limit.is-compact"):
             with self.subTest(place=place):
                 squeezed = self.browser.js(f"""(() => {{
-                    const note = [...document.querySelectorAll('{place} .limit-note')].find((n) => n.textContent.trim().length > 10);
+                    const note = [...document.querySelectorAll('{place} .limit-note')]
+                        .sort((a, b) => b.textContent.trim().length - a.textContent.trim().length)[0];     // the longest
                     note.closest('.limit').style.width = '70px';
                     const style = getComputedStyle(note);
                     return [note.scrollWidth > note.clientWidth, style.overflowX, style.textOverflow, /flex|grid/.test(style.display)]; }})()""")
@@ -752,19 +752,19 @@ class SwitchNotchTest(DashboardTestCase):
 
 
 class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
-    """Claude dropped its 5-hour limit. No part of the page names one for a Claude account, in the terminal or in
-    Claude Desktop. Codex and Muse keep theirs. The page draws the limits it is given, so the first test
-    holds for the demo data and the second for what the 2.0.0 build left saved."""
+    """Claude dropped its 5-hour limit. No part of the page names one for a Claude Code account. Codex and Muse
+    keep theirs. The page draws the limits it is given, so the first test holds for the demo data and the
+    second for what the 2.0.0 build left saved."""
     SAYS_5_HOUR = """Object.fromEntries([['the cards', document.getElementById('overview')],
         ['claude_cli', document.getElementById('accounts')],
-        ...[...document.querySelectorAll('#other-accounts .other-provider')].map((part, n) => [['claude', 'codex', 'muse'][n], part])]
+        ...[...document.querySelectorAll('#other-accounts .other-provider')].map((part, n) => [['codex', 'muse'][n], part])]
         .map(([name, part]) => [name, part.innerText.includes('5-hour')]))"""
     CELLS = "[...document.querySelectorAll('#accounts .row:not(.is-blocked) .row-limits')].map((r) => r.children.length)"
 
     def test_only_codex_and_muse_show_a_5_hour_limit(self):
         self.show(fixtures.example_state("typical", now=time.time()))
         self.assertEqual(self.browser.js(self.SAYS_5_HOUR),
-                         {"the cards": False, "claude_cli": False, "claude": False, "codex": True, "muse": True})
+                         {"the cards": False, "claude_cli": False, "codex": True, "muse": True})
 
     def test_a_reading_the_shipped_version_saved_shows_no_5_hour_limit(self):
         # After an upgrade the page draws what 2.0.0 saved until each account is read again. The fourth
@@ -772,12 +772,12 @@ class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
         engine = support.demo_engine(self, "typical")
         now = engine.clock()
         for saved in engine.store.accounts():
-            if saved["provider"] in ("claude_cli", "claude") and saved["last_good_usage"]:
+            if saved["provider"] == "claude_cli" and saved["last_good_usage"]:
                 engine.store.observe(saved["id"], support.shipped_reading(now, 100.0, 20.0), at=now)
         engine.sense_active()
         self.browser.open(serve(self, engine))
         self.assertEqual(self.browser.js(self.SAYS_5_HOUR),
-                         {"the cards": False, "claude_cli": False, "claude": False, "codex": True, "muse": True})
+                         {"the cards": False, "claude_cli": False, "codex": True, "muse": True})
         cells = self.browser.js(self.CELLS)
         self.assertEqual(sorted(set(cells)), [2], cells)
         card = self.browser.js("document.querySelector('#overview .ov-inuse').innerText")
@@ -855,19 +855,19 @@ class InUseCardTest(DashboardTestCase):
         self.assertEqual(card["limits"][0][2:], ["2% used", "Weekly: 2% used"])
 
 
-CLIENTS = ("claude_cli", "claude", "codex", "muse")
-APPS = {"claude_cli": "Claude Code", "claude": "Claude Desktop", "codex": "Codex", "muse": "Muse Code"}
+CLIENTS = ("claude_cli", "codex", "muse")
+APPS = {"claude_cli": "Claude Code", "codex": "Codex", "muse": "Muse Code"}
 METERS_SHOW = ("ready", "watch", "low", "critical")     # every other headline is words under the account's name
 
 
 class EveryClientRowsTest(DashboardTestCase):
-    """One row for all four clients: what a terminal row says and offers, the other clients' rows do too."""
+    """One row for all three clients: what a terminal row says and offers, the other clients' rows do too."""
 
     def setUp(self):
         self.state = fixtures.example_state("typical", now=time.time())
 
     def picked(self, accounts, provider):
-        """One saved row of a client: the account in use for Codex and Muse, another one for the Claude clients."""
+        """One saved row of a client: the account in use for Codex and Muse, another one for Claude Code."""
         return next(a for a in accounts if a["provider"] == provider and a["active"] is (provider in ("codex", "muse")))
 
     def rename(self, account, name):
@@ -972,14 +972,14 @@ class EveryClientRowsTest(DashboardTestCase):
     def test_arrow_keys_and_return_work_in_every_list(self):
         server = self.show(self.state)
         lists = "[...document.querySelectorAll('ol.rows')]"
-        self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1, 1])
-        desktop = [a for a in self.state["accounts"] if a["provider"] == "claude"]
-        self.browser.js(f"{row(desktop[0])}.focus()")
+        self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1])
+        muse = [a for a in self.state["accounts"] if a["provider"] == "muse"]
+        self.browser.js(f"{row(muse[0])}.focus()")
         self.browser.press("ArrowDown")
-        self.assertEqual(self.browser.js("document.activeElement.dataset.id"), desktop[1]["id"])
+        self.assertEqual(self.browser.js("document.activeElement.dataset.id"), muse[1]["id"])
         self.browser.press("Enter")
-        self.assertEqual(self.posted(server), [("switch-plan", {"id": desktop[1]["id"]})])
-        self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1, 1])
+        self.assertEqual(self.posted(server), [("switch-plan", {"id": muse[1]["id"]})])
+        self.assertEqual(self.browser.js(f"{lists}.map((l) => [...l.children].filter((r) => r.tabIndex === 0).length)"), [1, 1, 1])
 
 
 class SettingsDrawTest(DashboardTestCase):

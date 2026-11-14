@@ -300,15 +300,12 @@ def plan(engine, key, purpose="switch"):
         except DeckError as exc:
             blockers.append({"code": exc.code, "message": str(exc)})
         planned = assemble(context(engine), provider="claude_cli", purpose="recover", account=None,
-            target=None, current=None, headroom=None,
-            running={"desktop": False, "sessions": [], "busy": 0, "unknown": 0, "foreign_claude": 0, "codex_consumers": []},
-            pairs=(), blockers=blockers, warnings=[], tip=None,
+            target=None, current=None, consumers=[], pairs=(), blockers=blockers, warnings=[],
             will=["Save the login Claude Code holds now under its own account.",
                   "Put back the account your terminals used before the interrupted switch, login and name "
                   "together. If you signed in to another account since, that one stays.",
                   "Set aside a record that cannot be read or undone. No terminal is closed."],
-            preserved=["MCP logins, projects, settings and history"], account_bound=[], invisible=None,
-            stop_tier="not_running")
+            preserved=["MCP logins, projects, settings and history"])
         planned.plan.update(confirmation_required=True, remember_available=False)
         return register(context(engine), planned)
     row = service.row(key)
@@ -328,12 +325,10 @@ def plan(engine, key, purpose="switch"):
     except DeckError as exc:
         blockers.append({"code": exc.code, "message": str(exc)})
     planned = assemble(context(engine), provider="claude_cli", purpose="switch", account=key,
-        target=plan_target(target), current=plan_current(current) if current else None, headroom=None,
-        running={"desktop": False, "sessions": [], "busy": 0, "unknown": 0, "foreign_claude": 0, "codex_consumers": []},
-        pairs=(), blockers=blockers, warnings=[], tip=None,
+        target=plan_target(target), current=plan_current(current) if current else None, consumers=[],
+        pairs=(), blockers=blockers, warnings=[],
         will=["Open terminals continue on the new account from their next message — nothing is closed.",
-              "The first reply after switching is slower."], preserved=["MCP logins, projects, settings and history"],
-        account_bound=[], invisible=None, stop_tier="not_running")
+              "The first reply after switching is slower."], preserved=["MCP logins, projects, settings and history"])
     planned.plan.update(confirmation_required=True, remember_available=False)
     if any(used is not None and used >= engine.prefs.get("cli_threshold") for _, used, _ in considered(target, engine.prefs.public())):
         planned.plan["warnings"].append({"code": "rate_limited", "message": "This account is over your auto-switch threshold. Auto-switch keeps your choice for 2 hours, unless the account's week runs out or it needs sign-in."})

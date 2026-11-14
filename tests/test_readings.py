@@ -10,7 +10,7 @@ import uuid
 
 from tests import support
 
-from accountdeck import cli_policy, contract, demo, fixtures, move_bundle, move_import
+from accountdeck import cli_policy, config, contract, demo, fixtures, move_bundle, move_import
 from accountdeck.providers import errors
 from accountdeck.providers import http as provider_http
 from accountdeck.scheduler import RefreshScheduler, Target
@@ -519,7 +519,7 @@ class FableLimitTest(unittest.TestCase):
         for shape, answer in self.answers(20, 40):
             for pinned, marked, left in (("Fable", ["model"], 60.0), ("", [], 80.0)):
                 with self.subTest(shape=shape, pinned_model=pinned):
-                    saved = {"id": "alpha", "provider": "claude", "usage": claude_usage(answer, now=NOW), "last_good_at": NOW - 60}
+                    saved = {"id": "alpha", "provider": "claude_cli", "usage": claude_usage(answer, now=NOW), "last_good_at": NOW - 60}
                     built = intel.build_account(saved, now=NOW, pinned=pinned)
                     self.assertEqual([w["kind"] for w in built["windows"] if w.get("binding")], marked)
                     self.assertEqual(rules.headroom(built, pinned), left)
@@ -601,10 +601,8 @@ class FableLimitTest(unittest.TestCase):
         from accountdeck.usage import saved_reading
         saved = support.shipped_both_names(NOW, 40.0, 100.0, 20.0)
         before = copy.deepcopy(saved)
-        for provider in ("claude_cli", "claude"):
-            with self.subTest(provider=provider):
-                self.assertEqual([(w["id"], w["used"]) for w in saved_reading(provider, saved)["windows"]],
-                                 [("seven_day", 40.0), ("seven_day_fable_5_1", 20.0)])
+        self.assertEqual([(w["id"], w["used"]) for w in saved_reading("claude_cli", saved)["windows"]],
+                         [("seven_day", 40.0), ("seven_day_fable_5_1", 20.0)])
         self.assertEqual(saved, before, "the saved reading itself is not changed")
         week, fable, listed = saved["windows"][1:]
         raw = {entry["key"]: entry for entry in saved["raw_windows"]}
@@ -749,7 +747,7 @@ class ClaudeHasNoFiveHourLimitTest(unittest.TestCase):
         beta = next(a for a in state["accounts"] if a["label"] == "Beta")
         self.assertEqual([(w["kind"], w["state"], w["left"]) for w in beta["windows"]], [("weekly", "not_started", None)])
         self.assertEqual((rules.headroom(beta, ""), rules.eligible(beta, "")), (100.0, True))
-        best = state["now_band"]["best"]["claude"]
+        best = state["now_band"]["best"]["claude_cli"]
         self.assertEqual((best["label"], best["reason"]), ("Beta", "Most headroom (100% left) and a fresh reading"))
 
 
@@ -763,16 +761,14 @@ class ReadingsTheShippedVersionSavedTest(unittest.TestCase):
         from accountdeck import rules
         engine = support.demo_engine(self, "typical")
         now = engine.clock()
-        rows = {provider: next(r for r in engine.store.accounts() if r["provider"] == provider
-                               and r["identity"] != engine.active_identity[provider]) for provider in ("claude_cli", "claude")}
-        for row in rows.values():       # before the first state is built: the engine keeps the state it built
-            engine.store.observe(row["id"], support.shipped_reading(now, 100.0, 20.0), at=now)
-        for provider, row in rows.items():
-            with self.subTest(provider=provider):
-                self.assertEqual([w["kind"] for w in engine.store.account(row["id"])["last_good_usage"]["windows"]], ["weekly"])
-                account = shown(engine, row["id"])
-                self.assertEqual([(w["kind"], w["used"]) for w in account["windows"]], [("weekly", 20.0)])
-                self.assertEqual((account["state"], rules.eligible(account, "")), ("ok", True), account["headline"])
+        row = next(r for r in engine.store.accounts() if r["provider"] == "claude_cli"
+                   and r["identity"] != engine.active_identity["claude_cli"])
+        # before the first state is built: the engine keeps the state it built
+        engine.store.observe(row["id"], support.shipped_reading(now, 100.0, 20.0), at=now)
+        self.assertEqual([w["kind"] for w in engine.store.account(row["id"])["last_good_usage"]["windows"]], ["weekly"])
+        account = shown(engine, row["id"])
+        self.assertEqual([(w["kind"], w["used"]) for w in account["windows"]], [("weekly", 20.0)])
+        self.assertEqual((account["state"], rules.eligible(account, "")), ("ok", True), account["headline"])
 
     def test_codex_and_muse_keep_a_saved_5_hour_limit(self):
         engine = support.demo_engine(self, "typical")
@@ -783,10 +779,10 @@ class ReadingsTheShippedVersionSavedTest(unittest.TestCase):
                 self.assertIn("session", [w["kind"] for w in shown(engine, row["id"])["windows"]])
 
 
-# ---- readings, for all four clients ----
-CLIENTS = ("claude_cli", "claude", "codex", "muse")
+# ---- readings, for all three clients ----
+CLIENTS = ("claude_cli", "codex", "muse")
 # For each client: the limit whose refill the test records, and one that keeps running. Claude has weekly limits only.
-WINDOWS = {"claude_cli": ("seven_day", "seven_day_fable"), "claude": ("seven_day", "seven_day_fable"),
+WINDOWS = {"claude_cli": ("seven_day", "seven_day_fable"),
            "codex": ("codex:primary", "codex:secondary"), "muse": ("muse:window", "muse:weekly")}
 
 
@@ -795,9 +791,7 @@ def answer(engine, provider, windows):
     ([{"key", "used", "reset"}]), in the provider's own format."""
     payload = demo._payload(provider, windows)
     adapter = engine.providers[provider]
-    if provider == "claude":
-        adapter._payload = lambda profile: copy.deepcopy(payload)
-    elif provider == "codex":
+    if provider == "codex":
         adapter._probe = lambda work, identity, refresh: (copy.deepcopy(payload), None)
     elif provider == "muse":
         adapter._run_usage = lambda config_home, *, file_mode, isolated: copy.deepcopy(payload)
@@ -817,8 +811,8 @@ def shown(engine, key):
 def sign_out(engine, provider):
     """What signing out of the client leaves: its login file is gone."""
     paths = engine.paths
-    {"claude_cli": Path(paths.claude_cli_credentials), "claude": Path(paths.claude_profile) / "config.json",
-     "codex": Path(paths.codex_home) / "auth.json", "muse": Path(paths.muse_config) / "auth.json"}[provider].unlink()
+    {"claude_cli": Path(paths.claude_cli_credentials), "codex": Path(paths.codex_home) / "auth.json",
+     "muse": Path(paths.muse_config) / "auth.json"}[provider].unlink()
     engine.sense_active()
 
 
@@ -850,9 +844,6 @@ class RefillTest(unittest.TestCase):
 
     def test_claude_code(self):
         self.refill_is_recorded("claude_cli")
-
-    def test_claude_desktop(self):
-        self.refill_is_recorded("claude")
 
     def test_codex(self):
         self.refill_is_recorded("codex")
@@ -889,7 +880,7 @@ class MuseAnswerAgeTest(unittest.TestCase):
 
 
 class UpkeepTest(unittest.TestCase):
-    """Renaming and removing a saved account, for all four clients, signed in or not."""
+    """Renaming and removing a saved account, for all three clients, signed in or not."""
 
     def rename_then_remove(self, provider, *, signed_out):
         engine = support.demo_engine(self, "typical")
@@ -1028,7 +1019,7 @@ class SchedulerTest(unittest.TestCase):
                 slow = [Target(f"{client}-{n}", client, f"id-{n}") for n in range(3)]
                 scheduler.tick(slow, 1000.0, lambda: 1000.0)
                 time.sleep(0.2)                               # the first helper read is running, the other two are due
-                scheduler.tick(slow + [Target(f"claude-with-{client}", "claude", "person")], 1000.0, lambda: 1000.0)
+                scheduler.tick(slow + [Target(f"claude-with-{client}", "claude_cli", "person")], 1000.0, lambda: 1000.0)
                 deadline = time.monotonic() + 3
                 while f"claude-with-{client}" not in ran and time.monotonic() < deadline:
                     time.sleep(0.02)
@@ -1135,7 +1126,10 @@ class MoveImportTest(unittest.TestCase):
         self.assertNotIn("setting", again["message"])
 
     def test_every_setting_that_travels_has_a_name(self):
-        self.assertEqual(set(move_import.SETTING_NAMES), set(move_bundle.PORTABLE_SETTINGS))
+        """Every setting a bundle can carry that this build has. `cookie_route` was Claude Desktop's: a bundle
+        may still carry it, and the import drops it."""
+        self.assertEqual(set(move_import.SETTING_NAMES), set(move_bundle.PORTABLE_SETTINGS) - {"cookie_route"})
+        self.assertNotIn("cookie_route", config.SETTINGS_SCHEMA)
 
 
 # ---- the state validator ----
@@ -1143,68 +1137,77 @@ def window(account, wid):
     return next(w for w in account["windows"] + account["other_windows"] if w["id"] == wid)
 
 
-# Ways of breaking one account of the "typical" example state: name -> (the account's place, the change).
+# Ways of breaking one account of an example state: name -> (the account's place, the change). The state is
+# "fifty" unless a third item names another: its Codex accounts are many enough that one broken row breaks no
+# rule about the client as a whole. There 36 is a Codex account past half of its 5-hour limit, 42 one with room
+# on both limits, 45 one past half of both, and 47 the recommended one. In "typical" 1 is a Claude Code account
+# with an entry under "other limits"; a broken Claude Code account also breaks the automatic order that lists it.
 BROKEN = {
     # the fields of one account
-    "no label": (1, lambda a: a.pop("label")),
-    "a number for a label": (1, lambda a: a.update(label=5)),
-    "an unknown client": (1, lambda a: a.update(provider="gemini")),
-    "a word for a flag": (1, lambda a: a.update(active="yes")),
-    "a terminal account without its health": (7, lambda a: a.pop("health")),
-    "another computer's account marked switchable": (2, lambda a: a.update(owner="on_pc")),
-    "an unknown source": (1, lambda a: a.update(imported_from="mac")),
-    "a score above 1": (1, lambda a: a.update(score=2)),
-    "an identity in the payload": (1, lambda a: a["credential"].update(identity="someone")),
-    "an unknown credential state": (1, lambda a: a["credential"].update(state="maybe")),
-    "an error without its fields": (1, lambda a: a.update(error={"code": "network"})),
-    "a trend out of order": (1, lambda a: a.update(trend=[[20.0, 5.0], [10.0, 6.0]])),
+    "no label": (36, lambda a: a.pop("label")),
+    "a number for a label": (36, lambda a: a.update(label=5)),
+    "an unknown client": (36, lambda a: a.update(provider="gemini")),
+    "a client this version no longer has": (36, lambda a: a.update(provider="claude")),
+    "a word for a flag": (36, lambda a: a.update(active="yes")),
+    "a terminal account without its health": (1, lambda a: a.pop("health"), "typical"),
+    "another computer's account marked switchable": (36, lambda a: a.update(owner="on_pc")),
+    "an unknown source": (36, lambda a: a.update(imported_from="mac")),
+    "a score above 1": (36, lambda a: a.update(score=2)),
+    "an identity in the payload": (36, lambda a: a["credential"].update(identity="someone")),
+    "an unknown credential state": (36, lambda a: a["credential"].update(state="maybe")),
+    "a credential state only Claude Desktop had": (36, lambda a: a["credential"].update(state="web_only")),
+    "an error without its fields": (36, lambda a: a.update(error={"code": "network"})),
+    "a trend out of order": (36, lambda a: a.update(trend=[[20.0, 5.0], [10.0, 6.0]])),
     # the reading and its windows
-    "an unsaved id on a saved account": (1, lambda a: a.update(id="unsaved-claude")),
-    "the wrong age": (1, lambda a: a.update(age_tier="stale")),
-    "stale without an old reading": (1, lambda a: a.update(stale=True)),
-    "windows without a reading": (1, lambda a: a.update(last_good_at=None)),
+    "an unsaved id on a saved account": (36, lambda a: a.update(id="unsaved-codex")),
+    "the wrong age": (36, lambda a: a.update(age_tier="stale")),
+    "stale without an old reading": (36, lambda a: a.update(stale=True)),
+    "windows without a reading": (36, lambda a: a.update(last_good_at=None)),
     # the account as a whole
-    "the same window twice": (1, lambda a: a["windows"].append(copy.deepcopy(a["windows"][0]))),
+    "the same window twice": (36, lambda a: a["windows"].append(copy.deepcopy(a["windows"][0]))),
     "an other window with nothing to show": (1, lambda a: a["other_windows"][0].update(
-        used=0.0, left=100.0, reset=None, reset_state="none", pace=None)),
-    "no limiting window marked": (1, lambda a: window(a, "seven_day").update(binding=False)),
-    "two limiting windows marked": (0, lambda a: window(a, "seven_day_fable").update(binding=True)),
-    "the wrong limiting window": (0, lambda a: (window(a, "seven_day").update(binding=False), window(a, "seven_day_fable").update(binding=True))),
-    "a limiting window where none limits": (2, lambda a: window(a, "seven_day").update(binding=True)),
-    "the wrong state": (1, lambda a: a.update(state="limited")),
-    "the wrong headline": (1, lambda a: a["headline"].update(kind="ready")),
-    "a headline about another window": (1, lambda a: a["headline"].update(window="seven_day_oauth_apps")),
-    "recommended without rank 1": (3, lambda a: a.update(rank=2)),
+        used=0.0, left=100.0, reset=None, reset_state="none", pace=None), "typical"),
+    "no limiting window marked": (36, lambda a: window(a, "codex:primary").update(binding=False)),
+    "two limiting windows marked": (45, lambda a: window(a, "codex:secondary").update(binding=True)),
+    "the wrong limiting window": (45, lambda a: (window(a, "codex:primary").update(binding=False),
+                                                 window(a, "codex:secondary").update(binding=True))),
+    "a limiting window where none limits": (42, lambda a: window(a, "codex:primary").update(binding=True)),
+    "the wrong state": (36, lambda a: a.update(state="limited")),
+    "the wrong headline": (36, lambda a: a["headline"].update(kind="ready")),
+    "a headline about another window": (36, lambda a: a["headline"].update(window="codex:secondary")),
+    "recommended without rank 1": (47, lambda a: a.update(rank=2)),
 }
 
 # What `contract.validate_state` says about each.
 SAID = {
-    'no label': ["accounts[1]: missing 'label'"],
-    'a number for a label': ['accounts[1].label: must be a non-empty string, got 5'],
-    'an unknown client': ["accounts[1].provider: 'gemini' is not one of claude, codex, claude_cli, muse"],
-    'a word for a flag': ["accounts[1].active: must be true or false, got 'yes'"],
-    'a terminal account without its health': ["accounts[7]: missing 'health'", 'providers.claude_cli.autoswitch.next_up: must list every terminal account once'],
-    "another computer's account marked switchable": ['accounts[2].switchable: must be false for an account another computer owns'],
-    'an unknown source': ["accounts[1].imported_from: must be null, 'v1' or 'pc'"],
-    'a score above 1': ['accounts[1].score: must be a number in [0, 1], got 2'],
-    'an identity in the payload': ['accounts[1].credential.identity: identities, org ids and secrets never leave the server'],
-    'an unknown credential state': ["accounts[1].credential.state: 'maybe' is not one of live, fresh, expired, web_only, reauth_required, access_expired, unknown"],
-    'an error without its fields': ["accounts[1].error: missing 'message'", "accounts[1].error: missing 'since'", "accounts[1].error: missing 'outage'"],
-    'a trend out of order': ['accounts[1].trend: points must be in time order and not in the future'],
-    'an unsaved id on a saved account': ["accounts[1]: only 'unsaved-claude' / 'unsaved-codex' may be unsaved, and they are active and not switchable", "now_band.best.claude: unknown account 'acc_2'"],
-    'the wrong age': ["accounts[1].age_tier: must be 'fresh' for a reading 600s old"],
-    'stale without an old reading': ["accounts[1].stale: must be true exactly when age_tier is 'stale'"],
-    'windows without a reading': ['accounts[1].age_tier: must be None for a reading never taken', 'accounts[1].windows: an account without a reading has no windows'],
-    'the same window twice': ["accounts[1]: duplicate window id 'seven_day'", 'accounts[1]: exactly one gating window must be binding', "accounts[1].headline.kind: must be 'ready'", 'accounts[1].headline.window: must be None'],
-    'an other window with nothing to show': ['accounts[1].other_windows[0]: other windows appear only when used > 0 or a reset exists'],
-    'no limiting window marked': ['accounts[1]: exactly one gating window must be binding', "accounts[1].headline.kind: must be 'ready'", 'accounts[1].headline.window: must be None'],
-    'two limiting windows marked': ['accounts[0]: exactly one gating window must be binding', "accounts[0].headline.kind: must be 'ready'", 'accounts[0].headline.window: must be None', 'providers.claude.active: must name the active claude account (None)'],
-    'the wrong limiting window': ["accounts[0]: binding must be 'seven_day' (out beats everything, then the lowest left)", "accounts[0].headline.kind: must be 'ready'", 'accounts[0].headline.window: must be None', 'providers.claude.active: must name the active claude account (None)'],
-    'a limiting window where none limits': ['accounts[2]: no gating window, so no window may be binding'],
-    'the wrong state': ["accounts[1].state: must be 'ok'"],
-    'the wrong headline': ["accounts[1].headline.kind: must be 'watch'"],
-    'a headline about another window': ["accounts[1].headline.window: must be 'seven_day'"],
-    'recommended without rank 1': ['accounts[3].rank: the recommended account has rank 1'],
+    'no label': ["accounts[36]: missing 'label'"],
+    'a number for a label': ['accounts[36].label: must be a non-empty string, got 5'],
+    'an unknown client': ["accounts[36].provider: 'gemini' is not one of codex, claude_cli, muse"],
+    'a client this version no longer has': ["accounts[36].provider: 'claude' is not one of codex, claude_cli, muse"],
+    'a word for a flag': ["accounts[36].active: must be true or false, got 'yes'"],
+    'a terminal account without its health': ["accounts[1]: missing 'health'", 'providers.claude_cli.autoswitch.next_up: must list every terminal account once'],
+    "another computer's account marked switchable": ['accounts[36].switchable: must be false for an account another computer owns'],
+    'an unknown source': ["accounts[36].imported_from: must be null, 'v1' or 'pc'"],
+    'a score above 1': ['accounts[36].score: must be a number in [0, 1], got 2'],
+    'an identity in the payload': ['accounts[36].credential.identity: identities, org ids and secrets never leave the server'],
+    'an unknown credential state': ["accounts[36].credential.state: 'maybe' is not one of live, fresh, expired, reauth_required, access_expired, unknown"],
+    'a credential state only Claude Desktop had': ["accounts[36].credential.state: 'web_only' is not one of live, fresh, expired, reauth_required, access_expired, unknown"],
+    'an error without its fields': ["accounts[36].error: missing 'message'", "accounts[36].error: missing 'since'", "accounts[36].error: missing 'outage'"],
+    'a trend out of order': ['accounts[36].trend: points must be in time order and not in the future'],
+    'an unsaved id on a saved account': ["accounts[36]: only 'unsaved-codex' / 'unsaved-muse' may be unsaved, and they are active and not switchable"],
+    'the wrong age': ["accounts[36].age_tier: must be 'fresh' for a reading 367s old"],
+    'stale without an old reading': ["accounts[36].stale: must be true exactly when age_tier is 'stale'"],
+    'windows without a reading': ['accounts[36].age_tier: must be None for a reading never taken', 'accounts[36].windows: an account without a reading has no windows'],
+    'the same window twice': ['accounts[36].windows: must be sorted session, weekly, then models by label', "accounts[36]: duplicate window id 'codex:primary'", 'accounts[36]: exactly one gating window must be binding', "accounts[36].headline.kind: must be 'ready'", 'accounts[36].headline.window: must be None'],
+    'an other window with nothing to show': ['accounts[1].other_windows[0]: other windows appear only when used > 0 or a reset exists', 'providers.claude_cli.autoswitch.next_up: must list every terminal account once'],
+    'no limiting window marked': ['accounts[36]: exactly one gating window must be binding', "accounts[36].headline.kind: must be 'ready'", 'accounts[36].headline.window: must be None'],
+    'two limiting windows marked': ['accounts[45]: exactly one gating window must be binding', "accounts[45].headline.kind: must be 'ready'", 'accounts[45].headline.window: must be None'],
+    'the wrong limiting window': ["accounts[45]: binding must be 'codex:primary' (out beats everything, then the lowest left)", "accounts[45].headline.kind: must be 'watch'", "accounts[45].headline.window: must be 'codex:secondary'"],
+    'a limiting window where none limits': ['accounts[42]: no gating window, so no window may be binding'],
+    'the wrong state': ["accounts[36].state: must be 'ok'"],
+    'the wrong headline': ["accounts[36].headline.kind: must be 'watch'"],
+    'a headline about another window': ["accounts[36].headline.window: must be 'codex:primary'"],
+    'recommended without rank 1': ['accounts[47].rank: the recommended account has rank 1'],
 }
 
 
@@ -1214,8 +1217,8 @@ class ValidatorTest(unittest.TestCase):
 
     def test_what_it_says_about_a_broken_account(self):
         said = {}
-        for name, (index, change) in BROKEN.items():
-            state = fixtures.example_state("typical")
+        for name, (index, change, *scenario) in BROKEN.items():
+            state = fixtures.example_state(*scenario or ["fifty"])
             change(state["accounts"][index])
             said[name] = contract.validate_state(state)
         self.assertEqual(said, SAID)
@@ -1235,28 +1238,28 @@ def picks(state):
 
 # The picks since Claude dropped its 5-hour limit (2026-11-13): the weekly limit is an account's room.
 PICKS = {
-    'terminal': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
-    'typical': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
-    'resets-soon': ['claude acc_5 ok Most headroom (70% left) and a fresh reading | acc_5 acc_3 acc_2 acc_4', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha'],
-    'refilled': ["claude acc_1 ok You're on the best account | acc_1 acc_3 acc_2"],
-    'not-started': ['claude acc_2 ok Most headroom (100% left) and a fresh reading | acc_2 acc_3 acc_1'],
-    'codex-blocked': ['claude acc_2 ok Most headroom (80% left) and a fresh reading | acc_2 acc_1', 'codex None all_exhausted No account has room right now. Soonest back: Codex main in 2h — 4:13 PM | '],
-    'needs-signin': ['claude acc_4 ok Most headroom (88% left) and a fresh reading | acc_4 acc_1'],
-    'blocked-cloudflare': ['claude acc_4 ok Most headroom (90% left) and a fresh reading | acc_4 acc_1'],
-    'stale': ['claude acc_3 unknown Usage last checked 42m ago | acc_3 acc_4'],
-    'fable-binding': ['claude acc_2 ok Most Fable headroom (65% left) | acc_2 acc_3 acc_1'],
-    'resetting': ['claude acc_3 ok Only account with headroom | acc_3'],
-    'rate-limited': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3'],
-    'outage': ['claude acc_2 ok Most headroom (60% left) and a fresh reading | acc_2 acc_1'],
-    'switching': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
-    'stopping': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
-    'report': ["claude acc_4 ok You're on the best account | acc_4 acc_5 acc_3 acc_2"],
-    'needs-reconfirm': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
+    'terminal': ['claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_delta cli_alpha', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
+    'typical': ['claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta', 'muse acc_m2 ok Most headroom (88% left) and a fresh reading | acc_m2 acc_m1'],
+    'resets-soon': ['claude_cli cli_epsilon ok Most headroom (70% left) and a fresh reading | cli_epsilon cli_gamma cli_beta cli_delta'],
+    'refilled': ["claude_cli cli_alpha ok You're on the best account | cli_alpha cli_gamma cli_beta"],
+    'not-started': ['claude_cli cli_beta ok Most headroom (100% left) and a fresh reading | cli_beta cli_gamma cli_alpha'],
+    'codex-blocked': ['codex None all_exhausted No account has room right now. Soonest back: Codex main in 2h — 4:13 PM | ', 'claude_cli cli_beta ok Most headroom (80% left) and a fresh reading | cli_beta cli_alpha'],
+    'needs-signin': ["codex acc_6 ok You're on the best account | acc_6", 'claude_cli cli_delta ok Most headroom (88% left) and a fresh reading | cli_delta cli_alpha'],
+    'blocked-cloudflare': ['claude_cli cli_delta ok Most headroom (90% left) and a fresh reading | cli_delta cli_alpha'],
+    'stale': ['claude_cli cli_gamma unknown Usage last checked 42m ago | cli_gamma cli_delta'],
+    'fable-binding': ['claude_cli cli_beta ok Most Fable headroom (65% left) | cli_beta cli_gamma cli_alpha'],
+    'resetting': ['claude_cli cli_gamma ok Only account with headroom | cli_gamma'],
+    'rate-limited': ['claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_alpha cli_delta'],
+    'outage': ['claude_cli cli_beta ok Most headroom (60% left) and a fresh reading | cli_beta cli_alpha'],
+    'switching': ['codex acc_7 ok Most headroom (75% left) and a fresh reading | acc_7 acc_6', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta'],
+    'stopping': ['codex acc_7 ok Most headroom (75% left) and a fresh reading | acc_7 acc_6', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta'],
+    'report': ["codex acc_7 ok You're on the best account | acc_7 acc_6", 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta'],
+    'needs-reconfirm': ['codex acc_7 ok Most headroom (75% left) and a fresh reading | acc_7 acc_6', 'claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta'],
     'empty': [],
-    'loading': ['claude None unknown Waiting for the first readings | '],
-    'fifty': ['claude acc_15 ok Most headroom (100% left) and a fresh reading | acc_15 acc_31 acc_8 acc_16', 'codex acc_48 ok Most headroom (89% left) and a fresh reading | acc_48 acc_42 acc_49 acc_43'],
-    'read-only': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
-    'demo-banner': ['claude acc_4 ok Most headroom (91% left) and a fresh reading | acc_4 acc_5 acc_3 acc_2'],
+    'loading': ['claude_cli None unknown Waiting for the first readings | '],
+    'fifty': ['codex acc_48 ok Most headroom (89% left) and a fresh reading | acc_48 acc_42 acc_49 acc_43', 'claude_cli cli_15 ok Most headroom (100% left) and a fresh reading | cli_15 cli_31 cli_08 cli_16'],
+    'read-only': ['claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta'],
+    'demo-banner': ['claude_cli cli_gamma ok Most headroom (80% left) and a fresh reading | cli_gamma cli_beta cli_alpha cli_delta'],
     'first-run': [],
 }
 

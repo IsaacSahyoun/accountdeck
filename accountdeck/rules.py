@@ -22,8 +22,6 @@ RELATIVE_LIMIT = 21600        # countdown copy up to 6 h, clock copy after
 QUIET_ERRORS = frozenset({"blocked", "rate_limited", "outage"})   # keep the account's state
 SEVERITY_RANK = {"watch": 1, "low": 2, "critical": 3, "out": 4}
 DORMANT_DAYS = 25
-PRESERVED = ["Local Code sessions and archives", "Local MCP servers and extensions (shared config)",
-             "Settings and preferences"]
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
@@ -387,21 +385,6 @@ def attention(accounts, now, tz):
 
 def window_order(window):
     return KIND_ORDER[window["kind"]], window["label"].casefold()
-
-
-def headroom_line(account, now):
-    parts = []
-    for w in account["windows"]:
-        if w["state"] == "not_started":
-            parts.append(f"{w['label']} not started")
-        elif w["left"] is None:
-            parts.append(f"{w['label']} not reported")
-        else:
-            text = f"{w['label']} {pct_left(w['left'])}% left"
-            if w["left"] < 20 and w["reset_state"] == "scheduled":
-                text += f" (back in {countdown_text(w['reset'] - now)})"
-            parts.append(text)
-    return " · ".join(parts)
 
 
 def plan_target(account):

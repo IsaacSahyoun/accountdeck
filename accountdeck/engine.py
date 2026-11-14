@@ -9,8 +9,7 @@ the demo build against.
   result is cached until `bump()` raises `rev`.
 - The `ad2-sched` thread ticks every few seconds: it takes one look at the processes, senses the
   signed-in accounts, polls the status pages, hands due accounts to the `RefreshScheduler`, runs
-  the background verifiers and the terminal auto-switch, and evaluates the alert engine. Nothing in
-  the tick signals a process.
+  the terminal auto-switch, and evaluates the alert engine. Nothing in the tick signals a process.
 - `action()` answers the quick actions itself and hands every switch flow to `switching.dispatch`, which
   shares the engine only through its public members.
 """
@@ -25,16 +24,15 @@ import threading
 import time
 import tomllib
 
-from . import (__version__, activity, alerts, cli_auto, contract, diagnostics, intel, move_import, switch_claude,
-               switching, workfolders)
+from . import (__version__, alerts, cli_auto, contract, diagnostics, intel, move_import, recovery, switching,
+               workfolders)
 from .accounts import AccountService
 from .cli_accounts import CLIAccounts
 from .cli_policy import considered
 from .config import SETTINGS_SCHEMA, Settings, Timings, safe_mode, validate_settings
-from .core import DeckError, FrozenAccountError, Store, Vault, is_frozen, recover_transactions, vault_cipher
+from .core import DeckError, FrozenAccountError, Store, Vault, is_frozen, vault_cipher
 from .diagnostics import Manifest
 from .operations import TERMINAL_PHASES, Operation, OperationRunner
-from .platform import facts_mac
 from .procs import ProcessSet, get_controller, unix_time
 from .providers import make_providers
 from .providers.claude_cli import ClaudeCLI
@@ -51,25 +49,21 @@ HEARTBEAT_LOG = 600.0         # engine.heartbeat is logged this often (real seco
 STALL_TICK = 30.0             # `stalled` when no tick completed for this long (real seconds)
 STALL_READ = 1200.0           # ... or no terminal read succeeded for this long while terminal reads should run
 PHASE_RELOG = 60              # a phase failing on every tick is logged again every this many ticks
-SLOW_EVERY = 60.0             # shared setup, Codex conversations and the data-folder check
+SLOW_EVERY = 60.0             # shared setup and Codex conversations
 STATUS_MIN = 1.0
 MACHINE_TTL = 1.5             # how old a process observation a snapshot may reuse (real seconds)
 READY_GRACE = 30.0            # `ready` turns true after this long even if a first reading is still missing
 PLAN_GRACE = 600.0            # a plan is kept this long after it expired
 MAX_SETUP_BYTES = 8 * 1024 * 1024
 HOT_USED, EXHAUSTED_USED = 95.0, 99.5
-DEAD_CREDENTIALS = frozenset({"reauth_required", "access_expired", "web_only"})   # the active account still shows these
+DEAD_CREDENTIALS = frozenset({"reauth_required", "access_expired"})   # the active account still shows these
 MANIFEST_ID = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 CONSUMER_KINDS = {"codex_tui": "tui", "codex_app_server_child": "app_server_child", "codex_desktop": "desktop"}
 MUSE_CONSUMER_KINDS = {"muse_session": "tui", "muse_host": "app_server_child"}    # a terminal session, `muse serve`
 SETUP_MESSAGE = ("Settings, local MCP definitions, skills, plugins and project files stay shared. "
                  "Hosted connectors may require sign-in on each account.")
-SETUP_NOTE = "Claude Chat local MCPs and Claude Code MCPs are separate configurations."
 READ_ONLY_OTHER = ("Another AccountDeck 2 is managing your sign-ins",
                    "Quit that copy to make changes here. This one only shows usage.")
-SELF_PROTECT = ("Open AccountDeck 2 from Applications",
-                "AccountDeck was started from inside Claude, so it cannot close Claude to switch accounts. "
-                "Quit it and open AccountDeck 2 from Applications or the menu bar.")
 OTHER_OWNER = "Another AccountDeck 2 is managing your sign-ins. Quit it to make changes here."
 OUTAGE_TAIL = " Your last good readings are kept. Switching still works; verification may take longer."
 
@@ -90,20 +84,15 @@ class ServiceOperation(Operation):
 class Machine:
     """One observation of the processes, shared by the tick and the snapshots built after it."""
     kinds: dict
-    report: object                # activity.ActivityReport
     consumers: list
-    registry: dict
     names: dict
-    self_protect: bool
     fingerprint: tuple
     taken: float                  # real monotonic time of the observation
     muse: list = field(default_factory=list)     # Muse Code processes using the Muse login
 
     @staticmethod
     def empty():
-        blank = activity.ActivityReport([], 0, 0, 0, 0, [], True, None)
-        return Machine({kind: [] for kind in ("claude_desktop", "claude_code", "claude_foreign", "codex_daemon",
-                                              "codex_desktop")}, blank, [], {}, {}, False, ("unavailable",), 0.0)
+        return Machine({kind: [] for kind in ("codex_daemon", "codex_desktop")}, [], {}, ("unavailable",), 0.0)
 
 
 class Engine:
@@ -130,7 +119,7 @@ class Engine:
         self._sense_lock, self._slow_lock = threading.Lock(), threading.Lock()
         self.stopping = threading.Event()
         self.rev, self._cache, self._stopped, self.thread = 1, None, False, None
-        self.store = Store(paths.data_dir, clock=clock)
+        self.store = Store(paths.data_dir, clock=clock, clients=contract.PROVIDERS)
         self.vault = vault or Vault(paths.data_dir / "vault", protect=vault_cipher(paths.data_dir))
         stored = {key: value for key in SETTINGS_SCHEMA if (value := self.store.setting(key)) is not None}
         self.prefs = Settings(stored, save=self.store.set_setting, home=paths.home)
@@ -149,11 +138,9 @@ class Engine:
         self.plans, self.login = {}, None
         self.active_identity = {name: None for name in self.providers}
         self.identity_known = {name: False for name in self.providers}
-        self.background_verifiers = []
         self.closers = []                    # called once by stop(), e.g. a Codex sign-in helper
         self.scheduler = RefreshScheduler(self._refresh, inline=inline)
-        self.accounts = AccountService(self.store, self.vault, self.providers, self.prefs, clock=clock,
-                                       observed=self.observed, levels=self.levels,
+        self.accounts = AccountService(self.store, self.vault, self.providers, clock=clock, observed=self.observed,
                                        lock_for=self.scheduler.account_lock,
                                        lock_wait=self.timings.lock_wait, on_change=self.bump)
         self.runner = OperationRunner(on_change=self.bump, on_finish=self._finished, on_settle=self._settled,
@@ -167,14 +154,13 @@ class Engine:
         self.recovery = self._scan_recovery()
         self._sweep_work()
         self.alert_engine = alerts.AlertEngine(started=clock())
-        self._machine, self._slow, self._idle_state = None, None, {}
+        self._machine, self._slow = None, None
         self._read_once = set()
         self._started_at = real_monotonic()
         self._wall, self._last_heartbeat = real_time(), clock()
         self._previous_state, self._alerts_rev, self._invalid_logged = None, None, False
         self.tray_handle = None              # the menu bar item while it shows (run.py, update_settings)
         self.sense_active()
-        self._restore_login()
         self._counts = self._count_accounts(self.store.accounts())
         if start:
             self.start()
@@ -183,7 +169,7 @@ class Engine:
         """The real status pages, only where the network is allowed at all."""
         if self.mode != "live" or safe_mode():
             return {}
-        return {"claude": StatuspageSummary(clock=self.clock), "codex": StatuspageStatus(clock=self.clock)}
+        return {"claude_cli": StatuspageSummary(clock=self.clock), "codex": StatuspageStatus(clock=self.clock)}
 
     def start(self):
         """Starts the `ad2-sched` thread (once)."""
@@ -229,7 +215,7 @@ class Engine:
         return result
 
     def roots(self):
-        return [self.paths.claude_profile, self.paths.codex_home, self.paths.claude_projects, self.paths.muse_config]
+        return [self.paths.codex_home, self.paths.muse_config]
 
     def _sweep_work(self):
         """Once at start, before any read: the helper folders a crash left behind are cleaned up
@@ -242,21 +228,13 @@ class Engine:
             diagnostics.log_exception("engine.work_sweep_failed", exc)
 
     def _scan_recovery(self):
-        return recover_transactions(self.vault)
+        return recovery.pending(self)
 
     def look_for_unfinished(self):
         """Reads the open switch records again. Jobs end and Recover is pressed on different threads, so the
         look and the assignment are one step: the newest look at the records is the one that stays."""
         with self._recovery_lock:
             self.recovery = self._scan_recovery()
-
-    def _restore_login(self):
-        """Once after construction: an add-account sign-in that was waiting when the service last stopped
-        (`engine.login`) is shown again. It never stops the start."""
-        try:
-            switch_claude.restore_enrollment(self)
-        except Exception as exc:
-            diagnostics.log_exception("engine.restore_login_failed", exc)
 
     # ---- who is signed in ----
     def sense_active(self):
@@ -269,11 +247,9 @@ class Engine:
                     if name == "claude_cli":
                         identity = self.cli.mirror()
                         known = True
-                    elif name in ("codex", "muse"):
+                    else:
                         found = adapter.active_identity()
                         known, identity = found.status != "unknown", found.identity if found.status == "ok" else None
-                    else:
-                        known, identity = True, adapter.active_identity()
                 except DeckError as exc:
                     known, identity = name == "claude_cli" and exc.code == "login_needed", None
                 except Exception as exc:       # a vault/store/disk error: unknown, and the next provider still runs
@@ -300,7 +276,7 @@ class Engine:
         """The contract status of a provider: the status page and what our own reads observed."""
         now = self.clock() if now is None else now
         with self.lock:
-            page = self.status_pages.get("claude" if provider == "claude_cli" else provider)
+            page = self.status_pages.get(provider)
         observed = self.observed[provider].evaluate(now=now, accounts=self._counts.get(provider))
         return intel.classify_outage(provider, page, observed, now=now)
 
@@ -356,14 +332,14 @@ class Engine:
 
     def targets(self, now=None, rows=None):
         """One scheduler Target per readable saved account and per unsaved signed-in account. Another
-        computer's account and a Desktop profile still waiting for conversion are never read."""
+        computer's account is never read."""
         now = self.clock() if now is None else now
         rows = self.store.accounts() if rows is None else rows
         read_only = self.read_only
         levels = {name: self.status(name, now)["level"] for name in self.providers}
         targets = []
         for row in rows:
-            if is_frozen(row) or not move_import.readable(row):
+            if is_frozen(row):
                 continue
             hot, exhausted, resets = self._pressure(row["last_good_usage"], now)
             if row["provider"] == "claude_cli":
@@ -436,10 +412,8 @@ class Engine:
         phase("status", self._poll_status, now)
         phase("schedule", self._schedule, now)
         phase("slow", self._refresh_slow, now)
-        phase("verifiers", self._tick_verifiers, now)
         phase("autoswitch", cli_auto.tick, self)
         phase("tidy", self._tidy, now)
-        phase("convert", self._convert_deferred, now)
         if now - self._last_heartbeat >= HEARTBEAT:
             self._last_heartbeat = now
             self.bump()
@@ -537,19 +511,6 @@ class Engine:
             diagnostics.log("engine.resumed")
             self.bump()
 
-    def _tick_verifiers(self, now):
-        for verifier in list(self.background_verifiers):
-            try:
-                finished = verifier.tick(now)
-            except Exception as exc:       # a broken verifier is dropped, never retried into a loop
-                diagnostics.log_exception("engine.verifier_failed", exc)
-                finished = True
-            if finished:
-                try:
-                    self.background_verifiers.remove(verifier)
-                except ValueError:
-                    pass
-
     def _tidy(self, now):
         with self.lock:
             kept = [n for n in self.notices if n["sticky"] or now - n["at"] <= NOTICE_TTL]
@@ -561,10 +522,6 @@ class Engine:
                     self.plans.pop(key, None)
         if expired:
             self.bump()
-
-    def _convert_deferred(self, now):
-        """Claude Desktop profiles imported from the PC before Claude Desktop was set up here (move_import)."""
-        move_import.convert_deferred(self, now)
 
     def _evaluate_alerts(self, now):
         try:
@@ -595,11 +552,8 @@ class Engine:
             try:
                 rows = self.procs.snapshot()          # one look per observation, shared by everything below
                 kinds = self.procs.classify(rows)
-                report = activity.report(self.paths, self.procs, now=self.clock(), idle_hold_s=self.timings.idle_hold,
-                                         state=self._idle_state, kinds=kinds)
                 consumers = self.procs.codex_consumers(rows=rows)
                 muse = self.procs.muse_consumers(rows=rows)
-                ancestors = {row.pid for row in self.procs.ancestors_of_self()}
             except DeckError as exc:
                 diagnostics.log("engine.observe_failed", lvl="warning", code=exc.code)
                 machine = Machine.empty()
@@ -607,15 +561,10 @@ class Engine:
                 diagnostics.log_exception("engine.observe_failed", exc)
                 machine = Machine.empty()
             else:
-                mine = {row.pid for row in kinds["claude_desktop"] + kinds["claude_code"]}
-                shown = (kinds["claude_desktop"], kinds["claude_code"], consumers, kinds["codex_daemon"], muse)
-                machine = Machine(
-                    kinds, report, consumers, activity.read_registry(self.paths), {row.pid: row.name for row in rows},
-                    bool(ancestors & mine),
-                    (tuple(ProcessSet.of(group).signature() for group in shown),
-                     tuple((s.pid, s.status, s.name) for s in report.sessions), report.foreign, report.registry_version,
-                     bool(ancestors & mine)),
-                    self.real_monotonic(), muse)
+                shown = (consumers, kinds["codex_daemon"], muse)
+                machine = Machine(kinds, consumers, {row.pid: row.name for row in rows},
+                                  tuple(ProcessSet.of(group).signature() for group in shown),
+                                  self.real_monotonic(), muse)
             self._machine = machine
         if cached is not None and cached.fingerprint != machine.fingerprint:
             self.bump()
@@ -625,16 +574,10 @@ class Engine:
         with self._slow_lock:
             if self._slow is None or now - self._slow["at"] >= SLOW_EVERY:
                 try:
-                    base, kind, _reason = facts_mac.claude_base(self.paths)
-                except Exception as exc:   # snapshots build on this too; fall back to the configured folder
-                    diagnostics.log_exception("engine.data_folder_failed", exc)
-                    base, kind = Path(self.paths.claude_profile), None
-                try:
                     conversations = self.providers["codex"].sessions()
                 except (DeckError, OSError, ValueError, KeyError):
                     conversations = []
-                self._slow = {"at": now, "data_folder": kind, "sessions": conversations,
-                              "setup": shared_setup(self.paths, base)}
+                self._slow = {"at": now, "sessions": conversations, "setup": shared_setup(self.paths)}
             return self._slow
 
     @staticmethod
@@ -689,14 +632,13 @@ class Engine:
                 "running": self._running(name, machine, now),
                 "switching": bool(pending and pending["provider"] == name and pending["phase"] not in TERMINAL_PHASES),
                 "paused": bool(self.prefs.get("refresh_paused")) or self.scheduler.provider_pause.get(name, False)}
-        providers["claude"].update(data_folder=slow["data_folder"], folder_warning=None)
         providers["claude_cli"].update(autoswitch=cli_auto.state(self), enrollment=copy.deepcopy(self.cli.phase),
                                         readonly_reason=self.cli.adapter.readonly_reason)
         raw = {"app": "accountdeck2", "version": __version__, "rev": rev, "mode": self.mode, "safe_mode": safe_mode(),
                "ready": self._ready(rows, now), "read_only": self.read_only, "settings": settings,
                "providers": providers, "accounts": accounts, "pending": pending, "report": runner["report"],
                "login": login, "recovery": {"pending": bool(self.recovery), "count": len(self.recovery)},
-               "notices": notices, "alerts": self.store.alerts(), "banners": self._banners(status, machine, rows),
+               "notices": notices, "alerts": self.store.alerts(), "banners": self._banners(status),
                "setup": slow["setup"], "sessions": slow["sessions"], "cwd": settings["cwd"],
                "events": self.store.events(), "last_manifest": self.store.setting("last_manifest"),
                "platform": contract.platform_block(self._notification_state())}
@@ -744,15 +686,6 @@ class Engine:
         kinds = machine.kinds
         if provider == "claude_cli":
             return {"checked": now}
-        if provider == "claude":
-            report = machine.report
-            sessions = []
-            for s in report.sessions:
-                folder = Path(str((machine.registry.get(s.pid) or {}).get("cwd") or "")).name or None
-                sessions.append({"pid": s.pid, "name": s.name, "status": s.status, "since": s.since, "cwd_short": folder})
-            return {"desktop": bool(kinds["claude_desktop"]), "desktop_pids": len(kinds["claude_desktop"]),
-                    "checked": now, "sessions": sessions, "busy": report.busy, "unknown": report.unknown,
-                    "foreign_claude": report.foreign, "registry_version": report.registry_version}
         if provider == "muse":
             return {"consumers": muse_consumers(machine.muse, machine.names), "checked": now}
         consumers = [{"pid": row.pid, "kind": CONSUMER_KINDS[row.kind], "parent": machine.names.get(row.parent),
@@ -808,7 +741,7 @@ class Engine:
                                         "session_expires_in_days": None, "revoked_hint": False}})
         return rows
 
-    def _banners(self, status, machine, rows):
+    def _banners(self, status):
         items = []
         if self.mode == "demo":
             items.append(banner("demo", "Demo mode", "Demo mode — synthetic accounts; no real apps are touched."))
@@ -823,13 +756,9 @@ class Engine:
                                 actions=["recover"]))
         if self.prefs.get("refresh_paused"):
             items.append(banner("paused", "Usage checks are paused", "Turn them back on in Settings."))
-        if machine.self_protect:
-            items.append(banner("self_protect", *SELF_PROTECT))
         for name, page in status.items():
             if page["level"] not in ("degraded", "outage"):
                 continue
-            if name == "claude_cli" and page["source"] == "statuspage" and status["claude"]["level"] == page["level"]:
-                continue        # the terminal reads Claude's own status page: one banner says it
             title = (page["incident"] or {}).get("title") or page["summary"]
             shown = intel.PROVIDER_NAMES[name]
             if page["level"] == "outage":
@@ -839,7 +768,6 @@ class Engine:
                 items.append(banner("degraded", f"{shown} is running slowly",
                                     title.rstrip(".") + ". Readings may be delayed; your last good readings are kept.",
                                     provider=name, link=page["url"]))
-        items += move_import.banners(rows)
         return items
 
     # ---- settings ----
@@ -890,7 +818,7 @@ class Engine:
             row = self.store.account(body["id"])
             if is_frozen(row):
                 raise FrozenAccountError(row)   # every provider's switch and read path, before any planner runs
-        if move_import.check_action(self, name, body):      # accounts still on the PC, Desktop waiting to convert
+        if move_import.check_action(self, name, body):      # accounts still on the PC
             self.bump()
             return {}
         handler = getattr(self, "_do_" + name.replace("-", "_"), None)
@@ -1089,7 +1017,7 @@ class Engine:
                 self.tray_handle.stop()
             except Exception as exc:
                 diagnostics.log_exception("menubar.stop_failed", exc)
-        self.runner.stop(self.timings.lock_wait + self.timings.verify_hard + self.timings.graceful_wait + 30)
+        self.runner.stop(self.timings.stop_wait)
         if self.thread is not None and self.thread is not threading.current_thread():
             self.thread.join(15)
         for thread in self._status_threads:
@@ -1132,16 +1060,14 @@ def _server_names(path, key, fmt):
         return True, [], True
 
 
-def shared_setup(paths, claude_base):
-    """The `setup` block: which MCP definitions the two apps share (names only)."""
+def shared_setup(paths):
+    """The `setup` block: which MCP definitions each client's accounts share (names only)."""
     groups = []
     for label, path, key, fmt in (("Codex settings & MCPs", paths.codex_home / "config.toml", "mcp_servers", "toml"),
-                                  ("Claude Code settings & MCPs", paths.claude_user_config, "mcpServers", "json"),
-                                  ("Claude Chat local MCPs", Path(claude_base) / "claude_desktop_config.json",
-                                   "mcpServers", "json")):
+                                  ("Claude Code settings & MCPs", paths.claude_user_config, "mcpServers", "json")):
         present, servers, error = _server_names(path, key, fmt)
         groups.append({"label": label, "present": present, "servers": servers, "error": error})
-    return {"message": SETUP_MESSAGE, "note": SETUP_NOTE, "groups": groups}
+    return {"message": SETUP_MESSAGE, "groups": groups}
 
 
 def build_engine(paths, *, owner_lock):

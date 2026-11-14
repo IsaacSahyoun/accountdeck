@@ -17,7 +17,7 @@ import threading
 from . import diagnostics
 
 HOUR = 3600.0
-ACTIVE, HOT, INACTIVE, EXHAUSTED = 300.0, 120.0, 900.0, 600.0
+ACTIVE, INACTIVE = 300.0, 900.0
 READ_ONLY_INACTIVE = 1800.0          # Codex probes of inactive accounts while another AccountDeck 2 owns the sign-ins
 HOT_RESET = 900.0                    # the active account is "hot" when its binding window resets this soon
 BOUNDARY_DELAY, CONFIRM_DELAY = 45.0, 300.0
@@ -49,10 +49,6 @@ class Target:
 def base_interval(target: Target) -> float:
     if target.provider == "claude_cli":
         return 600.0 if target.exhausted or not target.active else 75.0 if target.hot else ACTIVE
-    if target.provider == "claude":
-        if target.active:
-            return HOT if target.hot else ACTIVE
-        return EXHAUSTED if target.exhausted else INACTIVE
     if target.active:
         return ACTIVE
     return READ_ONLY_INACTIVE if target.read_only else INACTIVE
@@ -69,8 +65,7 @@ def interval(target: Target, failures: int) -> float:
 
 
 def governor_key(target: Target) -> tuple:
-    """Desktop (claude.ai) and terminal (OAuth API) reads of one person hit different endpoints with
-    separate limits, so each provider gets its own budget for an identity."""
+    """Each provider gets its own budget for an identity."""
     return (target.provider, target.key)
 
 
@@ -134,7 +129,7 @@ class RefreshScheduler:
         self._pool = None if inline else ThreadPoolExecutor(workers, thread_name_prefix="ad2-refresh")
         self._paused = False
         self.locks = {}
-        self.provider_pause = {name: False for name in ("claude", "codex", "claude_cli", "muse")}
+        self.provider_pause = {name: False for name in ("codex", "claude_cli", "muse")}
 
     # ---- planning ----
     def _schedule(self, target: Target, plan: _Plan, after: float) -> None:
@@ -175,7 +170,7 @@ class RefreshScheduler:
                 if plan.next > now:
                     self._schedule_boundary_only(target, plan)
                     continue
-                if target.provider in ("claude", "claude_cli"):
+                if target.provider == "claude_cli":
                     urgent = target.active and target.hot
                     gkey = governor_key(target)
                     wait = self.governor.delay(gkey, now, urgent=urgent)
@@ -213,7 +208,7 @@ class RefreshScheduler:
                 plan.running = True
                 if target.provider in self._helpers:
                     self._helper_reads.add(target.provider)
-            if target.provider in ("claude", "claude_cli"):
+            if target.provider == "claude_cli":
                 self.governor.record(governor_key(target), now)
             started.append(target.id)
             if self.inline:

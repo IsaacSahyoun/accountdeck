@@ -60,12 +60,6 @@ PALETTES = {
 NOTIFICATION_SETTINGS_URL = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
 
 # Copy (web/js/format.js).
-STOP_COPY = {
-    "managed": "Claude will close and reopen on its own. If it does not close within 10 seconds it will be "
-               "closed by force.",
-    "graceful": "Claude will close by itself and reopen.",
-}
-SESSION_STATUS = {"busy": "working", "idle": "idle", "unknown": "status unknown"}
 WINDOW_STATE_COPY = {"resetting": "resetting…", "expected_refill": "expected refill · unconfirmed",
                      "not_started": "not started"}
 SAVES_OUTGOING = "Your current account ({label}) isn't saved yet — it will be saved so you can switch back."
@@ -130,9 +124,9 @@ class Prompt:
 
 
 def active_account(state):
-    """The account the menu bar reports on: the active Claude account, else any active one (model.js)."""
+    """The account the menu bar reports on: the active Claude Code account, else any active one."""
     accounts = state.get("accounts") or ()
-    return (next((a for a in accounts if a.get("active") and a.get("provider") == "claude"), None)
+    return (next((a for a in accounts if a.get("active") and a.get("provider") == "claude_cli"), None)
             or next((a for a in accounts if a.get("active")), None))
 
 
@@ -323,7 +317,7 @@ def _terminals_line(totals) -> str | None:
 def _switch_menus(state, now, busy) -> tuple[list[MenuItem], dict[int, str]]:
     display = (state.get("settings") or {}).get("usage_display")
     items, targets = [], {}
-    for provider in ("claude", "codex", "claude_cli", "muse"):
+    for provider in ("claude_cli", "codex", "muse"):
         accounts = [a for a in state.get("accounts") or () if a.get("provider") == provider]
         if not accounts:
             continue
@@ -372,79 +366,31 @@ def menu_model(state, now, *, start_on_login: bool | None, notifications: str | 
 
 # ---- consent prompts (the dashboard's switch modal) ----
 
-def _working(plan) -> tuple[list, int]:
-    """(the Code sessions that are working or of unknown status, how many there are)."""
-    running = plan.get("running") or {}
-    sessions = [s for s in running.get("sessions") or () if s.get("status") != "idle"]
-    return sessions, max(len(sessions), (running.get("busy") or 0) + (running.get("unknown") or 0))
-
-
 def _sections(*sections) -> str:
     return "\n\n".join("\n".join(section) for section in sections if section)
 
 
-def _sessions_line(sessions) -> str:
-    """format.js modal.sessions: '2 Code sessions are open: "A" (working) · "B" (idle). Switching will end them.'"""
-    names = " · ".join(f'"{s.get("name")}" ({SESSION_STATUS.get(s.get("status"), "status unknown")})'
-                       for s in sessions[:4])
-    names += f" and {len(sessions) - 4} more" if len(sessions) > 4 else ""
-    if len(sessions) == 1:
-        return f"1 Code session is open: {names}. Switching will end it."
-    return f"{len(sessions)} Code sessions are open: {names}. Switching will end them."
-
-
 def switch_prompt(plan, note: str | None = None) -> Prompt:
     """The consent alert for a switch plan: the facts of the dashboard's modal and one button per choice.
-    Claude: Switch When Idle, Switch Now, Cancel. Codex and Muse: wait for their sessions to finish (or switch
-    now when none are open), Cancel; ending a Codex session stays in the dashboard, which asks about each one,
-    and a Muse session is never ended by AccountDeck."""
+    Claude Code: Switch Now, Cancel. Codex and Muse: wait for their sessions to finish (or switch now when
+    none are open), Cancel; ending a Codex session stays in the dashboard, which asks about each one, and a
+    Muse session is never ended by AccountDeck."""
     provider, running = plan["provider"], plan.get("running") or {}
     name, target = PROVIDER_NAMES.get(provider, provider), plan["target"]["label"]
     current = (plan.get("current") or {}).get("label")
-    running_now = []
-    if provider == "claude" and plan.get("stop_tier") in STOP_COPY:
-        running_now.append(STOP_COPY[plan["stop_tier"]])
-    if provider == "claude" and running.get("sessions"):
-        running_now.append(_sessions_line(running["sessions"]))
-    if plan.get("invisible"):
-        running_now.append(plan["invisible"])
-    headroom = plan.get("headroom") or {}
-    usage = [f"Now: {current} — {headroom['now']}"] if headroom.get("now") and current else []
-    usage += [f"After: {target} — {headroom['after']}"] if headroom.get("after") else []
     effects = []
     if plan.get("will"):
         effects.append("What will happen: " + " · ".join(f"{n} {step}" for n, step in enumerate(plan["will"], 1)))
-    if plan.get("account_bound"):
-        effects.append("Tied to each account: " + " · ".join(plan["account_bound"]))
     if plan.get("saves_outgoing") and current:
         effects.append(SAVES_OUTGOING.format(label=current))
-    # The busy warning repeats the session list above.
-    warnings = [w["message"] for w in plan.get("warnings") or () if w.get("code") != "busy" and w.get("message")]
+    warnings = [w["message"] for w in plan.get("warnings") or () if w.get("message")]
     notes = ["Heads-up:"] + [f"• {message}" for message in warnings] if warnings else []
-    notes += [f"Tip: {plan['tip']}"] if plan.get("tip") else []
     title, lead = f"Switch {name} to {target}?", [note] if note else []
-    if provider == "claude":
-        buttons = (("idle", "Switch When Idle"), ("now", "Switch Now"), (None, "Cancel"))
-        default = 1 if plan.get("default_button") == "now" else 0
-        return Prompt(title, _sections(lead, running_now, usage, effects, notes), buttons, default)
     consumers = running.get("codex_consumers") or []
     extra = (["Close your Muse sessions; the switch waits for them."] if provider == "muse" else
              ["To end a Codex session now, use the dashboard."]) if consumers else []
     buttons = ((("idle", "Switch When They Finish") if consumers else ("now", "Switch Now")), (None, "Cancel"))
-    return Prompt(title, _sections(lead, running_now, usage, effects, notes, extra), buttons)
-
-
-def interrupt_prompt(plan) -> Prompt:
-    """The second confirmation before "Switch Now" ends working sessions; Cancel is the default."""
-    sessions, count = _working(plan)
-    names = [f'"{s.get("name")}"' for s in sessions[:3]]
-    if names:
-        what = ", ".join(names) + (f" and {count - len(names)} more" if count > len(names) else "")
-    else:
-        what = f"{count} working Code session" + ("" if count == 1 else "s")
-    return Prompt(f"Switch {PROVIDER_NAMES['claude']} now and interrupt {what}?",
-                  "Their current work stops when Claude closes.",
-                  (("now", "Switch Now Anyway"), (None, "Cancel")), default=1, style="warning")
+    return Prompt(title, _sections(lead, effects, notes, extra), buttons)
 
 
 def blocked_prompt(plan) -> Prompt:
@@ -740,8 +686,8 @@ class MenuBar:
             return None
 
     def quick_switch(self, account_id: str) -> None:
-        """switch-plan → consent alert (→ a second confirmation before interrupting working sessions) →
-        switch. A changed or expired plan is asked about again with the fresh plan."""
+        """switch-plan → consent alert → switch. A changed or expired plan is asked about again with the
+        fresh plan."""
         plan, note = self._plan(account_id), None
         for _ in range(ROUNDS):
             if plan is None or self.stopping:
@@ -751,9 +697,6 @@ class MenuBar:
                 return
             consent = self.ask(switch_prompt(plan, note))
             if consent is None:
-                return
-            if consent == "now" and plan["provider"] == "claude" and _working(plan)[1] \
-                    and self.ask(interrupt_prompt(plan)) is None:
                 return
             try:
                 self.engine.action("switch", {"id": account_id, "plan_id": plan["plan_id"], "consent": consent,

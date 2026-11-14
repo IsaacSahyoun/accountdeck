@@ -1,7 +1,7 @@
 """What every switch flow shares: the context a flow works in, the plan registry, the
 consent claim, job submission and the action router.
 
-A flow (switch_claude, switch_codex, switch_cli, switch_muse) builds a SwitchPlan the user confirms (`assemble`,
+A flow (switch_codex, switch_cli, switch_muse) builds a SwitchPlan the user confirms (`assemble`,
 registered under its plan id), then `claim` checks the confirmation against a freshly built plan and
 mints the ConsentToken bound to that plan's process set, and `submit` hands the job to the engine's
 operation runner. `dispatch` routes an action to the provider's flow.
@@ -12,20 +12,19 @@ from dataclasses import dataclass
 import secrets
 import time
 
-from . import activity, contract, diagnostics
+from . import contract, recovery
 from .core import DeckError
 from .operations import Operation
 from .procs import ConsentToken, ProcessSet
-from .stop_ladder import RECONFIRM_MESSAGE, StopLadder
 
 CONFIRM_MESSAGE = "Confirm what will happen first."
+RECONFIRM_MESSAGE = "The running sessions changed since you confirmed. Please confirm again."
 STALE_PLAN_MESSAGE = "This plan has expired. Review it again."
-BUSY_MESSAGE = "Finish or cancel the current action first."
 
 
 @dataclass(frozen=True)
 class SwitchContext:
-    """The engine's members a switch flow uses (public ones only) plus a fresh stop ladder per job."""
+    """The engine's members a switch flow uses (public ones only)."""
     engine: object
     paths: object
     procs: object
@@ -39,19 +38,12 @@ class SwitchContext:
     clock: object
 
     @property
-    def claude(self):
-        return self.providers["claude"]
-
-    @property
     def codex(self):
         return self.providers["codex"]
 
     @property
     def muse(self):
         return self.providers["muse"]
-
-    def ladder(self):
-        return StopLadder(self.paths, self.procs, activity, self.timings, diagnostics)
 
 
 def context(engine) -> SwitchContext:
@@ -89,17 +81,17 @@ def register(ctx, planned) -> dict:
     return planned.plan
 
 
-def assemble(ctx, *, provider, purpose, account, target, current, headroom, running, pairs, blockers, warnings,
-             tip, will, preserved, account_bound, invisible, stop_tier, saves_outgoing=False) -> Planned:
-    """The plan the user is shown, from what a flow found, and the registry entry a later claim checks it against."""
+def assemble(ctx, *, provider, purpose, account, target, current, consumers, pairs, blockers, warnings, will,
+             preserved, saves_outgoing=False) -> Planned:
+    """The plan the user is shown, from what a flow found, and the registry entry a later claim checks it against.
+    `consumers` are the client's open sessions (a Codex or Muse switch waits for them); with none the plan is idle."""
     process_set = ProcessSet(tuple(pairs))
-    idle = running["busy"] == 0 and running["unknown"] == 0 and not running["codex_consumers"]
+    idle = not consumers
     plan = {"plan_id": "pl_" + secrets.token_hex(16), "expires": ctx.engine.clock() + ctx.timings.plan_ttl,
-            "provider": provider, "purpose": purpose, "target": target, "current": current, "headroom": headroom,
-            "running": running, "process_set": [list(pair) for pair in process_set.pairs],
-            "signature": process_set.signature(), "blockers": blockers, "warnings": warnings, "tip": tip,
-            "will": will, "preserved": preserved, "account_bound": account_bound, "invisible": invisible,
-            "stop_tier": stop_tier,
+            "provider": provider, "purpose": purpose, "target": target, "current": current,
+            "running": {"codex_consumers": consumers}, "process_set": [list(pair) for pair in process_set.pairs],
+            "signature": process_set.signature(), "blockers": blockers, "warnings": warnings,
+            "will": will, "preserved": preserved,
             "confirmation_required": not (idle and ctx.settings.get("confirm_when_idle") is False),
             "idle": idle, "remember_available": idle, "default_button": "now" if idle else "idle",
             "saves_outgoing": saves_outgoing}
@@ -121,13 +113,12 @@ class Claim:
     token: ConsentToken
 
 
-def claim(ctx, purpose, body, *, build, account=None, provider="claude", families=None,
-          optional=False) -> Claim:
+def claim(ctx, purpose, body, *, build, provider, account=None) -> Claim:
     """Checks the plan the user confirmed and mints the consent token for this job.
 
     A missing plan gives `confirm_required` with a fresh one; an expired or foreign plan `stale_plan`; a
     process set that changed since the plan `needs_reconfirm` with a fresh one; a blocker refuses with its
-    own code. `build(ctx, account, purpose)` is the provider's planner. `optional` lets a flow that has nothing to close (a recover with Claude closed) go without a plan."""
+    own code. `build(ctx, account, purpose)` is the provider's planner."""
     engine = ctx.engine
     plan_id, consent, remember = body.get("plan_id"), body.get("consent"), body.get("remember_idle", False)
     if plan_id is not None and not (isinstance(plan_id, str) and plan_id):
@@ -137,11 +128,9 @@ def claim(ctx, purpose, body, *, build, account=None, provider="claude", familie
     if not isinstance(remember, bool):
         raise DeckError("That setting is not valid.", "invalid")
     fresh = build(ctx, account, purpose)
-    running = fresh.plan["running"]["desktop"] or bool(fresh.plan["running"]["codex_consumers"])
     if plan_id is None:
-        if not (optional and not running):
-            register(ctx, fresh)
-            raise DeckError(CONFIRM_MESSAGE, "confirm_required", plan=fresh.plan)
+        register(ctx, fresh)
+        raise DeckError(CONFIRM_MESSAGE, "confirm_required", plan=fresh.plan)
     else:
         with engine.lock:
             entry = engine.plans.get(plan_id)
@@ -167,8 +156,6 @@ def claim(ctx, purpose, body, *, build, account=None, provider="claude", familie
     issued = time.time()
     token = ConsentToken(job_id="job_" + secrets.token_hex(8), provider=provider, purpose=purpose, account=account,
                          mode=mode, pairs=tuple(tuple(pair) for pair in fresh.entry["process_set"]),
-                         families=tuple(families if families is not None else
-                                        ((ctx.paths.claude_family,) if provider == "claude" else ())),
                          issued=issued, expires=issued + ctx.timings.consent_ttl)
     return Claim(fresh.plan, fresh.entry, plan_id, mode, remember, token)
 
@@ -181,15 +168,12 @@ def _reissue(ctx, fresh, old_id):
 
 
 def submit(ctx, claimed, job):
-    """Starts `job`; the plan is spent, a Claude job ends the background checks of an earlier switch (it
-    is about to change the files they watch), and a remembered choice is saved once the job is running."""
+    """Starts `job`; the plan is spent, and a remembered choice is saved once the job is running."""
     engine = ctx.engine
     result = engine.submit(job)
     if claimed.plan_id:
         with engine.lock:
             engine.plans.pop(claimed.plan_id, None)
-    if job.provider == "claude":
-        del engine.background_verifiers[:]
     if claimed.remember:
         engine.prefs.update({"confirm_when_idle": False})
     return result
@@ -211,8 +195,9 @@ class QuickOp(Operation):
 
 def dispatch(engine, name, body):
     """Hands a switch-family action to its provider's flow: the account's provider, the waiting sign-in's
-    for finish/cancel-login, the interrupted transaction's for a recovery, else Claude Desktop."""
-    from . import switch_claude, switch_cli, switch_codex, switch_muse
+    for finish/cancel-login, the interrupted transaction's for a recovery. An action that names no client,
+    or one this build does not manage, is refused."""
+    from . import switch_cli, switch_codex, switch_muse
     account = body.get("id")
     row = engine.store.account(account) if isinstance(account, str) else None
     provider = body.get("provider") or (row["provider"] if row else None)
@@ -220,31 +205,30 @@ def dispatch(engine, name, body):
         provider = (engine.login or {}).get("provider")
     if name == "recover" or (name == "switch-plan" and body.get("purpose") == "recover"):
         provider = _recovery_provider(engine) or provider
-    provider = provider or "claude"
+    if provider is None and name == "stop-consumer":
+        provider = "codex"
     if provider == "claude_cli":
         return switch_cli.dispatch(engine, name, body)
     if provider == "muse":
         return switch_muse.dispatch(engine, name, body)
-    if provider not in ("claude", "codex"):
-        raise DeckError("Choose Claude, Codex or Muse.", "invalid")
-    if provider == "codex" or name == "stop-consumer":
+    if provider == "codex":
         return switch_codex.dispatch(engine, name, body)
-    return switch_claude.dispatch(engine, name, body)
+    raise DeckError("Choose Claude Code, Codex or Muse.", "invalid")
 
 
 def _recovery_provider(engine):
-    """Whose interrupted switch a press of Recover settles: a terminal one first, then Codex, Muse and Claude
-    Desktop; None when nothing is pending. A client whose last press had to leave its record open
-    (recovery.StillNeeded) goes after the others, the one tried longest ago first, so no record keeps
-    Recover from another client's. A record nobody can read goes the terminal's way, which closes no app
-    and sets it aside (recovery.press)."""
+    """Whose interrupted switch a press of Recover settles: a terminal one first, then Codex and Muse; None
+    when nothing is pending. A client whose last press had to leave its record open (recovery.StillNeeded)
+    goes after the others, the one tried longest ago first, so no record keeps Recover from another client's.
+    A record nobody can read goes the terminal's way, which closes no app and sets it aside (recovery.press).
+    A record of a client this build does not manage is never in `engine.recovery` (recovery.pending)."""
     found = set()
     for key in engine.recovery:
         try:
-            found.add(engine.vault.get(key).get("provider", "claude"))
+            found.add(recovery.client_of(engine.vault.get(key)))
         except DeckError:
             found.add("claude_cli")
     left = list(engine.recovery_left)
-    waiting = [provider for provider in ("claude_cli", "codex", "muse", "claude") if provider in found]
+    waiting = [provider for provider in ("claude_cli", "codex", "muse") if provider in found]
     waiting.sort(key=lambda provider: left.index(provider) if provider in left else -1)
     return waiting[0] if waiting else None

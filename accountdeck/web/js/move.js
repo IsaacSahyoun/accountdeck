@@ -1,8 +1,9 @@
 /* AccountDeck 2 — Import from PC: the Mac's side of the one-time PC-to-Mac move.
  * Open an encrypted .adeck bundle, preview it, import it, then copy the eight-character
  * confirmation code back to the PC. Secrets (the passphrase) live only in the open form and the
- * request body, never in browser storage. Banners appear only for an existing import result or
- * deferred Claude Desktop conversion. New users start with their own Mac logins. */
+ * request body, never in browser storage. A banner appears only for an import result. A bundle's
+ * Claude Desktop accounts are left out, and such an import has no code. New users start with their
+ * own Mac logins. */
 (function () {
   'use strict';
   const AD = window.AD = window.AD || {};
@@ -57,7 +58,7 @@
     return el('ul', 'import-list', accounts.map((a) => el('li', 'import-row',
       el('div', 'import-text', el('strong', { text: AD.dom.maskEmail(a.label || a.provider) }),
         p(a.action === 'on_pc' ? 'Still in use on the PC — listed here, not usable yet'
-          : ({ new: 'New on this Mac', update: 'Updates the copy on this Mac', fill: 'Fills in a missing sign-in', refused: 'Cannot be imported' }[a.action] || a.action || a.status || ''),
+          : ({ new: 'New on this Mac', update: 'Updates the copy on this Mac', fill: 'Fills in a missing sign-in', refused: 'Cannot be imported', left_out: 'Left out' }[a.action] || a.action || a.status || ''),
         'import-meta'),
         a.reason ? p(AD.dom.maskEmail(a.reason), 'import-note') : null))));
   }
@@ -74,6 +75,8 @@
         el('output', { class: 'move-code', 'aria-label': `Confirmation code ${code.split('').join(' ')}`, text: code }),
         el('div', null, AD.dom.button('Copy Code', () => copy(code), { small: true, icon: 'copy' }))];
     }
+    // No failures and no code: the server's message says why (an account left out, or an import cut short).
+    if (!(result.failures || []).length) return [p(result.message || 'This import has not finished.', 'modal-error')];
     return [p('No confirmation code: some accounts could not be imported.', 'modal-error'),
       el('ul', 'import-list', (result.failures || []).map((f) => el('li', 'import-row',
         el('span', { text: AD.dom.maskEmail(`${f.label || f.id || 'Account'}: ${f.reason || f.message || 'Import failed'}`) })))),
@@ -91,7 +94,6 @@
       p('Open the encrypted bundle AccountDeck 2 exported on your PC, using the passphrase you kept with it.', 'plan-lead'),
       path.node, phrase.node,
       p('Tip: in Finder, select the .adeck file and press ⌥⌘C to copy its path.'),
-      p('If macOS asks to access Claude Safe Storage, choose Allow to finish the Desktop import. Always Allow is not needed.'),
     ], [close(), submit('Preview Import', async () => {
       if (!path.input.value.trim() || !phrase.input.value) { error('Enter the bundle path and its passphrase.'); return; }
       const body = { path: path.input.value.trim(), passphrase: phrase.input.value };
@@ -134,10 +136,6 @@
         waitingImport = null;
         importResult(result);
       }
-    }
-    if (imported.deferred && imported.deferred.count && !(state.banners || []).some((b) => b.kind === 'move_import')) {
-      add('move-deferred', 'info', 'info', 'Finish importing Claude Desktop accounts',
-        `Open Claude Desktop once on this Mac to finish importing ${imported.deferred.count} ${imported.deferred.count === 1 ? 'account' : 'accounts'}.`);
     }
     return items;
   }

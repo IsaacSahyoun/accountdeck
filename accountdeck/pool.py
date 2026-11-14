@@ -1,6 +1,6 @@
 """How much terminal capacity is left, in "accounts' worth" (the menu bar totals). Pure: state + now in.
 
-Only Claude Code (terminal) accounts count; Desktop "claude" rows are the same people. An account
+Only Claude Code (terminal) accounts count. An account
 that needs sign-in, that the owner left out, or whose weekly reading is unknown is not
 counted, only named. Each counted window's share left at `now` (which may be after the snapshot):
 not started → 100; a reset that passed since the reading → 100, assumed (approximate); blocked or

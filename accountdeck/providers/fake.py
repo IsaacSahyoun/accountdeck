@@ -1,48 +1,27 @@
 """Synthetic providers and machine for tests and demo mode.
 
 Nothing here reads or writes a real profile or Keychain item: build_fake_home refuses any Paths that is
-not synthetic and every target outside its test root, the fake adapters never make a request, and
-FakeMacCrypto stands in for the "Claude Safe Storage" Keychain password with a fixed synthetic one.
+not synthetic and every target outside its test root, and the fake adapters never make a request.
 """
 from __future__ import annotations
 
 import base64
 import copy
-import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
-import sqlite3
 import time
 import uuid
 
 from ..config import SafetyViolation
 from ..core import atomic_write, json_bytes
-from .chromium_crypto import ChromiumCryptoMac, derive_mac_key, seal_cbc
-from .claude import CHROMIUM_EPOCH, DEFAULT_SCOPE, Claude
 from .codex import AUTH_CLAIMS, Codex, jwt_claims
 from .errors import ProviderError
 from .muse import Muse, identity_key as muse_identity
 from .status import StatusSource
 
-CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-CLAUDE_SCOPES = "user:inference user:profile user:sessions:claude_code"
-SAFE_STORAGE_PASSWORD = "synthetic-safe-storage-password"     # what FakeMacCrypto "reads from the Keychain"
-REGISTRY_VERSION = "2.1.284"
-REGISTRY_KEYS = ("pid", "status", "kind", "entrypoint", "name", "cwd", "updatedAt", "statusUpdatedAt", "procStart",
-                 "version")
 ROTATED_LIFETIME = 10 * 86400
-COOKIE_SCHEMA = """
-CREATE TABLE meta(key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR);
-INSERT INTO meta VALUES('version', '24');
-CREATE TABLE cookies(creation_utc INTEGER NOT NULL, host_key TEXT NOT NULL, top_frame_site_key TEXT NOT NULL,
-    name TEXT NOT NULL, value TEXT NOT NULL, encrypted_value BLOB NOT NULL, path TEXT NOT NULL,
-    expires_utc INTEGER NOT NULL, is_secure INTEGER NOT NULL, is_httponly INTEGER NOT NULL,
-    last_access_utc INTEGER NOT NULL, has_expires INTEGER NOT NULL, is_persistent INTEGER NOT NULL,
-    priority INTEGER NOT NULL, samesite INTEGER NOT NULL, source_scheme INTEGER NOT NULL,
-    source_port INTEGER NOT NULL, last_update_utc INTEGER NOT NULL);
-"""
 
 
 def test_cipher(data, decrypt=False):
@@ -59,17 +38,6 @@ def unsigned_jwt(claims):
     def part(value):
         return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
     return part({"alg": "none", "typ": "JWT"}) + "." + part(claims) + "."
-
-
-class FakeMacCrypto(ChromiumCryptoMac):
-    """Claude Desktop's macOS encryption with a fixed password instead of the Keychain item."""
-
-    def __init__(self, password=SAFE_STORAGE_PASSWORD):
-        super().__init__()
-        self._fixed = password
-
-    def _password(self):
-        return self._fixed
 
 
 class Timeline:
@@ -92,39 +60,6 @@ class Timeline:
         if isinstance(payload, BaseException) or (isinstance(payload, type) and issubclass(payload, BaseException)):
             raise payload
         return copy.deepcopy(payload)
-
-
-class FakeClaude(Claude):
-    """Claude with scripted usage instead of HTTP. `scripts` maps an account uuid to its script and
-    `script` serves every other account; payloads are what /api/oauth/usage returns (the cookie
-    route reads the same timeline). Credential tiers, health and restore are the real code, on
-    macOS-format profiles under FakeMacCrypto unless `crypto` is given."""
-
-    def __init__(self, paths, script=(), *, scripts=None, identities=None, now=time.time, scope=DEFAULT_SCOPE,
-                 crypto=None):
-        super().__init__(paths, crypto=crypto or FakeMacCrypto(), scope=scope, clock=now)
-        self.default = Timeline(script, now)
-        self.timelines = {key: Timeline(value, now) for key, value in (scripts or {}).items()}
-        self.identities = identities or {}
-
-    def identity(self, profile):
-        ident = profile.get("identity")
-        known = self.identities.get(ident, {})
-        return {"identity": ident, "email": known.get("email", f"claude-{str(ident)[:8]}@example.test"),
-                "plan": known.get("plan", "max"), "org": known.get("org", profile.get("org", ""))}
-
-    def _read_oauth(self, profile, token, *, incident):
-        return self._payload(profile)
-
-    def _read_cookie(self, profile, *, incident):
-        self.cookie_header(profile)
-        return self._payload(profile)
-
-    def _payload(self, profile):
-        payload = self.timelines.get(profile.get("identity"), self.default).current()
-        if payload is None:
-            raise ProviderError("network", detail="no_script")
-        return payload
 
 
 class FakeCodex(Codex):
@@ -215,90 +150,25 @@ class FakeStatusSource(StatusSource):
         return {**self._status(level, self.SUMMARIES.get(level, level)), **payload}
 
 
-def build_fake_home(paths, *, claude_identity, claude_org, codex_identity, cookies=True, menu_bar_enabled=True,
-                    sessions=(), codex_exp_offset=9 * 86400, claude_exp_offset=8 * 3600, now=None,
-                    password=SAFE_STORAGE_PASSWORD, meta_version=24, muse_email=None, muse_storage="file"):
-    """Writes a complete synthetic Claude Desktop and Codex installation into a Paths.synthetic tree
-    and returns {"paths", "claude", "codex", "codex_exe", "sessions"} (see _fake_claude and _fake_codex).
-    Muse: auth.json for `muse_email` (when given) in `muse_storage` mode, and `paths.muse_exe` as a
-    synthetic muse binary."""
+def build_fake_home(paths, *, codex_identity, codex_exp_offset=9 * 86400, now=None, muse_email=None,
+                    muse_storage="file"):
+    """Writes a synthetic Codex installation into a Paths.synthetic tree and returns {"paths", "codex",
+    "codex_exe", "muse_exe"} (see _fake_codex). Muse: auth.json for `muse_email` (when given) in
+    `muse_storage` mode, and `paths.muse_exe` as a synthetic muse binary."""
     if getattr(paths, "mode", None) != "synthetic" or getattr(paths, "temp_root", None) is None:
         raise SafetyViolation("build_fake_home writes only into Paths.synthetic trees.")
     root = Path(paths.temp_root).resolve()
-    targets = [paths.claude_profile, paths.claude_sessions, paths.claude_projects, paths.claude_main_log,
-               paths.codex_home, paths.home, paths.muse_config] + ([paths.codex_exe] if paths.codex_exe else []) \
-        + ([paths.muse_exe] if paths.muse_exe else [])
+    targets = [paths.codex_home, paths.home, paths.muse_config] \
+        + ([paths.codex_exe] if paths.codex_exe else []) + ([paths.muse_exe] if paths.muse_exe else [])
     if not all(Path(target).resolve().is_relative_to(root) for target in targets):
         raise SafetyViolation("A synthetic path points outside its test root.")
-    for value in (claude_identity, claude_org):
-        uuid.UUID(value)
     now = time.time() if now is None else now
-    claude, rows = _fake_claude(paths, claude_identity, claude_org, now, cookies=cookies, sessions=sessions,
-                                menu_bar_enabled=menu_bar_enabled, exp_offset=claude_exp_offset, password=password,
-                                meta_version=meta_version)
     codex = _fake_codex(paths, codex_identity, now, exp_offset=codex_exp_offset)
     codex_exe = _write_codex_stub(Path(paths.codex_exe), paths.python_exe) if paths.codex_exe else None
     muse_exe = _write_stub(Path(paths.muse_exe), paths.python_exe, STUB_MUSE) if paths.muse_exe else None
     if muse_email:
         atomic_write(Path(paths.muse_config) / "auth.json", json_bytes(muse_auth(muse_email, storage=muse_storage, now=now)))
-    return {"paths": paths, "codex_exe": codex_exe, "muse_exe": muse_exe, "sessions": rows, "claude": claude, "codex": codex}
-
-
-def _fake_claude(paths, identity, org, now, *, cookies, sessions, menu_bar_enabled, exp_offset, password, meta_version):
-    """Claude Desktop in its macOS format: config.json with the token caches as base64("v10" + AES-128-CBC)
-    under PBKDF2(`password`), a Chromium cookie database in the profile folder at `meta_version` (unless
-    `cookies` is false), a Code session with its transcript, claude_desktop_config.json with two MCP
-    servers, registry rows for `sessions` (dicts with at least "pid") and main.log. The same `password`
-    again keeps profiles captured in between restorable. Returns (the "claude" facts, the registry rows)."""
-    ms = int(now * 1000)
-    profile_dir = Path(paths.claude_profile)
-    project = Path(paths.home) / "projects" / "synthetic"
-
-    key = derive_mac_key(password)
-    expires_at = now + exp_offset
-    cache = {f"acct:{identity}|{CLAUDE_CLIENT_ID}:{org}:https://api.anthropic.com:{CLAUDE_SCOPES}": {
-        "token": "synthetic-access-" + secrets.token_hex(12), "refreshToken": "synthetic-refresh-" + secrets.token_hex(12),
-        "expiresAt": int(expires_at * 1000)}}
-    atomic_write(profile_dir / "config.json", json_bytes({
-        "locale": "en-US", "userThemeMode": "system", "lastKnownAccountUuid": identity,
-        "oauth:tokenCache": encrypt_v10(key, b"{}"), "oauth:tokenCacheV2": encrypt_v10(key, json_bytes(cache))}))
-    for name in DEFAULT_SCOPE.cookie_files:
-        (profile_dir / name).unlink(missing_ok=True)
-    if cookies:
-        write_cookies(profile_dir / DEFAULT_SCOPE.cookie_files[0], key, now, [
-            (".claude.ai", "sessionKey", "synthetic-session-" + secrets.token_hex(12)),
-            (".claude.ai", "lastActiveOrg", org),
-            (".claude.ai", "anthropic-device-id", str(uuid.uuid4())),
-            (".claude.ai", "cf_clearance", "synthetic-clearance-" + secrets.token_hex(6)),
-            (".example.test", "sessionKey", "synthetic-foreign-cookie")], meta_version=meta_version)
-
-    local, cli = uuid.uuid4(), uuid.uuid4()
-    atomic_write(profile_dir / "claude-code-sessions" / identity / org / f"local_{local}.json", json_bytes({
-        "sessionId": f"local_{local}", "cliSessionId": str(cli), "cwd": str(project), "originCwd": str(project),
-        "createdAt": ms, "lastActivityAt": ms, "model": "claude-sonnet-4-5", "isArchived": False,
-        "title": "Synthetic session", "permissionMode": "default"}))
-    atomic_write(Path(paths.claude_projects) / "synthetic-project" / f"{cli}.jsonl",
-                 json_bytes({"type": "summary", "summary": "Synthetic session"}) + b"\n")
-    atomic_write(profile_dir / "claude_desktop_config.json", json_bytes({
-        "mcpServers": {"filesystem": {"command": "synthetic-mcp-filesystem", "args": [str(project)]},
-                       "github": {"command": "synthetic-mcp-github", "args": [], "env": {"GITHUB_TOKEN": "synthetic"}}},
-        "preferences": {"menuBarEnabled": bool(menu_bar_enabled)}}))
-    rows = []
-    for session in sessions:
-        pid = int(session["pid"])
-        row = {"status": "idle", "kind": "interactive", "entrypoint": "claude-desktop", "name": f"Session {pid}",
-               "cwd": str(project), "updatedAt": ms, "statusUpdatedAt": ms, "procStart": "0",
-               "version": REGISTRY_VERSION, **session, "pid": pid}
-        target = Path(paths.claude_sessions) / f"{pid}.json"
-        atomic_write(target, json_bytes({name: row[name] for name in REGISTRY_KEYS}))
-        rows.append(target)
-    log = Path(paths.claude_main_log)
-    if not log.exists():
-        atomic_write(log, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)).encode()
-                     + b" [info] Synthetic Claude Desktop log\n")
-    return {"identity": identity, "org": org, "email": f"claude-{identity[:8]}@example.test", "plan": "max",
-            "profile_dir": profile_dir, "password": password, "key": key, "expires_at": expires_at,
-            "local_session": f"local_{local}", "cli_session": str(cli)}, rows
+    return {"paths": paths, "codex_exe": codex_exe, "muse_exe": muse_exe, "codex": codex}
 
 
 def _fake_codex(paths, identity, now, *, exp_offset):
@@ -532,40 +402,6 @@ def _write_stub(target, python, script):
     atomic_write(target, launcher.encode() + script.encode())
     os.chmod(target, 0o755)
     return target
-
-
-def encrypt_v10(key, plaintext):
-    """macOS Chromium's "v10" AES-128-CBC value as base64 text (how config.json holds the token caches);
-    `key` is the 16-byte derive_mac_key(password)."""
-    return base64.b64encode(seal_cbc(key, plaintext)).decode()
-
-
-def write_cookies(path, key, now, cookies, *, meta_version=24):
-    """A Chromium cookie database of (host, name, value) rows at `path`; values are macOS "v10"
-    AES-128-CBC under the 16-byte `key`, with the sha256(host) prefix from `meta_version` 24, and expire
-    30 days after `now`."""
-    atomic_write(path, _cookie_database(now, cookies, lambda plaintext: seal_cbc(key, plaintext), meta_version))
-
-
-def _cookie_database(now, cookies, seal, meta_version):
-    stamp = int((now + CHROMIUM_EPOCH) * 1_000_000)
-    expires = int((now + 30 * 86400 + CHROMIUM_EPOCH) * 1_000_000)
-    db = sqlite3.connect(":memory:")
-    try:
-        db.executescript(COOKIE_SCHEMA)
-        if meta_version != 24:
-            db.execute("UPDATE meta SET value = ? WHERE key = 'version'", (str(int(meta_version)),))
-        for host, name, value in cookies:
-            plaintext = value.encode()
-            if meta_version >= 24:
-                plaintext = hashlib.sha256(host.encode()).digest() + plaintext
-            db.execute("INSERT INTO cookies VALUES (?, ?, '', ?, '', ?, '/', ?, 1, 1, ?, 1, 1, 1, 0, 2, 443, ?)",
-                       (stamp, host, name, seal(plaintext), expires, stamp, stamp))
-        db.commit()
-        data = db.serialize()
-    finally:
-        db.close()
-    return data
 
 
 def _rotate_codex_auth(path, now):

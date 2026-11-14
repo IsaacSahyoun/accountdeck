@@ -5,23 +5,23 @@ Usage: drive.py <python> <code copy> <scenario> <proof folder> '<JSON list of st
        drive.py <python> <code copy> <scenario> <proof folder> <steps.json>      (a file is easier to quote)
 
 Steps, one key each (plus the options named):
-  {"more": "Beta", "client": "claude"}   open the More menu of that account's row
+  {"more": "Beta", "client": "claude_cli"}   open the More menu of that account's row
   {"click": "Rename…"}                   click the button with exactly these words; "in": "menu", "sheet" or a
                                          CSS selector narrows where to look, and so does "row" with "client"
   {"type": "Work account"}               type into the field that has the keyboard
   {"press": "Enter"}                     Enter, Escape, ArrowDown, ArrowUp, Home, End, Tab or " "
   {"wait": "<JavaScript>"}               wait until it is true, 15 seconds at most; "seconds": 40 waits longer
   {"js": "<JavaScript>"}                 print its value
-  {"row": "Beta", "client": "claude"}    print the words of that account's row
+  {"row": "Beta", "client": "claude_cli"}    print the words of that account's row
   {"words": "sheet"}                     print the words in the menu, the sheet or a CSS selector
   {"accounts": true}                     print what the app itself says: client, name, in use (/api/state)
-  {"in_use": "Gamma", "client": "claude"}  fail unless the app itself says that account is the one in use
+  {"in_use": "Gamma", "client": "claude_cli"}  fail unless the app itself says that account is the one in use
   {"shot": "before"}                     save <proof folder>/before.png, the whole page; the window grows for
                                          it, which closes an open menu. "view": true takes only what the
                                          window shows, and an open menu stays open
   {"dark": true}                         dark or light
 
-Clients: claude_cli (Claude Code), claude (Claude Desktop), codex, muse. Clicks are real mouse events and
+Clients: claude_cli (Claude Code), codex, muse. Clicks are real mouse events and
 fail when something covers the button, as they would for a person. A click waits 15 seconds for its button.
 `words` and `row` print screen-reader words too, like "(done)" after a step. `accounts` checks nothing:
 `in_use` is the step that fails. The run fails on a step that fails and on anything the page's console

@@ -55,8 +55,7 @@
       else if (group.present) status = D.preserved;
       return el('div', 'manifest-row', el('dt', { text: group.label }), el('dd', { text: status }));
     });
-    return [info.message ? el('p', { text: info.message }) : null, groups.length ? el('dl', 'manifest', groups) : null,
-      info.note ? el('p', { class: 'is-quiet', text: info.note }) : null];
+    return [info.message ? el('p', { text: info.message }) : null, groups.length ? el('dl', 'manifest', groups) : null];
   }
 
   function explain(nowMs) {

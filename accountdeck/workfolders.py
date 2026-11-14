@@ -16,6 +16,7 @@ from .procs import helper_running
 from .providers import codex, muse
 
 # folder name prefix -> (client, where its login is inside the folder); None for a folder that holds no login
+# ("cookies-" is the folder an older build read Claude Desktop's usage in; one left behind is still removed)
 KINDS = {"probe-": ("codex", "auth.json"), "login-": ("codex", "auth.json"),
          "muse-probe-": ("muse", "muse/auth.json"), "muse-login-": ("muse", "muse/auth.json"),
          "cookies-": None}

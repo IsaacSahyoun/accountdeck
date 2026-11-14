@@ -1,8 +1,7 @@
 """The live process controller of this Mac: part of procs, built on platform/libproc.
 
-It holds AccountDeck's one signal call site (`_signal`) and starts the system tools it needs through procs'
-self-guarded spawn: /usr/bin/open (apps by bundle id, a Terminal.app window for a command, a folder in
-Finder) and /usr/sbin/lsof (the file-release probe, never in safe mode).
+It holds AccountDeck's one signal call site (`_signal`) and starts the one system tool it needs through
+procs' self-guarded spawn: /usr/bin/open, for a Terminal.app window that runs a command.
 
 A row's `family` is the bundle id of the outermost `.app` it runs from (None outside any bundle, "?" when
 unknown); its `ctime` is the start time in FILETIME units. A process macOS will not describe (another
@@ -10,9 +9,9 @@ user's) keeps start time 0 and family "?", so it can be listed but never acted o
 
 Signals run the interlock of procs.py's docstring: safe-mode ownership and consent, then step 3 behind a
 kqueue NOTE_EXIT watch that pins the process (start time, executable path and bundle id are re-read, the
-watch is drained) and only then the signal. SIGTERM is the graceful quit (Electron runs app.quit());
-SIGKILL is only the straggler step, for a process that outlived a SIGTERM this controller sent to it or to
-its parent. The microsecond window between the last check and kill(2) is the one weakness macOS has
+watch is drained) and only then the signal. The only target is a Codex session the user asked to stop. It
+gets SIGTERM; SIGKILL is only for one that outlived a SIGTERM this controller sent to it or to its parent.
+The microsecond window between the last check and kill(2) is the one weakness macOS has
 against a handle-pinned kill: the pid would have to exit, be reaped and be recycled inside it, and macOS
 hands out pids sequentially, so the safety rules accept it.
 """
@@ -26,7 +25,6 @@ from pathlib import Path
 import re
 import shlex
 import signal
-import stat
 import subprocess
 import time
 import uuid
@@ -35,17 +33,15 @@ from .. import config, diagnostics
 from ..core import DeckError
 from ..procs import (
     CHANGED_MESSAGE, CMDLINE_NAMES, CODEX_APP_BUNDLE_IDS, DAEMON_EXIT_WAIT, DAEMON_START_WAIT, DAEMON_STOP_MARGIN,
-    DEVNULL, INSPECTED_NAMES, KINDS, LAUNCH_FAILED_MESSAGE, PIPE, REMEMBERED_LIMIT, SAFE_MODE_MESSAGE, ConsentToken,
+    DEVNULL, INSPECTED_NAMES, KINDS, MUSE_KINDS, REMEMBERED_LIMIT, SAFE_MODE_MESSAGE, ConsentToken,
     ProcessController, ProcessInfo, _check_spawn_target, _family_attribution, _is_owned_pid, _is_registered,
-    _is_test_bundle_id, _log, _refusal, filetime, is_code_child_path, is_test_owned_path, process_name, with_kinds)
+    _log, _refusal, filetime, is_code_child_path, is_test_owned_path, process_name, with_kinds)
 from . import libproc
-from .libproc import BUNDLE_ID_PATTERN, OS_ERROR, bundle_family, valid_pid
+from .libproc import OS_ERROR, bundle_family, valid_pid
 
 OPEN_TOOL = "/usr/bin/open"
-LSOF_TOOL = "/usr/sbin/lsof"
 TERMINAL_BUNDLE_ID = "com.apple.Terminal"
 OPEN_WAIT = 15.0              # LaunchServices normally answers within a second
-LSOF_WAIT = 20.0
 TERMINAL_PID_WAIT = 300.0     # a window that has not run its command by then is claimed (it never will)
 TERMINAL_CLAIMED = "claimed"  # a pid file AccountDeck wrote itself: that window runs nothing
 TERMINAL_RUN = re.compile(r"[0-9a-f]{32}\.pid")
@@ -90,7 +86,7 @@ class MacProcessController(ProcessController):
         return bool(ctime) and (self.owned.get(pid) == ctime or _is_owned_pid(pid, ctime))
 
     # ---- rows ----
-    def _row(self, pid: int, path: str | None = None, *, parent: int | None = None) -> ProcessInfo | None:
+    def _row(self, pid: int, path: str | None = None) -> ProcessInfo | None:
         """One row; None when the process has exited. A process macOS will not describe keeps start time 0
         and family "?" (unknown identity)."""
         lib = libproc.api()
@@ -118,17 +114,16 @@ class MacProcessController(ProcessController):
             if again is None or again.ctime != ctime:
                 return None if again is None else ProcessInfo(pid, again.ppid, name, None, 0, "?")
         family = bundle_family(path) if path and ctime else "?"
-        return ProcessInfo(pid, info.ppid if parent is None else parent, name, path, ctime, family, command)
+        return ProcessInfo(pid, info.ppid, name, path, ctime, family, command)
 
     def _relevant(self, name: str, path: str | None) -> bool:
-        """Whether a process is one of Claude's or Codex's: by name, or by the app bundle it runs from."""
+        """Whether a process is one of Codex's or Muse's: by name, or by the app bundle it runs from."""
         if name.lower() in INSPECTED_NAMES:
             return True
         if not path or ".app/" not in path.lower():
             return False
         family = bundle_family(path)
-        return family not in (None, "?") and (family == self.paths.claude_family or family in self.paths.codex_families
-                                              or family in CODEX_APP_BUNDLE_IDS)
+        return family not in (None, "?") and (family in self.paths.codex_families or family in CODEX_APP_BUNDLE_IDS)
 
     def snapshot(self) -> list[ProcessInfo]:
         started = time.perf_counter()
@@ -167,31 +162,14 @@ class MacProcessController(ProcessController):
         """proc.snapshot at info level when what it found changed (or it was slow), else at debug level: the
         engine takes one every few seconds."""
         counts = {kind: sum(row.kind == kind for row in rows) for kind in KINDS}
-        summary = (counts["claude_desktop"], counts["claude_code"], counts["claude_foreign"],
-                   sum(counts[kind] for kind in KINDS if kind.startswith("codex")))
+        summary = (sum(counts[kind] for kind in KINDS if kind.startswith("codex")),
+                   sum(counts[kind] for kind in MUSE_KINDS))
         level = "debug" if summary == self._logged_counts and ms < SNAPSHOT_SLOW_MS else "info"
         self._logged_counts = summary
-        diagnostics.log("proc.snapshot", level, desktop=summary[0], code=summary[1], foreign=summary[2],
-                        codex=summary[3], ms=round(ms, 1))
+        diagnostics.log("proc.snapshot", level, codex=summary[0], muse=summary[1], ms=round(ms, 1))
 
     def creation_time(self, pid: int) -> int | None:
         return libproc.creation_time(pid)
-
-    def descendants(self, pid: int, exclude=()) -> list[ProcessInfo]:
-        root_ctime = libproc.creation_time(pid)
-        if root_ctime is None:
-            return []
-        children = libproc.children_by_parent()
-        skipped = {name.lower() for name in exclude}
-        found, queue = [], [(pid, root_ctime)]
-        while queue and len(found) < 512:
-            parent, parent_ctime = queue.pop()
-            for child in children.get(parent, ()):
-                row = self._row(child, parent=parent)
-                if row is not None and row.name.lower() not in skipped and parent_ctime < row.ctime:
-                    found.append(row)        # an older "child" is pid reuse
-                    queue.append((child, row.ctime))
-        return found
 
     def ancestors_of_self(self) -> list[ProcessInfo]:
         chain = []
@@ -204,39 +182,6 @@ class MacProcessController(ProcessController):
             chain.append(row)
             current, current_ctime = parent, row.ctime
         return chain
-
-    def file_is_free(self, path) -> bool:
-        """True only when nothing holds `path` open: a missing file is free; anything but a regular file is
-        not. The libproc scan (the descriptors lsof reads) must find no holder, and outside safe mode
-        `lsof -t` must also run cleanly and list none. Doubt is always "held"."""
-        try:
-            status = os.stat(path)
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-        if not stat.S_ISREG(status.st_mode):
-            return False
-        holders = libproc.file_holders(path)
-        if holders is None or holders:
-            return False
-        if config.safe_mode():
-            return True    # safe mode starts no system tool (procs' spawn policy); the scan above is the probe
-        return self._lsof_free(path)
-
-    def _lsof_free(self, path) -> bool:
-        try:
-            process = self.spawn([LSOF_TOOL, "-t", "--", os.fspath(path)], stdin=DEVNULL, stdout=PIPE, stderr=PIPE)
-        except (DeckError, OSError):
-            return False
-        try:
-            output, problems = process.communicate(timeout=LSOF_WAIT)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
-            return False
-        # lsof exits 1 with no output when no process has the file open; 0 lists the holders' pids.
-        return process.returncode == 1 and not (output or b"").strip() and not (problems or b"").strip()
 
     def _helper_tree(self) -> set[tuple[int, int]]:
         tree = {(pid, ctime) for pid, ctime in self.helpers.items() if ctime and libproc.creation_time(pid) == ctime}
@@ -254,20 +199,13 @@ class MacProcessController(ProcessController):
         return tree
 
     # ---- interlocked ----
-    def _require_test_owned(self, action: str, target: ProcessInfo) -> None:
+    def _require_test_owned(self, target: ProcessInfo) -> None:
         if config.safe_mode() and not self._owns(target.pid, target.ctime):
-            raise _refusal("not_owned", f"{SAFE_MODE_MESSAGE} ({action})")
+            raise _refusal("not_owned", f"{SAFE_MODE_MESSAGE} (stop_consumer)")
 
     def _require_test_path(self, action: str, path) -> None:
         if config.safe_mode() and not is_test_owned_path(path):
             raise _refusal("not_test_path", f"{SAFE_MODE_MESSAGE} ({action})")
-
-    def _require_bundle_id(self, bundle_id) -> str:
-        if not isinstance(bundle_id, str) or len(bundle_id) > 255 or not BUNDLE_ID_PATTERN.fullmatch(bundle_id):
-            raise DeckError("That is not a valid app ID.", "invalid")
-        if config.safe_mode() and not _is_test_bundle_id(bundle_id):
-            raise _refusal("bundle_id", SAFE_MODE_MESSAGE)
-        return bundle_id
 
     def _verified(self, target: ProcessInfo, watch: libproc.ExitWatch) -> bool:
         """Interlock step 3 behind the kqueue pin: False when the target already exited; refuses one whose
@@ -291,26 +229,20 @@ class MacProcessController(ProcessController):
             raise _refusal("family_mismatch", CHANGED_MESSAGE)
         return target.pid not in watch.drain(0)     # it exited while being checked: nothing to send
 
-    def _signal_for(self, target: ProcessInfo, graceful: bool) -> int:
-        """SIGTERM, except the straggler step: SIGKILL for a process that outlived a SIGTERM this controller
-        sent to it, or to the process it was started under (its parent was stopped and it stayed)."""
-        if graceful:
-            return signal.SIGTERM
+    def _signal_for(self, target: ProcessInfo) -> int:
+        """SIGTERM, except for a process that outlived a SIGTERM this controller sent to it, or to the process
+        it was started under (its parent was stopped and it stayed): that one gets SIGKILL."""
         if (target.pid, target.ctime) in self._signalled:
             return signal.SIGKILL
         parent = next((ctime for (pid, ctime) in self._signalled if pid == target.parent), None)
         return signal.SIGKILL if parent is not None and parent < target.ctime else signal.SIGTERM
 
-    def _send(self, action: str, token, target: ProcessInfo, *, graceful: bool = False) -> bool:
-        self._interlock(action, token, target)                         # steps 1 and 2
-        if action == "request_close":
-            main = self.claude_desktop_main()
-            if main is None or (main.pid, main.ctime) != (target.pid, target.ctime):
-                raise _refusal("not_main", CHANGED_MESSAGE)
+    def stop_consumer(self, token: ConsentToken, target: ProcessInfo) -> bool:
+        self._interlock(token, target)                                  # steps 1 and 2
         with libproc.api().exit_watch() as watch:
             if not self._verified(target, watch):                       # step 3
                 return False
-            sig = self._signal_for(target, graceful)
+            sig = self._signal_for(target)
             try:
                 _signal(target.pid, sig)                                # step 4
             except ProcessLookupError:
@@ -320,68 +252,11 @@ class MacProcessController(ProcessController):
         self._signalled[(target.pid, target.ctime)] = sig
         while len(self._signalled) > REMEMBERED_LIMIT:
             del self._signalled[next(iter(self._signalled))]
-        _log("proc.signal", pid=target.pid, kind=target.kind, action=action,
+        _log("proc.signal", pid=target.pid, kind=target.kind, action="stop_consumer",
              signal="SIGKILL" if sig == signal.SIGKILL else "SIGTERM", verified=True)
         return True
 
-    def request_close(self, token: ConsentToken, target: ProcessInfo) -> None:
-        """T1a: SIGTERM to the verified Claude Desktop main, which runs Electron's app.quit()."""
-        self._send("request_close", token, target, graceful=True)
-
-    def terminate(self, token: ConsentToken, target: ProcessInfo) -> bool:
-        return self._send("terminate", token, target)
-
-    def stop_consumer(self, token: ConsentToken, target: ProcessInfo) -> bool:
-        return self._send("stop_consumer", token, target)
-
-    def wait_exit(self, targets, timeout: float) -> list[ProcessInfo]:
-        """Waits on kqueue NOTE_EXIT; returns the targets still running (unreadable ones count as running)."""
-        deadline = time.monotonic() + max(0.0, timeout)
-        running, unreadable = set(), set()
-        with libproc.api().exit_watch() as watch:
-            for target in targets:
-                if not valid_pid(target.pid):
-                    continue
-                try:
-                    if not watch.watch(target.pid):
-                        continue
-                except OSError:
-                    unreadable.add((target.pid, target.ctime))
-                    continue
-                state, ctime = libproc.start_time(target.pid)
-                if state == "unreadable" or (state == "alive" and ctime == target.ctime):
-                    running.add((target.pid, target.ctime))
-            while running:
-                exited = watch.drain(max(0.0, deadline - time.monotonic()))
-                running = {pair for pair in running if pair[0] not in exited}
-                if time.monotonic() >= deadline:
-                    break
-        return [target for target in targets if (target.pid, target.ctime) in running | unreadable]
-
     # ---- launch ----
-    def _open_app(self, bundle_id: str, *, background: bool) -> None:
-        argv = [OPEN_TOOL] + (["-g"] if background else []) + ["-b", bundle_id]
-        process = self.spawn(argv, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL)
-        try:
-            code = process.wait(timeout=OPEN_WAIT)
-        except subprocess.TimeoutExpired:
-            code = None   # LaunchServices is still handing the request over; the verifier watches for the app
-        self.last_launch = {"method": "open", "hresult": None, "retries": 0, "exit": code}
-        _log("proc.launch", method="open", exit=code)
-        if code not in (0, None):
-            raise DeckError(LAUNCH_FAILED_MESSAGE, OS_ERROR)
-
-    def activate_app(self, bundle_id: str) -> int | None:
-        """Opens (or brings forward) the app with this bundle id: `open -b`. The pid is not known (None)."""
-        self._open_app(self._require_bundle_id(bundle_id), background=False)
-        return None
-
-    def launch_claude(self, bundle_id: str | None) -> int | None:
-        """Starts Claude Desktop by bundle id in the background: `open -g -b`. The new app's
-        parent is launchd, so its pid is not known here (None); the verifier watches for it."""
-        self._open_app(self._require_bundle_id(bundle_id or self.paths.claude_family), background=True)
-        return None
-
     def open_terminal_command(self, argv, *, cwd, env=None, unset=(), require=()) -> dict:
         """Runs `argv` in a new Terminal.app window (enrollment uses it through launch_claude_cli) and
         returns its record {"pid", "ctime", "pidfile", "opened"}; the pid and start time are filled in by

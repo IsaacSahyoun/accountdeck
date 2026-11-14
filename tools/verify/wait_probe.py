@@ -1,5 +1,5 @@
 """Proof run: does the terminal auto-switch act while another client's switch waits for its sessions to
-close? The stand-in job is in the real waiting phase (`waiting_idle`), which is what a Desktop, Codex or Muse
+close? The stand-in job is in the real waiting phase (`waiting_idle`), which is what a Codex or Muse
 "switch when idle" is in while it waits.
 Synthetic demo data only.   Usage: wait_probe.py <code copy>"""
 import copy, os, pathlib, shutil, sys, tempfile, threading, time

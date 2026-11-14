@@ -17,13 +17,13 @@ from .rules import ATTENTION_KINDS, DORMANT_DAYS  # noqa: F401  (enum and thresh
 
 # ---- frozen enums ----
 MODES = ("live", "demo")
-PROVIDERS = ("claude", "codex", "claude_cli", "muse")
+PROVIDERS = ("codex", "claude_cli", "muse")
 STATUS_LEVELS = ("ok", "degraded", "outage", "unknown")
 STATUS_SOURCES = ("statuspage", "observed", "none")
 ACCOUNT_STATES = ("ok", "limited", "stale", "needs_signin", "error", "unknown")
 HEADLINE_KINDS = ("ready", "watch", "low", "critical", "out", "signin", "stale", "checking", "unknown", "outage")
 # access_expired: Codex access token lapsed while the client runs; not an error.
-CREDENTIAL_STATES = ("live", "fresh", "expired", "web_only", "reauth_required", "access_expired", "unknown")
+CREDENTIAL_STATES = ("live", "fresh", "expired", "reauth_required", "access_expired", "unknown")
 AGE_TIERS = ("fresh", "aging", "stale")
 OWNERS = ("v2", "v2-pending", "v1", "moved", "on_pc")      # core.OWNERS; only "v2" and "on_pc" occur on a Mac
 WINDOW_KINDS = ("session", "weekly", "model", "other")
@@ -37,17 +37,15 @@ POLICIES = ("availability", "use_soon")
 CONFIDENCES = ("high", "low")
 CHIPS = ("back_in", "use_it", "plain", "refilled")
 BUCKETS = ("refilled", "minute", "hour", "six_hours", "day")
-PHASES = ("queued", "planning", "waiting_idle", "stopping", "settling", "saving", "restoring", "launching",
-          "verifying", "done", "unconfirmed", "failed", "cancelled", "needs_reconfirm")
+PHASES = ("queued", "planning", "waiting_idle", "stopping", "saving", "restoring", "verifying", "done", "unconfirmed",
+          "failed", "cancelled", "needs_reconfirm")
 STEP_STATUSES = ("pending", "active", "done", "skipped", "warning", "failed")
 OUTCOMES = ("success", "failed", "cancelled")
 VERIFICATIONS = ("verified", "unconfirmed", "failed")
-STOP_TIERS = ("not_running", "graceful", "managed", "manual")
 ALERT_KINDS = ("low", "limit_reached", "reset_confirmed", "reset_soon", "suggest_switch", "credential_expired",
                "switch_result", "use_it")
-BANNER_KINDS = ("outage", "degraded", "read_only", "recovery", "demo", "safe_mode", "paused", "self_protect",
-                "move_import")
-PURPOSES = ("switch", "quit", "add", "finish-login", "cancel-login", "recover", "capture")
+BANNER_KINDS = ("outage", "degraded", "read_only", "recovery", "demo", "safe_mode", "paused")
+PURPOSES = ("switch", "add", "finish-login", "cancel-login", "recover", "capture")
 CONSENTS = ("idle", "now")
 DEFAULT_BUTTONS = ("idle", "now")
 LEVELS = ("info", "good", "warning", "critical")
@@ -58,15 +56,13 @@ ERROR_CODES = ("invalid", "not_found", "busy", "login_needed", "reauth_required"
                "network", "rate_limited", "timeout", "vault", "recovery", "not_installed", "system", "codex",
                "safety", "cancelled", "confirm_required", "needs_reconfirm", "stale_plan", "outage", "read_only")
 PROVIDER_FAILURES = ("token_refused", "blocked", "scope_missing", "web_session_stale", "rate_limited", "outage", "network")
-ACTIONS = ("refresh", "rename", "switch-plan", "switch", "quit-claude", "cancel", "dismiss", "dismiss-report",
-           "capture", "add", "finish-login", "cancel-login", "remove", "open", "stop-consumer", "recover", "verify",
+ACTIONS = ("refresh", "rename", "switch-plan", "switch", "cancel", "dismiss", "dismiss-report",
+           "capture", "add", "finish-login", "cancel-login", "remove", "open", "stop-consumer", "recover",
            "test-notification", "cli-exclude", "cli-undo", "demo-clock", "import-bundle-preview", "import-bundle",
            "import-bundle-dismiss")
 INTERNAL_SETTINGS = ("recommender_state", "alert_latches")  # = config's internal keys
-UNSAVED_IDS = {"claude": "unsaved-claude", "codex": "unsaved-codex", "muse": "unsaved-muse"}
-# Claude switch step ids in order.
-CLAUDE_SWITCH_STEPS = ("prepare", "wait", "stop", "settle", "capture", "restore", "sessions", "launch", "verify", "report")
-MOVE_IMPORT_OUTCOMES = ("new", "updated", "filled", "kept", "on_pc", "deferred", "failed")
+UNSAVED_IDS = {"codex": "unsaved-codex", "muse": "unsaved-muse"}
+MOVE_IMPORT_OUTCOMES = ("new", "updated", "filled", "kept", "on_pc", "left_out", "failed")
 
 _SETTING_RULES = {
     "cli_autoswitch": ("bool",), "cli_threshold": ("int", 50, 99),
@@ -75,7 +71,7 @@ _SETTING_RULES = {
     "usage_display": ("choice", ("used", "left")), "confirm_when_idle": ("bool",),
     "sort": ("choice", ("stable", "best", "resets", "attention", "name", "manual")),
     "density": ("choice", ("auto", "cards", "rows")), "pinned_model": ("text",), "use_soon": ("bool",),
-    "show_other_limits": ("bool",), "cookie_route": ("bool",), "alert_low_left": ("int", 5, 25),
+    "show_other_limits": ("bool",), "alert_low_left": ("int", 5, 25),
     "alerts_enabled": ("bool",), "quiet_hours": ("hours",), "notify_reset_minutes": ("int", 1, 180),
     "notifications": ("bool",), "tray": ("bool",), "start_on_login": ("bool",), "cwd": ("text",),
     "log_level": ("choice", ("debug", "info", "warning")), "refresh_paused": ("bool",),
@@ -205,10 +201,9 @@ _STRIP_KEYS = ("account", "label", "provider", "window", "window_label", "reset"
 _PENDING_KEYS = ("id", "kind", "provider", "account", "label", "phase", "message", "cancellable", "started",
                  "eta_seconds", "consent", "waiting_on", "steps")
 _REPORT_KEYS = ("op", "kind", "provider", "account", "label", "finished", "outcome", "verified", "verified_at",
-                "verify_reason", "stop_tier", "stop_ms", "helpers_self_exited", "stragglers", "summary", "carried",
-                "account_bound", "manifest", "error")
-_PLAN_KEYS = ("plan_id", "expires", "provider", "purpose", "target", "current", "headroom", "running", "process_set",
-              "signature", "blockers", "warnings", "tip", "will", "preserved", "account_bound", "invisible", "stop_tier",
+                "verify_reason", "summary", "manifest", "error")
+_PLAN_KEYS = ("plan_id", "expires", "provider", "purpose", "target", "current", "running", "process_set",
+              "signature", "blockers", "warnings", "will", "preserved",
               "confirmation_required", "idle", "remember_available", "default_button", "saves_outgoing")
 
 
@@ -300,16 +295,10 @@ def _is_move_code(value):
 
 def _check_move_import(block, r):
     """The `move_import` block (accountdeck/move_import.py state()): undismissed imports, each with a code
-    exactly when it is complete; the Claude Desktop accounts waiting for conversion; the "on_pc" count."""
-    if not r.obj(block, ("imports", "deferred", "on_pc"), "move_import"):
+    exactly when it is complete; the "on_pc" count."""
+    if not r.obj(block, ("imports", "on_pc"), "move_import"):
         return
     r.int(block["on_pc"], "move_import.on_pc", low=0)
-    deferred = block["deferred"]
-    if r.obj(deferred, ("count", "message", "reason", "problem"), "move_import.deferred"):
-        if r.int(deferred["count"], "move_import.deferred.count", low=0):
-            r.text(deferred["message"], "move_import.deferred.message", nullable=deferred["count"] == 0)
-        for key in ("reason", "problem"):
-            r.text(deferred[key], f"move_import.deferred.{key}", nullable=True)
     if not r.seq(block["imports"], "move_import.imports"):
         return
     keys = ("bundle_id", "kind", "at", "complete", "code", "counts", "failures", "message")
@@ -334,7 +323,8 @@ def _check_move_import(block, r):
                 where = f"{path}.failures[{number}]"
                 if r.obj(failure, ("label", "provider", "reason"), where):
                     r.text(failure["label"], f"{where}.label")
-                    r.enum(failure["provider"], PROVIDERS, f"{where}.provider")
+                    # Text, not one of PROVIDERS: an import an older build recorded can name Claude Desktop.
+                    r.text(failure["provider"], f"{where}.provider")
                     r.text(failure["reason"], f"{where}.reason")
 
 
@@ -467,7 +457,7 @@ def _check_account_reading(a, path, now, r):
     """The age the account claims matches its last reading, and each window is right for that reading."""
     if a["saved"] is False or a["id"] in UNSAVED_IDS.values():
         if a["id"] != UNSAVED_IDS[a["provider"]] or a["saved"] or not a["active"] or a["switchable"]:
-            r.add(path, "only 'unsaved-claude' / 'unsaved-codex' may be unsaved, and they are active and not switchable")
+            r.add(path, "only 'unsaved-codex' / 'unsaved-muse' may be unsaved, and they are active and not switchable")
     at = a["last_good_at"]
     tier = None if at is None else rules.age_tier(now - at, a["active"])
     if a["age_tier"] != tier:
@@ -624,8 +614,7 @@ def _check_providers(providers, accounts, r):
         return
     for p in PROVIDERS:
         path = f"providers.{p}"
-        keys = ("status", "active", "running", "switching", "paused") + (("data_folder", "folder_warning") if p == "claude" else ())
-        if not r.obj(providers[p], keys, path):
+        if not r.obj(providers[p], ("status", "active", "running", "switching", "paused"), path):
             continue
         entry = providers[p]
         status = entry["status"]
@@ -647,11 +636,7 @@ def _check_providers(providers, accounts, r):
             r.add(f"{path}.active", f"must name the active {p} account ({actives[0] if actives else None!r})")
         r.flag(entry["switching"], f"{path}.switching")
         r.flag(entry["paused"], f"{path}.paused")
-        if p == "claude":
-            r.text(entry["data_folder"], f"{path}.data_folder", nullable=True)
-            r.text(entry["folder_warning"], f"{path}.folder_warning", nullable=True)
-            _check_claude_running(entry["running"], f"{path}.running", r)
-        elif p == "codex":
+        if p == "codex":
             _check_codex_running(entry["running"], f"{path}.running", r)
         elif p == "muse":
             _check_muse_running(entry["running"], f"{path}.running", r)
@@ -693,41 +678,6 @@ def _check_terminal(entry, path, accounts, r):
             r.text(enrollment["email"], path + ".enrollment.email", empty=True)
         r.enum(enrollment["phase"], ("idle", "signing_in", "waiting_exit", "saved", "cancelled", "failed"), path + ".enrollment.phase")
         r.text(enrollment["message"], path + ".enrollment.message", empty=True)
-
-
-def _check_sessions(sessions, path, r):
-    if not r.seq(sessions, path):
-        return None
-    counts = {"busy": 0, "unknown": 0}
-    for index, s in enumerate(sessions):
-        if r.obj(s, ("pid", "name", "status", "since"), f"{path}[{index}]"):
-            r.int(s["pid"], f"{path}[{index}].pid", low=1)
-            r.text(s["name"], f"{path}[{index}].name", nullable=True)
-            if r.enum(s["status"], SESSION_STATUSES, f"{path}[{index}].status") and s["status"] in counts:
-                counts[s["status"]] += 1
-            r.num(s["since"], f"{path}[{index}].since")
-    return counts
-
-
-def _check_counts(running, counts, path, r):
-    for key in ("busy", "unknown", "foreign_claude"):
-        r.int(running[key], f"{path}.{key}", low=0)
-    if counts is not None:
-        for key in ("busy", "unknown"):
-            if running[key] != counts[key]:
-                r.add(f"{path}.{key}", f"must count the {key} sessions ({counts[key]})")
-
-
-def _check_claude_running(running, path, r):
-    keys = ("desktop", "desktop_pids", "checked", "sessions", "busy", "unknown", "foreign_claude", "registry_version")
-    if not r.obj(running, keys, path):
-        return
-    if running["desktop"] is not None:
-        r.flag(running["desktop"], f"{path}.desktop")
-    r.int(running["desktop_pids"], f"{path}.desktop_pids", nullable=True, low=0)
-    r.num(running["checked"], f"{path}.checked")
-    r.text(running["registry_version"], f"{path}.registry_version", nullable=True)
-    _check_counts(running, _check_sessions(running["sessions"], f"{path}.sessions", r), path, r)
 
 
 def _check_consumers(consumers, path, r):
@@ -783,7 +733,7 @@ def _check_now_band(band, state, accounts, complete, now, r):
     best = band["best"]
     if r.obj(best, PROVIDERS, "now_band.best"):
         for extra in set(best) - set(PROVIDERS):
-            r.add(f"now_band.best.{extra}", "best is per provider (claude, codex, claude_cli, muse)")
+            r.add(f"now_band.best.{extra}", "best is per provider (codex, claude_cli, muse)")
         for p in PROVIDERS:
             _check_best(best[p], p, state, accounts, listed, r)
     if r.seq(band["attention"], "now_band.attention"):
@@ -922,10 +872,6 @@ def _check_pending(pending, r):
                 r.int(item["pid"], f"pending.waiting_on[{index}].pid", low=1)
                 r.enum(item["status"], SESSION_STATUSES, f"pending.waiting_on[{index}].status")
     _check_steps(pending["steps"], "pending.steps", r)
-    if pending["kind"] == "switch" and pending["provider"] == "claude" and isinstance(pending["steps"], list):
-        ids = [s.get("id") for s in pending["steps"] if isinstance(s, dict)]
-        if ids != [sid for sid in CLAUDE_SWITCH_STEPS if sid in ids]:
-            r.add("pending.steps", f"a Claude switch uses the steps {', '.join(CLAUDE_SWITCH_STEPS)} in that order")
     if pending["phase"] == "needs_reconfirm" and "plan" not in pending:
         r.add("pending.plan", "needs_reconfirm carries the fresh plan")
     if pending.get("plan") is not None:
@@ -939,17 +885,9 @@ def _check_report(report, r):
     r.enum(report["provider"], PROVIDERS, "report.provider", nullable=report["kind"] != "switch")
     r.enum(report["outcome"], OUTCOMES, "report.outcome")
     r.enum(report["verified"], VERIFICATIONS, "report.verified", nullable=True)
-    r.enum(report["stop_tier"], STOP_TIERS, "report.stop_tier", nullable=True)
     r.num(report["finished"], "report.finished", nullable=False)
     r.num(report["verified_at"], "report.verified_at")
-    r.int(report["stop_ms"], "report.stop_ms", nullable=True, low=0)
-    r.int(report["stragglers"], "report.stragglers", nullable=True, low=0)
     r.text(report["summary"], "report.summary")
-    for key, required in (("carried", ("label", "status", "detail")), ("account_bound", ("label", "detail"))):
-        if r.seq(report[key], f"report.{key}"):
-            for index, item in enumerate(report[key]):
-                if r.obj(item, required, f"report.{key}[{index}]"):
-                    r.text(item["label"], f"report.{key}[{index}].label")
     if report["error"] is not None and r.obj(report["error"], ("code", "message", "step"), "report.error"):
         r.enum(report["error"]["code"], ERROR_CODES, "report.error.code")
 
@@ -1037,19 +975,12 @@ def _check_plan(plan, path, r):
         # Switching away from the unsaved signed-in account saves it first.
         if plan["purpose"] == "switch" and plan["saves_outgoing"] is not (plan["current"]["id"] in UNSAVED_IDS.values()):
             r.add(f"{path}.saves_outgoing", "is true exactly when the current account is the unsaved signed-in one")
-    if plan["headroom"] is not None and r.obj(plan["headroom"], ("now", "after"), f"{path}.headroom"):
-        r.text(plan["headroom"]["now"], f"{path}.headroom.now", nullable=True)
-        r.text(plan["headroom"]["after"], f"{path}.headroom.after", nullable=True)
     running = plan["running"]
-    keys = ("desktop", "sessions", "busy", "unknown", "foreign_claude", "codex_consumers")
     idle = None
-    if r.obj(running, keys, f"{path}.running"):
-        counts = _check_sessions(running["sessions"], f"{path}.running.sessions", r)
-        _check_counts(running, counts, f"{path}.running", r)
+    if r.obj(running, ("codex_consumers",), f"{path}.running"):
         _check_consumers(running["codex_consumers"], f"{path}.running.codex_consumers", r)
-        if _is_int(running["busy"]) and _is_int(running["unknown"]) and isinstance(running["codex_consumers"], list):
-            # Idle: no Code session busy or unknown and no Codex consumer left ("Switch now" needs none).
-            idle = running["busy"] == 0 and running["unknown"] == 0 and not running["codex_consumers"]
+        if isinstance(running["codex_consumers"], list):
+            idle = not running["codex_consumers"]       # no open session left to wait for ("Switch now" needs none)
     pairs = plan["process_set"]
     if not (isinstance(pairs, list) and all(isinstance(p, list) and len(p) == 2 and all(_is_int(v) for v in p) for p in pairs)):
         r.add(f"{path}.process_set", "must be a list of [pid, creation_time] pairs")
@@ -1067,18 +998,15 @@ def _check_plan(plan, path, r):
                     else:
                         r.text(item["code"], f"{path}.{key}[{index}].code")
                     r.text(item["message"], f"{path}.{key}[{index}].message")
-    r.text(plan["tip"], f"{path}.tip", nullable=True)
-    r.text(plan["invisible"], f"{path}.invisible", nullable=True)
-    for key in ("will", "preserved", "account_bound"):
+    for key in ("will", "preserved"):
         if r.seq(plan[key], f"{path}.{key}"):
             for index, line in enumerate(plan[key]):
                 r.text(line, f"{path}.{key}[{index}]")
-    r.enum(plan["stop_tier"], STOP_TIERS, f"{path}.stop_tier")
     flags_ok = all([r.flag(plan[key], f"{path}.{key}") for key in
                     ("confirmation_required", "idle", "remember_available", "saves_outgoing")])
     if r.enum(plan["default_button"], DEFAULT_BUTTONS, f"{path}.default_button") and flags_ok and idle is not None:
         if plan["idle"] != idle:
-            r.add(f"{path}.idle", "is true exactly when no session is busy or unknown and no Codex consumer runs")
+            r.add(f"{path}.idle", "is true exactly when no session of the client is open")
         if plan["default_button"] != ("now" if idle else "idle"):
             r.add(f"{path}.default_button", "is 'idle' until the plan is idle, else 'now'")
         if plan["remember_available"] and not idle:

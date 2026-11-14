@@ -1,13 +1,11 @@
 """Saved accounts: saving the signed-in account, reading usage, and the signed-in account that is not
 saved yet.
 
-Every Claude capture is health-gated. A capture taken while Claude runs holds its tokens but not
-its cookie database; the account can be read at once and becomes switchable after its next
-complete capture (the next switch away from it, or a save while Claude is closed). Codex and Muse
-captures of known accounts go through `Vault.put_guarded`, so an older refresh token never
-replaces a newer one. Usage reads never write a provider file, and the active account is read
-with the token its official app holds, which a read cannot rotate. (Muse renews the active login
-itself, in its own file, as it would for any `muse` command.)
+These are the Codex and Muse accounts; the Claude Code accounts are in cli_accounts. A capture of a known
+account goes through `Vault.put_guarded`, so an older refresh token never replaces a newer one. Usage
+reads never write a provider file, and the active account is read with the token its official app
+holds, which a read cannot rotate. (Muse renews the active login itself, in its own file, as it would
+for any `muse` command.)
 """
 from __future__ import annotations
 
@@ -17,18 +15,10 @@ import threading
 from . import diagnostics, intel, readings
 from .contract import ERROR_CODES, PROVIDER_FAILURES, UNSAVED_IDS
 from .core import DeckError, FrozenAccountError, is_frozen
-from .providers import CredentialState, OutcomeLog, Reading
+from .providers import Reading
 from .providers import muse as muse_auth
 from .providers.codex import freshness, identity_key, refresh_due, token_state
 
-HEALTH_MESSAGES = {
-    "half_login": "Claude has not finished signing in. Open Claude, wait until your chats appear, then save again.",
-    "logged_out": "Sign in to Claude Desktop first.",
-    "identity_mismatch": "Claude's sign-in data disagree. Open Claude once, then save again.",
-    "unreadable": "Claude's saved sign-in could not be read. Open Claude once, then save again.",
-    "stale_after_kill": "Claude did not finish writing its settings. Open Claude once, then save again.",
-    "sentinel": "Claude has not stored this account's tokens yet. Open Claude once, then save again.",
-}
 READ_FAILED = "Could not refresh this account. Your last reading is kept."
 BUSY_ACCOUNT = "This account is being refreshed. Try again in a moment."
 FRESH_MARGIN = 180
@@ -36,10 +26,10 @@ SPENT_KEPT = 20            # replaced Muse refresh tokens remembered per account
 ACTIVE_TOUCH = 3600.0       # how often an active account's `last_active_at` is renewed
 # The flags a usage read owns. It merges only these into the stored flags, so a save or a rename
 # made while the read ran is never overwritten by the read's older copy.
-READ_FLAGS = ("checked", "outcomes", "error_since", "session_expires_at", "refresh_attempt", "refresh_failures")
+READ_FLAGS = ("checked", "error_since", "refresh_attempt", "refresh_failures")
 
 
-PROVIDER_NOUNS = {"claude": "Claude account", "codex": "Codex account", "muse": "Muse account"}
+PROVIDER_NOUNS = {"codex": "Codex account", "muse": "Muse account"}
 # The identity and freshness of a rotating credential (Vault.put_guarded), per file-swapped provider.
 GUARDS = {"codex": (identity_key, freshness), "muse": (muse_auth.identity_key, muse_auth.unordered)}
 
@@ -50,10 +40,8 @@ def default_label(email, provider):
 
 
 def restorable(provider, profile) -> bool:
-    """Whether a saved profile can be switched to: Claude needs its cookie database too."""
-    if provider == "muse":
-        return muse_auth.is_file_login(profile)
-    return provider == "codex" or bool((profile or {}).get("cookies"))
+    """Whether a saved profile can be switched to: a Muse login has to be a file login."""
+    return muse_auth.is_file_login(profile) if provider == "muse" else provider == "codex"
 
 
 def error_code(exc) -> str:
@@ -70,17 +58,16 @@ def _touch_due(account, now) -> bool:
 
 
 class AccountService:
-    """`levels()` gives each provider's status level; `observed` the ObservedStatus per provider.
-    `lock_for(account_id)` is the account's lock (the scheduler's): saving or removing an account
-    waits up to `lock_wait` seconds for a read of it to finish. `on_change()` is called after the
-    saved accounts changed (the engine moves its revision)."""
+    """`observed` is the ObservedStatus per provider. `lock_for(account_id)` is the account's lock (the
+    scheduler's): saving or removing an account waits up to `lock_wait` seconds for a read of it to finish.
+    `on_change()` is called after the saved accounts changed (the engine moves its revision)."""
 
-    def __init__(self, store, vault, providers, settings, *, clock, observed, levels, lock_for, lock_wait, on_change):
-        self.store, self.vault, self.providers, self.settings = store, vault, providers, settings
-        self.clock, self.observed, self.levels = clock, observed, levels
+    def __init__(self, store, vault, providers, *, clock, observed, lock_for, lock_wait, on_change):
+        self.store, self.vault, self.providers = store, vault, providers
+        self.clock, self.observed = clock, observed
         self.lock_for, self.lock_wait, self.on_change = lock_for, lock_wait, on_change
-        self.unsaved = {"claude": None, "codex": None, "muse": None}
-        self._identities, self._series = {}, {}
+        self.unsaved = {"codex": None, "muse": None}
+        self._series = {}
         self._series_lock = threading.Lock()
 
     @contextlib.contextmanager
@@ -94,40 +81,13 @@ class AccountService:
             lock.release()
 
     # ---- saving ----
-    def capture(self, provider, *, label=None, claude_running=True, owner="v2") -> str:
-        """Saves the account signed in right now; returns its id. With Claude running only its
-        tokens are read (the cookie database is Claude's while it runs)."""
-        if provider == "claude":
-            claude = self.providers["claude"]
-            try:
-                profile = claude.current(cookies=not claude_running)
-            except DeckError as exc:
-                if exc.code != "busy" or claude_running:
-                    raise
-                profile = claude.current(cookies=False)
-            health, reason = claude.diagnose(profile)
-            if health != "ok":
-                diagnostics.log("capture.refused", lvl="warning", provider="claude", health=health)
-                raise DeckError(HEALTH_MESSAGES.get(health, reason or HEALTH_MESSAGES["unreadable"]), "login_needed")
-            existing = self.store.find("claude", profile["identity"])
-            if is_frozen(existing):
-                raise FrozenAccountError(existing)
-            if existing is not None and not profile.get("cookies"):
-                try:
-                    held = self.vault.get(existing["id"])
-                except DeckError:
-                    held = None
-                if held and held.get("key") == profile.get("key") and held.get("cookies"):
-                    profile["cookies"] = held["cookies"]
-            info = self.identity("claude", profile)
-            profile["org"] = info["org"]
-        elif provider in ("codex", "muse"):
-            adapter = self.providers[provider]
-            profile = adapter.current()
-            info = adapter.identity(profile)
-        else:
-            raise DeckError("Choose Claude, Codex or Muse.", "invalid")
-        return self.save(provider, profile, info, label=label, source="capture", owner=owner)
+    def capture(self, provider, *, label=None, owner="v2") -> str:
+        """Saves the account signed in right now; returns its id."""
+        if provider not in GUARDS:
+            raise DeckError("Choose Codex or Muse.", "invalid")
+        adapter = self.providers[provider]
+        profile = adapter.current()
+        return self.save(provider, profile, adapter.identity(profile), label=label, source="capture", owner=owner)
 
     def save(self, provider, profile, info, *, label=None, source="capture", owner="v2") -> str:
         """Stores a captured profile under its identity (a new account or the saved one). An account whose
@@ -148,7 +108,7 @@ class AccountService:
             except BaseException:
                 self.store.remove(key)
                 raise
-            self.store.record_generation(key, digest, source=source, health="ok" if provider == "claude" else None)
+            self.store.record_generation(key, digest, source=source)
             self.store.update(key, flags={"restorable": restorable(provider, profile)})
             self._carry_over(key, provider, info["identity"])
         else:
@@ -178,30 +138,15 @@ class AccountService:
             raise FrozenAccountError(existing)
         self.store.save_account(provider, info["identity"], existing["label"], info.get("email", ""),
                                 info.get("plan", ""), info.get("org", "") or existing["org"] or "")
-        if provider in GUARDS:
-            stored = self._put_muse(key, profile, "live") if provider == "muse" else \
-                self.vault.put_guarded(key, profile, "live", *GUARDS[provider])
-            if stored == "conflict":
-                name = "Muse" if provider == "muse" else "Codex"
-                raise DeckError(f"The saved {name} sign-in belongs to another account. Nothing was changed.",
-                                "identity")
-        else:
-            digest = self.vault.put(key, profile)
-            self.store.record_generation(key, digest, source=source, health="ok")
+        stored = self._put_muse(key, profile, "live") if provider == "muse" else \
+            self.vault.put_guarded(key, profile, "live", *GUARDS[provider])
+        if stored == "conflict":
+            name = "Muse" if provider == "muse" else "Codex"
+            raise DeckError(f"The saved {name} sign-in belongs to another account. Nothing was changed.",
+                            "identity")
         flags = dict((self.store.account(key) or existing)["flags"])
-        if provider == "claude":
-            flags.pop("outcomes", None)     # a new profile starts a new outcome log
         flags["restorable"] = restorable(provider, profile)
         self.store.update(key, flags=flags)
-
-    def identity(self, provider, profile):
-        """{identity, email, plan, org} of a profile, asked of the provider once per identity."""
-        ident = profile.get("identity") if provider == "claude" else GUARDS[provider][0](profile)
-        cached = self._identities.get((provider, ident))
-        if cached is None:
-            cached = self.providers[provider].identity(profile)
-            self._identities[(provider, ident)] = cached
-        return dict(cached)
 
     # ---- removing and renaming ----
     def rename(self, account_id, label):
@@ -247,9 +192,7 @@ class AccountService:
         active = active_identity.get(account["provider"]) == account["identity"]
         try:
             profile = self.vault.get(account_id)
-            if account["provider"] == "claude":
-                reading, credential = self._read_claude(account, profile, flags, active=active, now=now)
-            elif account["provider"] == "muse":
+            if account["provider"] == "muse":
                 reading, credential = self._read_muse(account, profile, flags, active=active, now=now,
                                                       read_only=read_only)
             else:
@@ -305,44 +248,11 @@ class AccountService:
                         provider=account["provider"], code=code)
         return code
 
-    def _incident(self, provider):
-        return self.levels().get(provider) in ("degraded", "outage")
-
     def _record(self, provider, account_id, outcomes, now):
         watcher = self.observed.get(provider)
         if watcher is not None:
             for _route, _kind, klass in outcomes:
                 watcher.record(account_id, klass, at=now)
-
-    def _read_claude(self, account, profile, flags, *, active, now):
-        claude = self.providers["claude"]
-        if active:
-            profile = self._live_claude(profile, account["identity"])
-        incident = self._incident("claude")
-        log = OutcomeLog.from_list(flags.get("outcomes"))
-        state, _info = claude.credential_state(profile, active=active, now=now, outcomes=log, incident=incident)
-        reading = claude.read_usage(profile, state, now=now, last_good=account["last_good_usage"],
-                                    cookie_route=bool(self.settings.get("cookie_route")), incident=incident,
-                                    account=account["id"])
-        for route, kind, _klass in reading.outcomes:
-            log.record(kind, route=route, at=now, incident=incident)
-        flags["outcomes"] = log.to_list()
-        self._record("claude", account["id"], reading.outcomes, now)
-        state, info = claude.credential_state(profile, active=active, now=now, outcomes=log, incident=incident)
-        flags["expires_in"] = info["expires_in"]
-        flags["session_expires_at"] = claude.sessionkey_expiry(profile)
-        return reading, state.value
-
-    def _live_claude(self, profile, identity):
-        """The active account's tokens as Claude Desktop holds them now (they may be newer than the
-        saved copy); the saved profile when Claude's files cannot be read."""
-        try:
-            live = self.providers["claude"].capture(config_only=True)
-        except DeckError:
-            return profile
-        if live.get("identity") != identity:
-            return profile
-        return {**profile, "auth": live["auth"], "key": live["key"], "journal": live["journal"]}
 
     def _read_codex(self, account, profile, flags, *, active, now, read_only):
         codex = self.providers["codex"]
@@ -524,26 +434,7 @@ class AccountService:
         now = self.clock()
         row["checked"] = now
         try:
-            if provider == "claude":
-                claude = self.providers["claude"]
-                profile = claude.current(cookies=False)
-                if profile["identity"] != row["identity"]:
-                    return "identity"
-                if row["label"] is None:
-                    try:
-                        info = self.identity("claude", profile)
-                        row.update(label=default_label(info["email"], "claude"), email=info["email"] or None,
-                                   plan=info["plan"] or None)
-                    except DeckError:
-                        pass
-                reading = claude.read_usage(profile, CredentialState.LIVE, now=now, last_good=row["usage"],
-                                            cookie_route=False, incident=self._incident("claude"))
-                try:
-                    entry = claude.token_entry(profile)
-                except DeckError:
-                    entry = None
-                row["expires_in"] = None if entry is None else round(entry.get("expiresAt", 0) / 1000 - now)
-            elif provider == "muse":
+            if provider == "muse":
                 muse = self.providers["muse"]
                 live = muse.active_identity()
                 if live.status != "ok" or live.identity != row["identity"]:

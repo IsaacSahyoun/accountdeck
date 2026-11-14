@@ -1,7 +1,6 @@
-"""Provider failure classification: one kind per failure, a stable error code, and the re-auth escalation."""
+"""Provider failure classification: one kind per failure and a stable error code."""
 from __future__ import annotations
 
-from collections import namedtuple
 import datetime as dt
 import email.utils
 import json
@@ -15,8 +14,6 @@ from .base import OAUTH_HOST
 
 RATE_LIMIT_MARGIN = 900       # added to every Retry-After, so "Retry-After: 0" (or none) waits 15 min
 BLOCKED_RETRY = 1800
-ESCALATION_COUNT = 3
-ESCALATION_SPAN = 1800
 STALE_SESSION_CODES = (b"session_stale_relogin", b"elevated_auth")
 
 # kind -> (DeckError code, message shown to the user)
@@ -135,54 +132,3 @@ def retry_after_seconds(value, now=None):
 def rate_limit_wait(retry_after):
     """The pause after a 429: the requested seconds plus a 15-minute margin."""
     return (retry_after or 0) + RATE_LIMIT_MARGIN
-
-
-Outcome = namedtuple("Outcome", "at kind route incident")
-
-
-class OutcomeLog:
-    """Recent refresh outcomes of one Claude account: `kind` is "ok" or a failure kind, `route`
-    "oauth" or "cookie". The engine persists it with to_list()/from_list() and starts a new log
-    when a new profile is saved for the account."""
-    LIMIT = 50
-
-    def __init__(self, entries=()):
-        self.entries = [Outcome(*entry) for entry in entries][-self.LIMIT:]
-
-    def record(self, kind, *, route, at, incident=False):
-        self.entries.append(Outcome(float(at), str(kind), str(route), bool(incident)))
-        del self.entries[:-self.LIMIT]
-
-    def to_list(self):
-        return [list(entry) for entry in self.entries]
-
-    @classmethod
-    def from_list(cls, data):
-        """Rebuilds a stored log, dropping malformed entries."""
-        entries = []
-        for item in data if isinstance(data, list) else ():
-            if (isinstance(item, (list, tuple)) and len(item) == 4 and isinstance(item[0], (int, float))
-                    and isinstance(item[1], str) and isinstance(item[2], str)):
-                entries.append((float(item[0]), item[1], item[2], bool(item[3])))
-        return cls(entries)
-
-    def __iter__(self):
-        return iter(self.entries)
-
-
-def reauth_escalation(outcomes, now, *, incident=False):
-    """True when a saved Claude sign-in should become reauth_required: at least 3 token_refused
-    outcomes since the last success, across both routes, spanning at least 30 minutes. A single 401
-    never escalates, refusals recorded during an incident do not count, and nothing escalates while
-    an incident is in progress."""
-    if incident:
-        return False
-    refused = []
-    for at, kind, _route, during in sorted(outcomes, key=lambda entry: entry[0]):
-        if at > now:
-            continue
-        if kind == "ok":
-            refused = []
-        elif kind == "token_refused" and not during:
-            refused.append(at)
-    return len(refused) >= ESCALATION_COUNT and refused[-1] - refused[0] >= ESCALATION_SPAN

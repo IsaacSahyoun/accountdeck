@@ -8,7 +8,7 @@ import html.parser, json, os, re, shutil, subprocess, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from demo_run import Demo, end_on_kill  # noqa: E402
 
-LISTS = {"accounts": ("claude_cli",), "other-accounts": ("claude", "codex", "muse")}    # the clients each list draws
+LISTS = {"accounts": ("claude_cli",), "other-accounts": ("codex", "muse")}    # the clients each list draws
 
 
 class Rows(html.parser.HTMLParser):

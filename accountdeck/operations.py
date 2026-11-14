@@ -14,8 +14,8 @@ from .core import DeckError
 from .diagnostics import account_ref, frames, log
 
 
-PHASES = ("queued", "planning", "waiting_idle", "stopping", "settling", "saving", "restoring", "launching",
-          "verifying", "done", "unconfirmed", "failed", "cancelled", "needs_reconfirm")
+PHASES = ("queued", "planning", "waiting_idle", "stopping", "saving", "restoring", "verifying", "done", "unconfirmed",
+          "failed", "cancelled", "needs_reconfirm")
 TERMINAL_PHASES = frozenset({"done", "unconfirmed", "failed", "cancelled", "needs_reconfirm"})
 STEP_STATUSES = ("pending", "active", "done", "skipped", "warning", "failed")
 GENERIC_FAILURE = "The action could not be completed. Your saved accounts are preserved."
@@ -28,12 +28,7 @@ DONE_SUMMARY = "Done."
 def _report_defaults():
     """SwitchReport fields an Operation may fill through `report`, with their values when it
     does not. The runner sets op, kind, provider, account, label, finished, outcome and error."""
-    return {"verified": None, "verified_at": None, "verify_reason": None, "stop_tier": None, "stop_ms": None,
-            "helpers_self_exited": None, "stragglers": None, "summary": None, "carried": [],
-            "account_bound": [], "manifest": None}
-
-
-_REPORT_FIELDS = frozenset(_report_defaults())
+    return {"verified": None, "verified_at": None, "verify_reason": None, "summary": None, "manifest": None}
 
 
 class OperationCancelled(DeckError):
@@ -158,16 +153,6 @@ class Operation:
                 raise ValueError("waiting_on is only shown in the waiting_idle phase")
             self.waiting_on = rows
         self._changed()
-
-    def close_lane(self) -> bool:
-        """Called from a wait for sessions once they all look idle: the operation running beside this one
-        ends first, and none starts beside it after. True when that took a wait. The caller then looks at
-        its sessions again, because they may have changed meanwhile."""
-        return self._leave_wait is not None and bool(self._leave_wait(self))
-
-    def reopen_lane(self):
-        """The wait for sessions goes on after all, so an operation may run beside it again."""
-        self.wait_over = False
 
     def _moving_to(self, phase):
         """Before this operation leaves its wait for sessions and starts to change things, the operation
@@ -356,18 +341,6 @@ class OperationRunner:
 
     def snapshot(self):
         return {"pending": self.pending(), "report": self.report()}
-
-    def update_report(self, op_id, **fields):
-        """Change fields of the last report, e.g. when the background verifier settles a switch.
-        False when the last report belongs to another operation or was dismissed."""
-        if not set(fields) <= _REPORT_FIELDS | {"outcome", "error"}:
-            raise ValueError("unknown report field")
-        with self.lock:
-            if self._report is None or self._report["op"] != op_id:
-                return False
-            self._report = {**self._report, **copy.deepcopy(fields)}
-        self._changed()
-        return True
 
     def dismiss_report(self):
         with self.lock:

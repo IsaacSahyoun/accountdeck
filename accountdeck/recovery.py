@@ -1,9 +1,8 @@
-"""One shape for putting an interrupted switch right, shared by all four clients.
+"""One shape for putting an interrupted switch right, shared by all three clients.
 
 A switch saves a record (core.FileTransaction) before it changes a login and closes it when it is done. An
 open record means the switch stopped part way: it failed, or the app died. Each client settles its own
-record (`settle` in switch_cli, `put_back` here for Codex and Muse, `Recover` in switch_claude) in the same
-four steps:
+record (`settle` in switch_cli, `put_back` here for Codex and Muse) in the same four steps:
 
 1. Look at who is signed in now, by whose login it is. Bytes are never compared: a client renews its login
    whenever it runs.
@@ -15,6 +14,9 @@ four steps:
 A record that cannot be read or applied is set aside: kept as it is in the vault, out of the pending list,
 with a notice that says so. A record is never set aside while its client's login is part one account and
 part another (`StillNeeded`): settling that record again is the only thing that makes the login whole.
+
+Builds before 2.1 also switched Claude Desktop. A record one of them left open is not this build's to settle:
+`pending` keeps it out of the list and sets it aside, and no code here opens a file it names.
 """
 import base64
 from dataclasses import dataclass
@@ -25,7 +27,7 @@ from . import diagnostics
 from .core import OPEN_STATUSES, DeckError, FileTransaction, atomic_write, json_bytes, recover_transactions
 
 WAIT_CODES = ("busy", "read_only")        # the user can lift these and press Recover again; nothing changed
-NAMES = {"claude_cli": "Claude Code", "claude": "Claude", "codex": "Codex", "muse": "Muse"}
+NAMES = {"claude_cli": "Claude Code", "codex": "Codex", "muse": "Muse"}
 KEPT = "The record stays encrypted in AccountDeck's data folder for 30 days."
 UNREADABLE = ("AccountDeck could not read the record of an interrupted switch, so it set the record aside and "
               f"cleared it. {KEPT} Nothing in your apps was changed: open each one and check it shows the "
@@ -35,6 +37,9 @@ NOTHING_WAITING = "No interrupted switch was waiting."
 NOTHING_TO_UNDO = "The interrupted switch had changed nothing."
 UNAPPLIED = ("AccountDeck could not undo an interrupted {name} switch, so it set that switch's record aside and "
              f"cleared it. {KEPT} Open {{name}} and check it shows the account you expect.")
+UNMANAGED = ("This version of AccountDeck does not manage Claude Desktop. An earlier version left a Claude Desktop "
+             f"switch unfinished, and its record was set aside. {KEPT} Open Claude Desktop and check it shows the "
+             "account you expect. If it does not, sign out of Claude Desktop and sign in again.")
 
 
 class StillNeeded(DeckError):
@@ -45,6 +50,35 @@ class StillNeeded(DeckError):
         cause = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
         super().__init__(f"Recover could not finish: {cause.rstrip('.')}. {state} The interrupted switch is still "
                          f"waiting, so press Recover again.{' ' + hint if hint else ''}", "recovery")
+
+
+def client_of(doc):
+    """The client an open record belongs to, or None when this build does not manage it. A record that names
+    no client is Claude Desktop's: the builds that switched it are the only ones that wrote such a record."""
+    provider = doc.get("provider")
+    return provider if provider in NAMES else None
+
+
+def pending(engine):
+    """The keys of the open records a press of Recover settles. A record that cannot be read is one of them:
+    Recover sets it aside. A record of a client this build does not manage is not. Nothing here can put
+    that client's login right, so the copy that owns the sign-ins sets the record aside, kept as it is, and
+    says so once. Another copy leaves it where it is. A set-aside that fails leaves the record open and out
+    of the list, and the next start tries again."""
+    keys = []
+    for key in recover_transactions(engine.vault):
+        try:
+            managed = client_of(engine.vault.get(key)) is not None
+        except DeckError:
+            managed = True
+        if managed:
+            keys.append(key)
+        elif engine.owns_login:
+            try:
+                set_aside(engine, key, UNMANAGED)
+            except OSError as exc:
+                diagnostics.log_exception("recovery.unmanaged_kept", exc)
+    return keys
 
 
 def set_aside(engine, key, message):
@@ -81,7 +115,7 @@ def press(engine, provider, settle) -> Pressed:
                 set_aside(engine, key, UNREADABLE)
                 done.aside += 1
                 continue
-            if tx.doc.get("provider", "claude") != provider or tx.doc.get("status") not in OPEN_STATUSES:
+            if client_of(tx.doc) != provider or tx.doc.get("status") not in OPEN_STATUSES:
                 continue
             try:
                 done.sentences.append(settle(tx))

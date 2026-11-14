@@ -10,78 +10,69 @@ Actions (engine `_do_*`, contract.ACTIONS):
 What each account becomes:
 - Claude Code and Codex: a vault record in the shape cli_accounts.CLIAccounts.save and AccountService.save
   write, with the same row flags, so the Mac's switch flows use it unchanged.
-- Claude Desktop: converted at once with claude_portable.from_portable when this Mac's Claude Desktop key
-  can be read and Claude Desktop has created its cookie database (the template). Otherwise the portable
-  profile is kept, encrypted by the vault cipher, in the record `deferred-desktop-<account id>` (its
-  plaintext values under the "portable" key), and the row carries flags["deferred_desktop"]: "waiting"
-  (no usable profile yet: never read, not switchable) or "newer" (a usable older profile stays in use
-  meanwhile). The engine tick's `_convert_deferred` (convert_deferred here) finishes them later.
+- Claude Desktop: left out. This build does not manage Claude Desktop, so nothing of such an account is
+  stored: no row, no sign-in, no history. The preview and the result say how many were left out.
 - An account `live_on_pc` (still signed in on the PC): a row with owner ON_PC ("on_pc") and its history,
   without any secret. Such a row is never read, refreshed or switched: Engine.targets skips it
-  (readable), check_action refuses account actions naming it, and its flags keep it out of switching and
-  terminal auto-switch. A hand-over bundle fills it: the row gets its sign-in and becomes "v2".
+  (core.is_frozen), check_action refuses account actions naming it, and its flags keep it out of switching
+  and terminal auto-switch. A hand-over bundle fills it: the row gets its sign-in and becomes "v2".
 
 The confirmation code is move_bundle.code_for_imported over the accounts this run stored, so it
-exists only when every account was stored (a deferred Desktop account and an "on_pc" row count). It is kept
-in the encrypted ledger record `move-import` and shown in the state until dismissed; it never goes into
-logs, events or error messages. Neither does any token, cookie or the passphrase.
+exists only when every account in the bundle was stored (an "on_pc" row counts). A bundle that holds a
+Claude Desktop account therefore never gets a code: the PC is never told that an account it still holds
+alone arrived here. The code is kept in the encrypted ledger record `move-import` and shown in the state
+until dismissed; it never goes into logs, events or error messages. Neither does any token or the
+passphrase.
 """
 from __future__ import annotations
 
 import copy
 import json
 import math
-from pathlib import Path
-import sqlite3
 import threading
 import time
 import weakref
 
-from . import config, move_bundle as mb
+from . import config, contract, move_bundle as mb
 from .config import SafetyViolation
 from .core import ON_PC_MESSAGE, DeckError, is_frozen
 from .diagnostics import account_ref, log
 from .operations import Operation
 from .procs import is_test_owned_path
 from .providers import codex as codex_module
-from .providers.chromium_crypto import ChromiumKeyNotReady
 from .providers.claude_cli import expires as cli_expires, fingerprint as cli_fingerprint
-from .providers.claude_portable import PORTABLE_FORMAT, PortableError, cookie_template, from_portable, meta_version
 
 ON_PC = "on_pc"
 IMPORTED_FROM = "pc"
 IMPORT_KIND, PREVIEW_KIND, DISMISS_KIND = "import-bundle", "import-bundle-preview", "import-bundle-dismiss"
 LEDGER_KEY = "move-import"
-DEFERRED_PREFIX = "deferred-desktop-"
 GENERATION_SOURCE = "import-pc"
 MIN_SCRYPT_N = mb.SCRYPT_MIN_N           # tests lower it together with the scrypt cost of the bundles they seal
 IMPORT_WAIT = 30.0                       # how long `import-bundle` waits for its operation before answering
 LEDGER_KEEP = 10
 SNAPSHOT_DAYS, READING_DAYS, REFILL_DAYS = 90, 7, 30   # what core.Store keeps
 # A main bundle's settings replace this Mac's. These are the words the preview and the result use for each
-# one that changes (every key of move_bundle.PORTABLE_SETTINGS, in the order they are listed).
+# one that changes: every key of move_bundle.PORTABLE_SETTINGS this build still has, in the order they are
+# listed. A bundle's setting that this build does not have (Claude Desktop's) is dropped (_portable).
 SETTING_NAMES = {
     "cli_autoswitch": "automatic terminal switching", "cli_threshold": "the switch point",
     "cli_order": "the switching order", "cli_manual_order": "your own account order",
     "cli_early_switch": "early switching for weekly allowance", "pinned_model": "the pinned model",
     "use_soon": "using expiring quota first", "confirm_when_idle": "asking before a switch when Claude is idle",
     "usage_display": "showing usage as used or left", "sort": "account sorting", "density": "cards or rows",
-    "show_other_limits": "showing other limits", "cookie_route": "the Claude Desktop web check",
+    "show_other_limits": "showing other limits",
     "alerts_enabled": "alerts", "alert_low_left": "the low-limit alert level", "quiet_hours": "quiet hours",
     "notify_reset_minutes": "the reset notice time", "notifications": "notifications",
     "refresh_paused": "paused usage checks", "log_level": "log detail",
 }
 _DAY = 86400
-# Deferred conversion back-off (seconds). A missing key or template is cheap to look for again (no dialog);
-# a refused or locked Keychain read may have shown macOS's access dialog, so each such wait doubles.
-CHECK_EVERY = 60.0
-REFUSED_FIRST, REFUSED_MAX = 600.0, 6 * 3600.0
-FAILED_RETRY = 6 * 3600.0
 LEDGER_RETRY = 60.0
 
 CANCEL_HINT = "Use Cancel move on the PC and export again."
 CODE_HINT = "Type this code on the PC to finish the move there."
-WAITING_REFUSED = "Open Claude Desktop once on this Mac to finish importing this account."
+LEFT_OUT = "This version of AccountDeck does not manage Claude Desktop."
+NO_CODE = ("There is no confirmation code, because the code covers every account in the bundle. The PC keeps "
+           "its accounts: use Cancel move there.")
 REASONS = {
     "identity": "Its sign-in in the bundle belongs to another account.",
     "damaged": "Its sign-in in the bundle is damaged.",
@@ -92,11 +83,11 @@ REASONS = {
     "history": "Its sign-in was saved, but its usage history could not be copied.",
 }
 ON_PC_ALLOWED = frozenset({"rename", "remove"})       # the only actions that may name an "on_pc" account
-OUTCOMES = ("new", "updated", "filled", "kept", "on_pc", "deferred", "failed")
+OUTCOMES = ("new", "updated", "filled", "kept", "on_pc", "left_out", "failed")
 _NOTES = {"new": "Brought over.", "updated": "Already here; it now has the newer sign-in from the PC.",
           "filled": "Its sign-in from the PC is now saved here.", "kept": "Already here; the newer sign-in here is kept.",
           "on_pc": "Still signed in on the PC: listed here with its history, without its sign-in.",
-          "deferred": "Saved. It finishes importing once Claude Desktop has been opened on this Mac."}
+          "left_out": f"Left out. {LEFT_OUT}"}
 _NO_HISTORY = " Its usage history could not be copied."
 
 
@@ -130,12 +121,16 @@ def open_file(path, passphrase, *, paths, expect_kind=None):
 
 def _plan(engine, header, payload, ledger_entry):
     """[(account, row here or None, action, reason)] in bundle order. action: "new", "update", "on_pc"
-    (listed without a sign-in), "fill" (a waiting "on_pc" row gets its sign-in) or "refused" (a hand-over
-    account no waiting row matches)."""
+    (listed without a sign-in), "fill" (a waiting "on_pc" row gets its sign-in), "refused" (a hand-over
+    account no waiting row matches) or "left_out" (an account of a client this build does not manage:
+    Claude Desktop; nothing of it is stored)."""
     done = set((ledger_entry or {}).get("accounts") or ())
     started = (ledger_entry or {}).get("started") or {}
     plan = []
     for account in payload["accounts"]:
+        if account["provider"] not in contract.PROVIDERS:
+            plan.append((account, None, "left_out", LEFT_OUT))
+            continue
         row = engine.store.find(account["provider"], account["identity"])
         if header.kind == "handover":
             if row is not None and row["owner"] == ON_PC:
@@ -154,13 +149,9 @@ def _plan(engine, header, payload, ledger_entry):
     return plan
 
 
-def _template_ready(engine):
-    """Whether Claude Desktop on this computer has created the cookie database a conversion needs. Reads no
-    Keychain item."""
-    try:
-        return _template_path(engine.providers["claude"]).is_file()
-    except (OSError, DeckError):
-        return False
+def _portable(settings):
+    """The bundle's settings this build has, checked. A setting only Claude Desktop used is dropped."""
+    return config.validate_settings({key: value for key, value in settings.items() if key in SETTING_NAMES})
 
 
 def _settings_here(settings, mapping):
@@ -186,24 +177,18 @@ def preview(engine, path, passphrase):
     """The `import-bundle-preview` payload (see the module docstring). Writes nothing."""
     header, payload = open_file(path, passphrase, paths=engine.paths)
     plan = _plan(engine, header, payload, _ledger(engine).entry(header.bundle_id))
-    template = _template_ready(engine)
-    accounts, counts = [], {"new": 0, "update": 0, "on_pc": 0, "fill": 0, "refused": 0, "deferred": 0}
+    accounts, counts = [], {"new": 0, "update": 0, "on_pc": 0, "fill": 0, "refused": 0, "left_out": 0}
     for account, row, action, reason in plan:
         counts[action] += 1
-        desktop = None
-        if account["provider"] == "claude" and "secret" in account and action != "refused":
-            desktop = "now" if template else "deferred"
-            counts["deferred"] += desktop == "deferred"
         accounts.append({"id": account["id"], "provider": account["provider"], "label": _label(account),
-                         "plan": account["plan"], "action": action, "desktop": desktop,
+                         "plan": account["plan"], "action": action,
                          "conflict": row["label"] if row is not None and action == "update" else None,
                          "reason": reason})
     refused = counts["refused"] > 0
     # An account not saved here yet gets its id at the import; the PC's id stands in for it, so a manual
     # order that names it counts as changed.
     mapping = {account["id"]: account["id"] if row is None else row["id"] for account, row, _action, _reason in plan}
-    settings = [] if refused else _settings_changed(
-        engine, _settings_here(config.validate_settings(payload["settings"]), mapping))
+    settings = [] if refused else _settings_changed(engine, _settings_here(_portable(payload["settings"]), mapping))
     log("move.import_preview", kind=header.kind, accounts=len(accounts), refused=counts["refused"])
     return {"bundle_id": header.bundle_id, "kind": header.kind, "created": header.created,
             "source_platform": payload["source_platform"], "accounts": accounts, "counts": counts,
@@ -224,12 +209,18 @@ def _preview_message(kind, counts, refused, settings):
         if counts["on_pc"]:
             parts.append(f"{_count(counts['on_pc'], 'account')} still signed in on the PC will be listed here "
                          "without a sign-in.")
-    if counts["deferred"]:
-        parts.append(f"Claude Desktop is not set up on this Mac yet, so {_count(counts['deferred'], 'Claude Desktop account')} "
-                     "will finish importing once you open it here.")
     if settings:
         parts.append(f"{_count(len(settings), 'setting')} on this Mac will change to match the PC: {_listed(settings)}.")
+    if counts["left_out"]:
+        parts.append(_left_out(counts["left_out"], "will be") + " There will be no confirmation code, so the PC "
+                     "keeps its accounts.")
     return " ".join(parts)
+
+
+def _left_out(count, verb):
+    """"2 Claude Desktop accounts were left out. This version …": `verb` is "was" or "will be"."""
+    verb = {"was": _verb(count, "was"), "will be": "will be"}[verb]
+    return f"{_count(count, 'Claude Desktop account')} {verb} left out. {LEFT_OUT}"
 
 
 # ---- the import ----
@@ -247,12 +238,12 @@ class ImportBundle(Operation):
         if refused:
             raise DeckError(f"{_count(refused, 'account')} in this hand-over bundle {_verb(refused, 'is')} not waiting "
                             "on this Mac. Import the main move bundle first. Nothing was imported.", "invalid")
-        steps = [(f"account-{number}", f"Bringing over {_label(account)}")
-                 for number, (account, _row, _action, _reason) in enumerate(plan, 1)]
+        steps = [(f"account-{number}", f"{'Leaving out' if action == 'left_out' else 'Bringing over'} {_label(account)}")
+                 for number, (account, _row, action, _reason) in enumerate(plan, 1)]
         super().__init__(IMPORT_KIND, steps=steps + [("finish", "Finishing the move")])
         self.cancellable = False     # accounts are saved one by one; a cancel could not say nothing changed
         self.engine, self.header, self._plan = engine, header, plan
-        self._settings = config.validate_settings(payload["settings"])
+        self._settings = _portable(payload["settings"])
         self.result = None
 
     def run(self):
@@ -264,8 +255,12 @@ class ImportBundle(Operation):
         try:
             self.set_phase("saving", "Bringing over your accounts from the PC…")
             importer = _Importer(engine, self.clock)
-            for number, (account, _row, _action, _reason) in enumerate(self._plan, 1):
+            for number, (account, _row, action, _reason) in enumerate(self._plan, 1):
                 with self.step(f"account-{number}"):
+                    if action == "left_out":       # never stored, so it is never in `stored` and no code is made
+                        counts["left_out"] += 1
+                        self.note(_NOTES["left_out"], status="warning")
+                        continue
                     if header.kind == "handover":
                         _ledger(engine).begin_account(header, account["id"], _row["id"], self.clock())
                     outcome, key, reason, history = importer.bring_over(account)
@@ -290,14 +285,14 @@ class ImportBundle(Operation):
                 entry = _ledger(engine).record(header, at=self.clock(), code=code, counts=counts, failures=failures,
                                               mapping=mapping)
                 self.result = _entry_public(entry)
-                ready = [key for key in mapping.values() if readable(engine.store.account(key))]
+                ready = [key for key in mapping.values() if not is_frozen(engine.store.account(key))]
                 engine.scheduler.request_all(ready, self.clock())
         finally:
             self._plan = None        # drops the decrypted payload
             self._settings = None
         self.report["summary"] = _summary(header.kind, counts, failures, code, changed)
         log("move.import_done", kind=header.kind, stored=len(stored), failed=len(failures),
-            deferred=counts["deferred"], on_pc=counts["on_pc"], complete=code is not None,
+            left_out=counts["left_out"], on_pc=counts["on_pc"], complete=code is not None,
             ms=round((time.monotonic() - began) * 1000))
         if failures:     # the operation ends as failed; `result` (and the ledger) still list what was stored
             raise DeckError(self.report["summary"], "invalid")
@@ -353,7 +348,6 @@ class _Importer:
             return
         try:
             self.vault.remove(key)
-            self.vault.remove(DEFERRED_PREFIX + key)
             self.store.remove(key)
         except Exception as exc:
             log("move.import_cleanup", "warning", error_type=type(exc).__name__)
@@ -380,19 +374,12 @@ class _Importer:
             row = self.store.account(row["id"])
         waiting = row["owner"] == ON_PC
         with _account_lock(self.engine, row["id"]):
-            if provider == "claude":
-                outcome = self._desktop(row, account)
-            elif provider == "claude_cli":
-                outcome = self._terminal(row, account)
-            else:
-                outcome = self._codex(row, account)
+            outcome = self._terminal(row, account) if provider == "claude_cli" else self._codex(row, account)
             if waiting:
                 self.store.update(row["id"], owner="v2")
         if self.created is not None:
-            return ("deferred" if outcome == "deferred" else "new"), row["id"]
-        if waiting and outcome != "deferred":
-            outcome = "filled"
-        return outcome, row["id"]
+            return "new", row["id"]
+        return ("filled" if waiting else outcome), row["id"]
 
     def _create(self, account):
         key = self.store.save_account(account["provider"], account["identity"], _label(account), account["email"],
@@ -452,31 +439,6 @@ class _Importer:
         self.store.update(key, flags=dict(self.store.account(key)["flags"], restorable=True), error=None, error_code=None)
         return "updated"
 
-    # ---- Claude Desktop: convert now, or keep the portable profile for later ----
-    def _desktop(self, row, account):
-        portable = account["secret"]["data"]
-        _check_portable(portable, row["identity"])
-        key = row["id"]
-        incoming = _captured(portable["profile"])
-        own = _usable_profile(_vault_record(self.vault, key))
-        waiting = _vault_record(self.vault, DEFERRED_PREFIX + key)
-        held = [_captured(own)] if own is not None else []
-        if _is_deferred(waiting):
-            held.append(_captured(waiting["portable"]["profile"]))
-        if held and max(held) >= incoming:                  # the newer copy is here already
-            return "kept" if own is not None and _captured(own) >= max(held) else "deferred"
-        converted = _convert(self.engine, portable)
-        if converted is not None:
-            _store_converted(self.engine, self.store.account(key), converted, own)
-            return "updated"
-        self.vault.put(DEFERRED_PREFIX + key, {"version": 1, "identity": row["identity"], "captured": incoming,
-                                               "portable": portable}, generation=False)
-        flags = dict(self.store.account(key)["flags"], deferred_desktop="newer" if own is not None else "waiting")
-        if own is None:
-            flags["restorable"] = False
-        self.store.update(key, flags=flags)
-        return "deferred"
-
 
 def _terminal_record(account, row, now):
     """The bundle's Claude Code record in the vault shape cli_accounts writes, or _Refused. The login's
@@ -526,209 +488,16 @@ def _terminal_time(record):
     return max((value for value in values if _is_number(value)), default=0.0)
 
 
-def _check_portable(portable, identity):
-    if not isinstance(portable, dict):
-        raise _Refused("damaged")
-    if portable.get("format") != PORTABLE_FORMAT:
-        raise _Refused("unsupported" if "format" in portable else "damaged")
-    profile = portable.get("profile")
-    if not isinstance(profile, dict) or not isinstance(portable.get("auth"), dict):
-        raise _Refused("damaged")
-    if profile.get("identity") != identity or portable["auth"].get("lastKnownAccountUuid", identity) != identity:
-        raise _Refused("identity")
-
-
-def _usable_profile(record):
-    return record if isinstance(record, dict) and isinstance(record.get("auth"), dict) and record.get("key") else None
-
-
-def _is_deferred(record):
-    return (isinstance(record, dict) and isinstance(record.get("portable"), dict)
-            and isinstance(record["portable"].get("profile"), dict))
-
-
-# ---- Claude Desktop conversion (now, or later from the tick) ----
-
-def _template_path(claude):
-    path = Path(claude.cookie_dir) / claude.scope.cookie_files[0]
-    if config.safe_mode() and not is_test_owned_path(path):
-        raise SafetyViolation("Safe mode: AccountDeck 2 reads only a synthetic Claude Desktop folder.")
-    return path
-
-
-def _template(claude):
-    """(cookie database bytes, meta version) that Claude Desktop made on this computer, or None while there
-    is none or it cannot be read yet. Reads no Keychain item."""
-    path = _template_path(claude)
-    if not path.is_file():
-        return None
-    try:
-        data = cookie_template(path)
-        return data, meta_version(data)
-    except (PortableError, sqlite3.Error, OSError, ValueError) as exc:
-        log("move.template_unreadable", "warning", error_type=type(exc).__name__)
-        return None
-
-
-class _NotReady(Exception):
-    """The key or the template is not available yet; `reason` says which (it picks the back-off)."""
-
-    def __init__(self, reason):
-        super().__init__(reason)
-        self.reason = reason
-
-
-def _convert(engine, portable):
-    """The converted profile, or None when it must wait (no template yet, key not ready, or a profile that
-    cannot be converted now; the tick tries again later)."""
-    runtime = _runtime(engine)
-    if engine.clock() < runtime.next_at and runtime.reason not in (None, "template", "missing"):
-        return None                  # a refused Keychain read is not asked again before its back-off ends
-    try:
-        return _convert_now(engine.providers["claude"], portable)
-    except _NotReady as exc:
-        runtime.not_ready(exc.reason, engine.clock())
-        return None
-    except PortableError as exc:
-        log("move.convert_failed", "warning", code=exc.code)
-        runtime.problem = str(exc)
-        return None
-
-
-def _convert_now(claude, portable):
-    """from_portable with this computer's key and Claude Desktop's own cookie database: _NotReady while
-    either is missing, PortableError when the profile cannot be converted."""
-    found = _template(claude)
-    if found is None:
-        raise _NotReady("template")
-    template, version = found
-    crypto = claude.crypto
-    try:
-        crypto.key_ref()
-        return from_portable(portable, crypto, version, template=template)
-    except ChromiumKeyNotReady as exc:
-        raise _NotReady(exc.reason) from None
-    except PortableError:
-        raise
-    except DeckError as exc:            # e.g. a key this crypto cannot use yet
-        raise _NotReady(exc.code) from None
-
-
-def _store_converted(engine, row, profile, own):
-    """Saves a converted profile as the account's current one unless `own` (the usable profile held) is
-    newer, then clears the deferred state. Caller holds the account lock."""
-    key, store, vault = row["id"], engine.store, engine.vault
-    if own is None or _captured(profile) > _captured(own):
-        try:
-            health = engine.providers["claude"].health(profile)
-        except DeckError:
-            health = "unreadable"
-        digest = vault.put(key, profile)
-        store.record_generation(key, digest, source=GENERATION_SOURCE, health=health, at=_captured(profile) or None)
-    flags = dict(store.account(key)["flags"])
-    flags.pop("deferred_desktop", None)
-    current = _usable_profile(_vault_record(vault, key))
-    flags["restorable"] = bool(current is not None and current.get("cookies"))
-    store.update(key, flags=flags, error=None, error_code=None)
-    vault.remove(DEFERRED_PREFIX + key)
-
-
-def convert_deferred(engine, now):
-    """The tick phase (`Engine._convert_deferred`): converts deferred Claude Desktop profiles once this
-    computer's key and Claude Desktop's cookie database are available. Its own back-off gates every
-    attempt, and ChromiumCryptoMac also remembers a failed Keychain read, so a missing or refused key
-    never turns into repeated access dialogs."""
-    runtime = _runtime(engine)
-    if now < runtime.next_at or engine.runner.busy or not engine.owns_login:
-        return
-    rows = [row for row in engine.store.accounts()
-            if row["provider"] == "claude" and not is_frozen(row) and row["flags"].get("deferred_desktop")]
-    if not rows:
-        runtime.reset(now)
-        return
-    claude, converted = engine.providers["claude"], 0
-    with runtime.lock:
-        for row in rows:
-            if now < runtime.row_retry.get(row["id"], 0):
-                continue
-            with _account_lock(engine, row["id"]):
-                current = engine.store.account(row["id"])      # re-read under the lock
-                if current is None or is_frozen(current) or not current["flags"].get("deferred_desktop"):
-                    continue
-                record = _vault_record(engine.vault, DEFERRED_PREFIX + current["id"])
-                own = _usable_profile(_vault_record(engine.vault, current["id"]))
-                if not _is_deferred(record):
-                    _clear_lost(engine, current, own)
-                    continue
-                try:
-                    profile = _convert_now(claude, record["portable"])
-                except _NotReady as exc:
-                    runtime.not_ready(exc.reason, now)
-                    log("move.convert_waiting", reason=exc.reason)
-                    break
-                except PortableError as exc:
-                    runtime.row_retry[row["id"]] = now + FAILED_RETRY
-                    runtime.problem = str(exc)
-                    log("move.convert_failed", "warning", acct=account_ref(row["id"]), code=exc.code)
-                    continue
-                _store_converted(engine, current, profile, own)
-                converted += 1
-                engine.scheduler.request(row["id"], now)
-                log("move.converted", acct=account_ref(row["id"]))
-        else:
-            runtime.reset(now)
-    if converted:
-        engine.notice(f"Finished importing {_count(converted, 'Claude Desktop account')} from the PC.", "good")
-        engine.bump()
-
-
-def _clear_lost(engine, row, own):
-    """A deferred flag whose record is gone: the row keeps whatever usable profile it has."""
-    flags = dict(row["flags"])
-    flags.pop("deferred_desktop", None)
-    flags["restorable"] = bool(own is not None and own.get("cookies"))
-    engine.store.update(row["id"], flags=flags)
-    log("move.deferred_lost", "warning", acct=account_ref(row["id"]))
-
-
-class _Runtime:
-    """Per engine, in memory: the ledger cache and the deferred conversion back-off."""
-
-    def __init__(self, engine):
-        self.lock = threading.RLock()
-        self.ledger = _LedgerStore(engine.vault, engine.clock)
-        self.next_at = 0.0
-        self.refused_delay = REFUSED_FIRST
-        self.row_retry = {}
-        self.reason = None          # why the last attempt waited: "template", "missing", "locked", …
-        self.problem = None         # the last conversion failure (names a cookie or key, never a value)
-
-    def not_ready(self, reason, now):
-        self.reason = reason
-        if reason in ("template", "missing", "not_installed", "unsupported"):
-            self.next_at = now + CHECK_EVERY
-        else:                        # refused, locked or failed: the Keychain may have asked the owner
-            self.next_at = now + self.refused_delay
-            self.refused_delay = min(self.refused_delay * 2, REFUSED_MAX)
-
-    def reset(self, now):
-        self.next_at, self.refused_delay, self.reason = now + CHECK_EVERY, REFUSED_FIRST, None
-
-
-_runtimes = weakref.WeakKeyDictionary()
-_runtimes_lock = threading.Lock()
-
-
-def _runtime(engine):
-    with _runtimes_lock:
-        found = _runtimes.get(engine)
-        if found is None:
-            found = _runtimes[engine] = _Runtime(engine)
-        return found
+_ledgers = weakref.WeakKeyDictionary()      # per engine, in memory: the ledger cache
+_ledgers_lock = threading.Lock()
 
 
 def _ledger(engine):
-    return _runtime(engine).ledger
+    with _ledgers_lock:
+        found = _ledgers.get(engine)
+        if found is None:
+            found = _ledgers[engine] = _LedgerStore(engine.vault, engine.clock)
+        return found
 
 
 class _account_lock:
@@ -837,6 +606,10 @@ def _entry_public(entry):
     elif failures:
         message = (f"{_count(len(failures), 'account')} could not be imported, so there is no confirmation code. "
                    f"{CANCEL_HINT}")
+    elif counts["left_out"]:
+        saved = sum(counts[key] for key in ("new", "updated", "filled", "kept", "on_pc"))
+        message = (f"{_left_out(counts['left_out'], 'was')} "
+                   f"{'The other accounts are saved on this Mac. ' if saved else ''}{NO_CODE}")
     else:
         message = "This import has not finished. Import the same bundle again to resume it."
     return {"bundle_id": entry.get("bundle_id"), "kind": entry.get("kind"), "at": entry.get("at"),
@@ -854,19 +627,10 @@ def dismiss(engine, bundle_id):
 
 # ---- what the engine asks ----
 
-def readable(row):
-    """False for a row that must never be read: "on_pc", or a Claude Desktop account whose only profile
-    still waits for conversion."""
-    if row is None:
-        return False
-    return row["owner"] != ON_PC and (row.get("flags") or {}).get("deferred_desktop") != "waiting"
-
-
 def check_action(engine, name, body):
-    """Refuses an account action naming an "on_pc" row (only rename and remove may), and the reads and
-    switches of a Claude Desktop account still waiting for conversion. True when it carried the action
-    out itself: renaming an "on_pc" Claude Code row, which has no saved sign-in for CLIAccounts.rename
-    to relabel."""
+    """Refuses an account action naming an "on_pc" row (only rename and remove may). True when it carried
+    the action out itself: renaming an "on_pc" Claude Code row, which has no saved sign-in for
+    CLIAccounts.rename to relabel."""
     key = body.get("id") if isinstance(body, dict) else None
     if not isinstance(key, str) or not key:
         return False
@@ -879,43 +643,15 @@ def check_action(engine, name, body):
             return True
         if name not in ON_PC_ALLOWED:
             raise DeckError(ON_PC_MESSAGE, "invalid")
-        return False
-    if row["flags"].get("deferred_desktop") == "waiting" and name in ("refresh", "switch-plan", "switch"):
-        raise DeckError(WAITING_REFUSED, "login_needed")
     return False
-
-
-def _waiting_desktop(rows):
-    return sum(1 for row in rows if row["provider"] == "claude" and row["flags"].get("deferred_desktop"))
 
 
 def state(engine, rows=None):
     """The `move_import` block of /api/state: {"imports": [undismissed imports, newest first, as
-    _entry_public], "deferred": {"count", "message", "reason", "problem"}, "on_pc": count}."""
+    _entry_public], "on_pc": count}."""
     rows = engine.store.accounts() if rows is None else rows
-    waiting, runtime = _waiting_desktop(rows), _runtime(engine)
-    imports = [_entry_public(item) for item in reversed(runtime.ledger.entries()) if not item.get("dismissed")]
-    return {"imports": imports,
-            "deferred": {"count": waiting, "message": deferred_message(waiting),
-                         "reason": runtime.reason if waiting else None,
-                         "problem": runtime.problem if waiting else None},
-            "on_pc": sum(1 for row in rows if row["owner"] == ON_PC)}
-
-
-def deferred_message(count):
-    if not count:
-        return None
-    return f"Open Claude Desktop once on this Mac to finish importing {_count(count, 'account')}."
-
-
-def banners(rows):
-    """[banner] for Engine._banners: Claude Desktop accounts (`rows` are the store's) waiting for Claude
-    Desktop on this Mac."""
-    waiting = _waiting_desktop(rows)
-    if not waiting:
-        return []
-    return [{"kind": "move_import", "title": "Finish importing Claude Desktop accounts",
-             "message": deferred_message(waiting), "actions": [], "provider": "claude", "link": None}]
+    imports = [_entry_public(item) for item in reversed(_ledger(engine).entries()) if not item.get("dismissed")]
+    return {"imports": imports, "on_pc": sum(1 for row in rows if row["owner"] == ON_PC)}
 
 
 def start_import(engine, body):
@@ -975,11 +711,6 @@ def _vault_record(vault, key):
         return None
 
 
-def _captured(profile):
-    value = (profile or {}).get("captured")
-    return float(value) if _is_number(value) else 0.0
-
-
 def _is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -1003,7 +734,7 @@ def _verb(number, verb):
 def _summary(kind, counts, failures, code, settings):
     """The operation's summary, which the engine also files as an event: never the code. `settings` names
     this Mac's settings the import changed."""
-    stored = sum(counts[key] for key in ("new", "updated", "filled", "kept", "deferred"))
+    stored = sum(counts[key] for key in ("new", "updated", "filled", "kept"))
     if kind == "handover":
         text = f"Took over {_count(stored, 'account')} handed over from the PC."
     else:
@@ -1013,8 +744,8 @@ def _summary(kind, counts, failures, code, settings):
                      f"{_verb(counts['on_pc'], 'is')} listed without a sign-in.")
     if failures:
         return f"{text} {_count(len(failures), 'account')} could not be imported. {CANCEL_HINT}"
-    if counts["deferred"]:
-        text += " " + deferred_message(counts["deferred"])
     if settings:
         text += f" {_count(len(settings), 'setting')} now {'matches' if len(settings) == 1 else 'match'} the PC: {_listed(settings)}."
+    if counts["left_out"]:
+        return f"{text} {_left_out(counts['left_out'], 'was')} {NO_CODE}"
     return text + (" The confirmation code is shown on the dashboard." if code else "")

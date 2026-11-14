@@ -21,6 +21,5 @@ tests-only | accountdeck/server.py::do_GET | http.server calls it for every GET 
 tests-only | accountdeck/server.py::log_message | overrides http.server's request log so nothing is printed
 
 # Controls of the fake machine that tests drive.
-tests-only | accountdeck/procs.py::set_session_status | test control of the fake process table: makes a session busy or idle
 tests-only | accountdeck/procs.py::exit_process | test control of the fake process table: ends a process
 tests-only | accountdeck/providers/http.py::unregister_test_host | undoes register_test_host, the only way a safe-mode test reaches a loopback server

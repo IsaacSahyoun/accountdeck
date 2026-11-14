@@ -16,8 +16,14 @@ from .file_switch import FileSwitch, hold_checks
 from .platform import facts_mac
 from .procs import ProcessSet, unix_time
 from .providers.codex import RPC, Codex, daemon_settings, freshness, identity_key, token_state
-from .sessions import valid_uuid
 from .switching import DryRun, QuickOp, assemble, claim, context, note, register, submit
+
+
+def _valid_uuid(value):
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 def processes(ctx):
@@ -66,19 +72,16 @@ def build_plan(ctx, account, purpose="switch", *, ignore_op=None):
             ctx.codex.restore(profile, DryRun())
     except DeckError as exc:
         blockers.append(note(exc.code, str(exc)))
-    running = {"desktop": False, "sessions": [], "busy": 0, "unknown": 0, "foreign_claude": 0,
-               "codex_consumers": [{"pid": r.pid, "kind": r.kind.removeprefix("codex_"),
-                                    "started": unix_time(r.ctime),
-                                    "parent": None} for r in consumers]}
+    open_now = [{"pid": r.pid, "kind": r.kind.removeprefix("codex_"), "started": unix_time(r.ctime), "parent": None}
+                for r in consumers]
     saved = current is not None and not current["saved"] and purpose == "switch"
     result = assemble(ctx, provider="codex", purpose=purpose, account=account, target=plan_target(target) if target else None,
-                      current=plan_current(current) if current else None, headroom=None, running=running,
-                      pairs=found.pairs, blockers=blockers, warnings=[], tip=None,
+                      current=plan_current(current) if current else None, consumers=open_now,
+                      pairs=found.pairs, blockers=blockers, warnings=[],
                       will=(["Wait for Codex sessions to close.", "Save the outgoing sign-in.",
                              "Replace only auth.json and verify the selected account."] if purpose == "switch" else
                             ["Use an isolated sign-in folder. The current Codex sign-in stays in place."]),
-                      preserved=["Configuration, MCP servers, plugins and session history"], account_bound=[],
-                      invisible=None, stop_tier="not_running", saves_outgoing=saved)
+                      preserved=["Configuration, MCP servers, plugins and session history"], saves_outgoing=saved)
     result.entry["identity"] = engine.active_identity["codex"]
     return result
 
@@ -181,7 +184,7 @@ def dispatch(engine, name, body):
         return submit(ctx, claimed, QuickOp("recover", recover, provider="codex", message="Recovering Codex…",
                                            step=("recover", "Restoring the previous sign-in")))
     if name in ("add", "finish-login", "cancel-login"):
-        claimed = claim(ctx, name, body, provider="codex", build=build_plan, families=ctx.paths.codex_families)
+        claimed = claim(ctx, name, body, provider="codex", build=build_plan)
         def login_action():
             if name == "add":
                 flow = Enrollment(ctx, device=body.get("device_code") is True or body.get("method") == "device_code")
@@ -201,7 +204,7 @@ def dispatch(engine, name, body):
                                            step=("login", "Codex sign-in")))
     if name in ("switch", "capture"):
         claimed = claim(ctx, name, body, account=account if name == "switch" else None,
-                        provider="codex", build=build_plan, families=ctx.paths.codex_families)
+                        provider="codex", build=build_plan)
         if name == "switch":
             return submit(ctx, claimed, CodexSwitch(ctx, claimed, engine.store.account(account)))
         def capture():
@@ -213,7 +216,7 @@ def dispatch(engine, name, body):
         if engine.read_only or engine.pending or engine.recovery:
             raise DeckError("Finish the current action before opening Codex.", "busy")
         session = body.get("session")
-        if session is not None and not valid_uuid(session):
+        if session is not None and not _valid_uuid(session):
             raise DeckError("Choose a valid session.", "invalid")
         ctx.procs.launch_codex(ctx.codex.executable(), ctx.paths.codex_home, ctx.settings.get("cwd"), session)
         return {}
@@ -222,7 +225,7 @@ def dispatch(engine, name, body):
         if not entry or entry["provider"] != "codex" or engine.clock() >= entry["expires"]:
             raise DeckError("Review the Codex switch again.", "stale_plan")
         claimed = claim(ctx, entry["purpose"], {**body, "consent": "now"}, account=entry["account"],
-                        provider="codex", build=build_plan, families=ctx.paths.codex_families)
+                        provider="codex", build=build_plan)
         row = next((r for r in ctx.procs.codex_consumers() if r.pid == body.get("pid")), None)
         if row is None:
             raise DeckError("That Codex session has ended.", "not_found")
@@ -248,8 +251,7 @@ class Enrollment:
             from .config import Paths
             from .providers.fake import build_fake_home
             fake = Paths.synthetic(self.home / "synthetic")
-            build_fake_home(fake, claude_identity=str(uuid.uuid4()), claude_org=str(uuid.uuid4()),
-                            codex_identity=str(uuid.uuid4()))
+            build_fake_home(fake, codex_identity=str(uuid.uuid4()))
             self.adapter = Codex(fake, ctx.procs)
             return
         try:

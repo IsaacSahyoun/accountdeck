@@ -100,12 +100,11 @@
     }
   }
 
-  /** Only problems show: a healthy provider needs no pill. The terminal provider reports the shared
-   * Claude status; the Desktop entry stands in when it is absent. */
+  /** Only problems show: a healthy provider needs no pill. The pill is Claude's status, which the terminal
+   * provider reports. */
   function renderPills(state) {
-    const providers = state.providers || {};
-    const candidates = ['claude_cli', 'claude'].map((id) => providers[id] && providers[id].status).filter(Boolean);
-    const status = candidates.find((s) => s.level === 'outage') || candidates.find((s) => s.level === 'degraded') || null;
+    const found = ((state.providers || {}).claude_cli || {}).status;
+    const status = found && (found.level === 'outage' || found.level === 'degraded') ? found : null;
     const sig = status ? `${status.level}|${status.summary}|${status.url}` : '';
     if (sig === pillSig) return;
     pillSig = sig;

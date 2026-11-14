@@ -164,18 +164,6 @@ class Vault:
             found.append({"n": n, "at": at, "digest": _blob_digest(raw)})
         return found
 
-    def newest_good(self, key, is_good):
-        """(n, profile) of the newest generation that decrypts and satisfies is_good(profile), or
-        None. Restores prefer it, so one bad capture never strands an account."""
-        for generation in self.generations(key):
-            try:
-                profile = self.get(key, generation["n"])
-            except DeckError:
-                continue
-            if is_good(profile):
-                return generation["n"], profile
-        return None
-
     def put_guarded(self, key, incoming, source, identity_of, freshness_of, *, expected=None):
         """Freshness-guarded overwrite for rotating credentials (Codex, A9).
 
@@ -405,12 +393,18 @@ class Store:
 
     No credentials or raw provider payloads enter this database: `last_good_usage` holds the last
     successful normalized reading and every other column is metadata. `clock` supplies timestamps
-    (the demo passes its virtual clock)."""
+    (the demo passes its virtual clock).
 
-    def __init__(self, root, *, clock=time.time):
+    `clients` names the clients this build manages. An account of any other client (Claude Desktop, which
+    builds before 2.1 saved) is never returned, counted, reordered, changed or removed: its row stays in the
+    file as that build left it. Its usage history ages out as all history does. None means every row, for a
+    tool that reads the file as it is."""
+
+    def __init__(self, root, *, clock=time.time, clients=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.clock = clock
+        self.clients = None if clients is None else tuple(clients)
         self.lock = threading.RLock()
         self.db = sqlite3.connect(self.root / "accounts.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -430,9 +424,22 @@ class Store:
         """A version before MAX_PAUSE stored whatever pause a provider asked for, years included, and nothing
         reads such an account again to correct it. No saved pause outlasts the cap."""
         limit = self.clock() + MAX_PAUSE
+        clause, values = self._managed()
         with self.lock:
-            self.db.execute("UPDATE accounts SET paused_until=? WHERE paused_until>?", (limit, limit))
+            self.db.execute("UPDATE accounts SET paused_until=? WHERE paused_until>? AND " + clause, (limit, limit, *values))
             self.db.commit()
+
+    def _managed(self):
+        """(an SQL test, its values) that is true for an account row of a client this build manages."""
+        if self.clients is None:
+            return "1", ()
+        return f"provider IN ({', '.join('?' * len(self.clients))})", self.clients
+
+    def _foreign(self, key):
+        """True when `key` is the account of a client this build does not manage. No write reaches such a row."""
+        clause, values = self._managed()
+        with self.lock:
+            return self.db.execute(f"SELECT 1 FROM accounts WHERE id=? AND NOT ({clause})", (key, *values)).fetchone() is not None
 
     def _migrate(self):
         """Create schema v2 in a new folder. One transaction: all or nothing. A schema-v2 database (every
@@ -460,19 +467,22 @@ class Store:
     # ---- accounts ----
     def accounts(self):
         """Every account in creation order per provider; JSON columns decoded (flags defaults to {})."""
+        clause, values = self._managed()
         with self.lock:
-            rows = self.db.execute(_SELECT_ACCOUNTS + " ORDER BY provider, created, rowid").fetchall()
+            rows = self.db.execute(_SELECT_ACCOUNTS + f" WHERE {clause} ORDER BY provider, created, rowid", values).fetchall()
         return [_account(row) for row in rows]
 
     def account(self, key):
+        clause, values = self._managed()
         with self.lock:
-            row = self.db.execute(_SELECT_ACCOUNTS + " WHERE id=?", (key,)).fetchone()
+            row = self.db.execute(_SELECT_ACCOUNTS + f" WHERE id=? AND {clause}", (key, *values)).fetchone()
         return _account(row) if row else None
 
     def find(self, provider, identity):
+        clause, values = self._managed()
         with self.lock:
-            row = self.db.execute(_SELECT_ACCOUNTS + " WHERE provider=? AND identity=?",
-                                  (provider, identity)).fetchone()
+            row = self.db.execute(_SELECT_ACCOUNTS + f" WHERE provider=? AND identity=? AND {clause}",
+                                  (provider, identity, *values)).fetchone()
         return _account(row) if row else None
 
     def save_account(self, provider, identity, label, email="", plan="", org="", *,
@@ -481,6 +491,8 @@ class Store:
         label, owner and position stay). Returns the account id."""
         if owner not in OWNERS:
             raise ValueError(f"Invalid account owner {owner!r}")
+        if self.clients is not None and provider not in self.clients:
+            raise ValueError(f"This build does not manage {provider!r} accounts")
         now = self.clock()
         with self.lock:
             old = self.db.execute("SELECT id FROM accounts WHERE provider=? AND identity=?",
@@ -509,6 +521,8 @@ class Store:
             raise ValueError(f"Invalid account owner {fields['owner']!r}")
         values = [_encode(value) if name in _JSON_COLUMNS else value for name, value in fields.items()]
         with self.lock:
+            if self._foreign(key):
+                return
             self.db.execute("UPDATE accounts SET " + ", ".join(name + "=?" for name in fields) + " WHERE id=?",
                             (*values, key))
             self.db.commit()
@@ -517,8 +531,10 @@ class Store:
         """Manual order: the given accounts first, in that order, then the rest as they were."""
         if len(set(ids)) != len(ids):
             raise DeckError("Each account can appear only once in the order.")
+        clause, values = self._managed()
         with self.lock:
-            existing = [row[0] for row in self.db.execute("SELECT id FROM accounts ORDER BY sort_order, created, rowid")]
+            existing = [row[0] for row in self.db.execute(
+                f"SELECT id FROM accounts WHERE {clause} ORDER BY sort_order, created, rowid", values)]
             if not set(ids) <= set(existing):
                 raise DeckError("That order names an account that no longer exists.")
             order = list(ids) + [key for key in existing if key not in set(ids)]
@@ -528,6 +544,8 @@ class Store:
 
     def remove(self, key):
         with self.lock:
+            if self._foreign(key):
+                return
             self.db.execute("DELETE FROM accounts WHERE id=?", (key,))
             for table in ("snapshots", "readings", "refills", "generations", "alerts"):
                 self.db.execute(f"DELETE FROM {table} WHERE account=?", (key,))
@@ -545,6 +563,8 @@ class Store:
                 for window in usage.get("windows") or ()
                 if isinstance(window, dict) and isinstance(window.get("id"), str) and _is_number(window.get("used"))]
         with self.lock:
+            if self._foreign(key):
+                return
             self.db.execute("UPDATE accounts SET last_good_usage=?, last_good_at=?, error=NULL, error_code=NULL "
                             "WHERE id=?", (payload, at, key))
             self.db.executemany("INSERT INTO readings(account, window_id, at, used, reset) VALUES(?, ?, ?, ?, ?)", rows)
@@ -600,7 +620,7 @@ class Store:
     # ---- vault generation metadata ----
     def record_generation(self, account, digest, *, source, health=None, meta=None, at=None):
         """Non-secret facts about a vault generation (digest from Vault.put): when and how it was
-        captured, its health and e.g. the Desktop version or token-expiry summary in `meta`."""
+        captured, its health and e.g. a token-expiry summary in `meta`."""
         with self.lock:
             self.db.execute("INSERT OR IGNORE INTO generations(account, digest, at, source, health, meta) "
                             "VALUES(?, ?, ?, ?, ?, ?)",
@@ -633,9 +653,11 @@ class Store:
 
     def alerts(self, *, include_dismissed=False, limit=50):
         """Newest first, as the rows the snapshot shows."""
+        clause, values = self._managed()         # an alert about an account that is not listed is not shown
+        mine = f"(account IS NULL OR account NOT IN (SELECT id FROM accounts WHERE NOT ({clause})))"
         with self.lock:
-            rows = self.db.execute("SELECT * FROM alerts" + ("" if include_dismissed else " WHERE dismissed=0")
-                                   + " ORDER BY at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+            rows = self.db.execute("SELECT * FROM alerts WHERE " + mine + ("" if include_dismissed else " AND dismissed=0")
+                                   + " ORDER BY at DESC, id DESC LIMIT ?", (*values, limit)).fetchall()
         return [{"id": f"al_{row['id']}", "kind": row["kind"], "level": row["level"], "account": row["account"],
                  "window": row["window_id"], "title": row["title"], "message": row["message"], "at": row["at"],
                  "snoozed_until": row["snoozed_until"], "dismissed": bool(row["dismissed"])} for row in rows]

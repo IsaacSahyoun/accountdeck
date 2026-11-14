@@ -22,14 +22,9 @@ APP = "accountdeck2"
 DEFAULT_PORT = 53157
 # AccountDeck 1's port: never registered as a test server, so a test can never talk to a v1 left running.
 V1_PORT = 53147
-SYNTHETIC_CLAUDE_FAMILY = "com.anthropic.claudefordesktop.test"
 SYNTHETIC_CODEX_FAMILIES = ("com.openai.codex.test",)
 OWNER_LOCK_NAME = "AccountDeck2-Owner.lock"
-# Claude Desktop's bundle id, used only when the installed app's
-# Info.plist cannot be read; the app's own CFBundleIdentifier wins.
-MAC_CLAUDE_BUNDLE_ID = "com.anthropic.claudefordesktop"
 MAC_APPLICATIONS = Path("/Applications")
-MAX_INFO_PLIST_BYTES = 1 << 20
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_LEVELS = ("debug", "info", "warning")
 
@@ -91,17 +86,12 @@ class Paths:
     mode: str                          # "live" | "synthetic"
     home: Path
     data_dir: Path
-    claude_profile: Path               # ~/Library/Application Support/Claude
-    claude_main_log: Path
-    claude_sessions: Path
-    claude_projects: Path
-    claude_user_config: Path
+    claude_user_config: Path           # ~/.claude.json, Claude Code's own
     codex_home: Path
     codex_exe: Path | None             # None live: found at run time (PATH, ~/.local/bin, ChatGPT.app)
     python_exe: Path
     repo_root: Path
     temp_root: Path | None
-    claude_family: str                 # Claude Desktop's bundle id
     codex_families: tuple[str, ...]    # Codex app bundle ids the process table attributes (none live yet)
     muse_config: Path                  # ~/.config/muse: Muse Code's auth.json, settings and trust list
     muse_exe: Path | None              # None live: found at run time (~/.local/bin/muse-bin-<version>)
@@ -165,17 +155,15 @@ class Paths:
         `muse_stub` names `root/bin/muse` as Muse Code (providers.fake writes a synthetic one)."""
         root = Path(root).resolve()
         home = root / "home"
-        paths = replace(_mac_paths(home, root / "data", applications=()), mode="synthetic",
+        paths = replace(_mac_paths(home, root / "data"), mode="synthetic",
                         codex_exe=root / "bin" / "codex" if codex_stub else None,
                         muse_exe=root / "bin" / "muse" if muse_stub else None, temp_root=root,
-                        claude_family=SYNTHETIC_CLAUDE_FAMILY, codex_families=SYNTHETIC_CODEX_FAMILIES)
+                        codex_families=SYNTHETIC_CODEX_FAMILIES)
         # Registered first: procs refuses a root outside the temp folder (or outside safe mode)
         # before anything is created there.
         _register_test_root(root)
         root.mkdir(exist_ok=True)
-        for directory in (paths.data_dir, paths.claude_profile, paths.claude_main_log.parent,
-                          paths.claude_sessions, paths.claude_projects, paths.codex_home, paths.muse_config,
-                          root / "bin"):
+        for directory in (paths.data_dir, paths.codex_home, paths.muse_config, root / "bin"):
             directory.mkdir(parents=True, exist_ok=True)
         return paths
 
@@ -204,42 +192,20 @@ def _mac_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
-def _mac_paths(home: Path, data_dir: Path | None = None, *, applications=None) -> Paths:
-    """The macOS machine layout for `home`. Claude Desktop
-    keeps one data folder and its family is its bundle id, read from the installed app in
-    `applications`. Codex is found at run time (facts_mac.codex_exe), and Codex Desktop's identity is
-    still unknown, so no family names it."""
+def _mac_paths(home: Path, data_dir: Path | None = None) -> Paths:
+    """The macOS machine layout for `home`. Codex and Muse Code are found at run time (facts_mac), and Codex
+    Desktop's identity is still unknown, so no family names it."""
     support = home / "Library" / "Application Support"
-    folders = mac_applications(home) if applications is None else tuple(applications)
-    family = next(filter(None, (_bundle_id(folder / "Claude.app") for folder in folders)), MAC_CLAUDE_BUNDLE_ID)
     return Paths(
         mode="live", home=home, data_dir=Path(data_dir or env_data_dir() or support / "AccountDeck2"),
-        claude_profile=support / "Claude", claude_main_log=home / "Library" / "Logs" / "Claude" / "main.log",
-        claude_sessions=home / ".claude" / "sessions", claude_projects=home / ".claude" / "projects",
         claude_user_config=home / ".claude.json", codex_home=home / ".codex", codex_exe=None,
         python_exe=Path(sys.executable), repo_root=REPO_ROOT, temp_root=None,
-        claude_family=family, codex_families=(), muse_config=home / ".config" / "muse", muse_exe=None)
+        codex_families=(), muse_config=home / ".config" / "muse", muse_exe=None)
 
 
 def mac_applications(home) -> tuple[Path, Path]:
     """The folders macOS apps are installed in, system-wide first (/Applications, then ~/Applications)."""
     return MAC_APPLICATIONS, Path(home) / "Applications"
-
-
-def _bundle_id(app: Path) -> str | None:
-    """An app bundle's CFBundleIdentifier, or None when its Info.plist cannot be read."""
-    import plistlib
-    try:
-        if (Path(app) / "Contents" / "Info.plist").stat().st_size > MAX_INFO_PLIST_BYTES:
-            return None
-        with open(Path(app) / "Contents" / "Info.plist", "rb") as handle:
-            value = plistlib.load(handle).get("CFBundleIdentifier")
-    except Exception:            # an unreadable or malformed plist (plistlib, expat and struct errors)
-        return None
-    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,255}", value) else None
-
-
-bundle_id = _bundle_id   # read at runtime by platform.facts_mac (Claude's launch id)
 
 
 def _register_test_root(root: Path) -> None:
@@ -253,23 +219,11 @@ def _register_test_root(root: Path) -> None:
 class Timings:
     plan_ttl: float = 120
     consent_ttl: float = 1800
-    idle_hold: float = 20
-    idle_poll: float = 2
-    graceful_wait: float = 100
-    graceful_progress: float = 10
-    terminate_wait: float = 10
-    helper_self_exit: float = 10
-    settle_file: float = 15
-    settle_grace: float = 0.7
-    ready: float = 30
-    verify_hard: float = 90
-    verify_soft_every: float = 30
-    verify_soft_count: int = 20
     lock_wait: float = 30
     daemon_grace_default: float = 60
     helper_refresh_grace: float = 30
     helper_readonly_grace: float = 3
-    launch_retry: tuple[float, ...] = (2, 4, 8)
+    stop_wait: float = 250             # how long quitting AccountDeck waits for a running job to end
 
 
 # ---- settings ----
@@ -299,7 +253,6 @@ SETTINGS_SCHEMA = {
     "pinned_model": Setting("text", "", high=40),
     "use_soon": Setting("bool", False),
     "show_other_limits": Setting("bool", False),
-    "cookie_route": Setting("bool", True),
     "alert_low_left": Setting("int", 15, low=5, high=25),
     "alerts_enabled": Setting("bool", True),
     "quiet_hours": Setting("hours", [22, 8]),
@@ -316,8 +269,9 @@ SETTINGS_SCHEMA = {
     "alert_latches": Setting("object", {}, internal=True),
 }
 # Stored settings of earlier builds (Windows and AccountDeck 1 era: taskbar_widget, taskbar_widget_gap,
-# claude_aumid, v1_retired_at, first_run_done) stay in the database untouched; Settings ignores any key
-# the schema does not know, so an old data folder loads unchanged and a downgrade still finds them.
+# claude_aumid, v1_retired_at, first_run_done; cookie_route, which only Claude Desktop used) stay in the
+# database untouched; Settings ignores any key the schema does not know, so an old data folder loads
+# unchanged and a downgrade still finds them.
 
 
 def validate_settings(patch, *, internal: bool = False) -> dict:

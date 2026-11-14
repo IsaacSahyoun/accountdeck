@@ -25,7 +25,7 @@ from accountdeck.core import DeckError, FileTransaction, Vault, atomic_write, js
 from accountdeck.engine import Engine
 from accountdeck.procs import FakeProcessController, helper_running, process_name
 from accountdeck.providers import muse as muse_module
-from accountdeck.providers.fake import (STUB_MUSE, FakeClaude, FakeCodex, _write_stub, build_fake_home, muse_auth,
+from accountdeck.providers.fake import (STUB_MUSE, FakeCodex, _write_stub, build_fake_home, muse_auth,
                                         test_cipher)
 from accountdeck.providers.errors import ProviderError
 from accountdeck.providers.muse import (KEYCHAIN_MESSAGE, REJECTED_MESSAGE, LoginOutput, Muse, classify_failure,
@@ -88,8 +88,7 @@ class AdapterTest(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix="ad-muse-adapter-"))
         self.addCleanup(shutil.rmtree, root, True)
         self.paths = Paths.synthetic(root)
-        build_fake_home(self.paths, claude_identity=str(uuid.uuid4()), claude_org=str(uuid.uuid4()),
-                        codex_identity=str(uuid.uuid4()), muse_email="main@example.test")
+        build_fake_home(self.paths, codex_identity=str(uuid.uuid4()), muse_email="main@example.test")
         self.procs = FakeProcessController(self.paths)
         self.muse = Muse(self.paths, self.procs)
         self.auth = Path(self.paths.muse_config) / "auth.json"
@@ -169,12 +168,11 @@ class EngineCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, True)
         self.paths = paths = Paths.synthetic(root)
         diagnostics.setup(paths)
-        build_fake_home(paths, claude_identity=str(uuid.uuid4()), claude_org=str(uuid.uuid4()),
-                        codex_identity=str(uuid.uuid4()), muse_email="main@example.test", muse_storage=storage)
+        build_fake_home(paths, codex_identity=str(uuid.uuid4()), muse_email="main@example.test", muse_storage=storage)
         self.procs = FakeProcessController(paths)
         self.auth = Path(paths.muse_config) / "auth.json"
         if providers is None:
-            providers = {"claude": FakeClaude(paths), "codex": FakeCodex(paths), "muse": Muse(paths, self.procs)}
+            providers = {"codex": FakeCodex(paths), "muse": Muse(paths, self.procs)}
         self.engine = Engine(paths, providers=providers, owner_lock=owner_lock, timings=timings,
                              procs=self.procs, vault=Vault(paths.data_dir / "vault", protect=test_cipher),
                              start=False, inline=True, mode="live")
@@ -640,7 +638,7 @@ class ReviewFindingsTest(EngineCase):
         root = Path(tempfile.mkdtemp(prefix="ad-muse-two-"))
         self.addCleanup(shutil.rmtree, root, True)
         paths = Paths.synthetic(root)
-        engine = Engine(paths, providers={"claude": FakeClaude(paths), "codex": FakeCodex(paths)},
+        engine = Engine(paths, providers={"codex": FakeCodex(paths)},
                         procs=FakeProcessController(paths), vault=Vault(paths.data_dir / "vault", protect=test_cipher),
                         start=False, inline=True, mode="live")
         self.addCleanup(engine.stop)
@@ -803,7 +801,7 @@ class ReviewFindingsTest(EngineCase):
 
         scheduler = RefreshScheduler(run, workers=3)
         self.addCleanup(scheduler.shutdown)
-        scheduler.tick([Target(f"busy{n}", "claude", f"k{n}") for n in range(3)] +
+        scheduler.tick([Target(f"busy{n}", "codex", f"k{n}") for n in range(3)] +
                        [Target(f"muse{n}", "muse", f"m{n}") for n in range(3)], time.time(), time.time)
         scheduler.pause("muse")             # a Muse switch starts and takes every Muse account's lock
         for n in range(3):
@@ -812,11 +810,11 @@ class ReviewFindingsTest(EngineCase):
             self.addCleanup(lock.release)
         gate.set()
         time.sleep(0.3)
-        scheduler.tick([Target("claude-active", "claude", "kc", active=True)], time.time(), time.time)
+        scheduler.tick([Target("codex-active", "codex", "kc", active=True)], time.time(), time.time)
         deadline = time.monotonic() + 3
-        while "claude-active" not in ran and time.monotonic() < deadline:
+        while "codex-active" not in ran and time.monotonic() < deadline:
             time.sleep(0.05)
-        self.assertIn("claude-active", ran)
+        self.assertIn("codex-active", ran)
 
 
     def test_an_older_copy_reappearing_in_muses_folder_is_never_saved(self):

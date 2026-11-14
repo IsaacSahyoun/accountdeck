@@ -1,7 +1,6 @@
 """One test per finding of the second review (2026-11-12, of the refactor itself) that the orchestrator
 proved by run. Each failed before its fix. Synthetic data only."""
 import dataclasses
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,12 +14,11 @@ from unittest import mock
 
 from tests import support, test_dashboard, test_switch_safety
 from tests.test_one_writer import Beside, until
-from tests.test_switch_safety import Crash, DeckCase, Waiting
+from tests.test_switch_safety import DeckCase, Waiting
 
-from accountdeck import cli_auto, recovery, switch_claude, switch_cli, switching
-from accountdeck.core import MAX_PAUSE, DeckError, FileTransaction, Store, json_bytes
+from accountdeck import cli_auto, recovery, switch_cli, switching
+from accountdeck.core import MAX_PAUSE, DeckError, FileTransaction, Store
 from accountdeck.operations import Operation, OperationRunner
-from accountdeck.providers import claude as claude_provider
 
 
 class UnreadableLoginIsKeptTest(DeckCase):
@@ -126,11 +124,11 @@ class AutoSwitchKnowsWhoIsSignedInTest(DeckCase):
         Path(self.paths.claude_user_config).write_text(json.dumps(config))
 
     def test_a_sign_in_made_during_another_clients_wait_is_seen(self):
-        waiting = Waiting("claude")
+        waiting = Waiting("codex")
         self.addCleanup(waiting.release.set)
         self.engine.submit(waiting)
         self.wait_for_phase("waiting_idle")
-        # The user moves Claude Code to a healthy account by hand while Desktop waits.
+        # The user moves Claude Code to a healthy account by hand while Codex waits.
         self.claude_code_signs_in_as(self.user_choice["id"])
         # The readings are the hand-made ones above for the whole test: no usage check replaces them.
         self.engine._schedule = self.engine._refresh_slow = lambda now: None
@@ -183,7 +181,7 @@ def watch_the_lane_wait(runner):
 
 
 class WaitThenStop(Operation):
-    """A switch that leaves its wait as the Desktop one does: it names its next phase from inside the wait
+    """A switch that leaves its wait as the Codex one does: it names its next phase from inside the wait
     step. No new step begins, so only the change of phase itself can stop it."""
 
     def __init__(self):
@@ -264,168 +262,6 @@ class OldPausesAreCappedTest(unittest.TestCase):
         self.assertEqual(store.account(years)["paused_until"], now + MAX_PAUSE)
         self.assertEqual(store.account(minutes)["paused_until"], now + 600)
         self.assertIsNone(store.account(never)["paused_until"])
-
-
-class DesktopLoginCase(DeckCase):
-    """Claude Desktop closed, an account in use and a spare one, and a way to tell whose cookies are whose."""
-
-    def setUp(self):
-        super().setUp()
-        self.outgoing, self.target = self.active("claude"), self.spare("claude")
-        self.ctx = switching.context(self.engine)
-        self.close_claude()
-        # Whose cookies are whose: the saved copy of each account, and what Claude holds now for the one in use.
-        self.own = {row["id"]: [self.session_cookie(self.vault.get(row["id"]))] for row in (self.outgoing, self.target)}
-        self.own[self.outgoing["id"]].append(self.session_cookie(self.ctx.claude.capture()))
-        for cookie in self.own[self.outgoing["id"]]:
-            self.assertNotIn(cookie, self.own[self.target["id"]])
-
-    def session_cookie(self, profile):
-        """The sealed web sign-in cookie of a profile: each account's is its own."""
-        rows = claude_provider._claude_rows(profile["cookies"], claude_provider.SESSION_COOKIES)
-        return sorted(bytes(sealed) for _host, _name, _value, sealed in rows)
-
-    def record(self, purpose):
-        tx = FileTransaction(self.vault, self.engine.roots())
-        tx.doc.update(provider="claude", purpose=purpose, outgoing_id=self.outgoing["id"] if purpose == "switch" else None)
-        tx.save()
-        return tx
-
-    def write_login(self, account, record, dies_before=None):
-        """Writes `account`'s saved login through `record`, as a switch or an undo does. The app dies just
-        before write number `dies_before`, leaving the record open. Returns how many writes were made."""
-        write, made = record.write, []
-
-        def counted(path, data):
-            if len(made) == dies_before:
-                raise Crash()
-            made.append(path)
-            write(path, data)
-
-        record.write = counted
-        try:
-            switch_claude.restore_profile(self.ctx, account["id"], record)
-        except Crash:
-            pass
-        self.written = [Path(path).name for path in made]
-        return len(made)
-
-    def recover_once(self):
-        self.pending_records()
-        self.assertEqual(self.act("claude", "recover")["outcome"], "success")
-        self.assertEqual(self.pending_records(), [], "a record still waits after one press of Recover")
-        for row in (self.outgoing, self.target):
-            self.assertTrue(self.session_cookie(self.vault.get(row["id"])) in self.own[row["id"]],
-                            "a saved login now holds another account's cookies")
-        live = self.ctx.claude.capture()
-        self.assertEqual(live["identity"], self.identity(self.outgoing["id"]))
-        self.assertTrue(self.session_cookie(live) in self.own[self.outgoing["id"]],
-                        "Claude was left with one account's name and another account's cookies")
-
-
-
-class HalfWrittenDesktopLoginTest(DesktopLoginCase):
-    """A Claude Desktop login is several files: the cookies, and the settings file that names the account. A
-    write that dies part way must never leave one account's name beside another account's cookies, because
-    Recover saves the login it finds before it puts the previous one back."""
-
-    def fresh_mac(self, journal):
-        """A new fake Mac. With `journal`, Claude was killed mid-save before all this, as on a real Mac after
-        a hard stop: its settings journal holds the newer copy of config.json. "a setting" changed the theme.
-        "the sign-in" is the save that signed the account in, so config.json itself still says signed out and
-        the account's name is in the journal only."""
-        self.setUp()
-        self.journal = journal
-        if journal:
-            self.claude_is_killed_mid_save(self.outgoing)
-
-    def claude_is_killed_mid_save(self, signed_in):
-        """Leaves Claude's settings journal beside the login as it is now, which is `signed_in`'s."""
-        config = Path(self.paths.claude_profile) / "config.json"
-        newer = json.loads(config.read_text())
-        if self.journal == "the sign-in":
-            config.write_bytes(json_bytes({key: value for key, value in newer.items()
-                                           if key not in self.ctx.claude.scope.auth_keys}))
-        else:
-            newer["userThemeMode"] = "dark"
-        body = json.dumps(newer).encode()
-        head = f"{hashlib.sha256(body).hexdigest()} {hashlib.sha256(config.read_bytes()).hexdigest()} 1\n"
-        (config.parent / claude_provider.JOURNAL).write_bytes(head.encode() + body)
-        live = self.ctx.claude.capture()
-        self.assertEqual(live["journal"], {"present": True, "consistent": True, "used": True})
-        self.assertEqual(live["identity"], self.identity(signed_in["id"]))
-
-    def at_every_write(self, scene):
-        """Runs `scene(n)` and then one Recover, on a fresh fake Mac for each write `n` a login write can die
-        before. The last round makes every write and never closes the record."""
-        for journal in (False, "a setting", "the sign-in"):
-            self.fresh_mac(journal)
-            writes = self.write_login(self.target, self.record("switch"))
-            self.assertGreater(writes, 1)
-            for n in range(writes + 1):
-                with self.subTest(journal=journal, died_before_write=n):
-                    self.fresh_mac(journal)
-                    scene(n)
-                    self.recover_once()
-
-    def test_a_login_that_stopped_before_its_account_name_names_nobody(self):
-        """Also when the old account's name was in Claude's journal and not in config.json itself."""
-        for journal in (False, "a setting", "the sign-in"):
-            with self.subTest(journal=journal):
-                self.fresh_mac(journal)
-                self.write_login(self.target, self.record("switch"))
-                the_name = max(n for n, file in enumerate(self.written) if file == "config.json")
-                self.fresh_mac(journal)
-                self.write_login(self.target, self.record("switch"), dies_before=the_name)
-                self.assertIn("Cookies", self.written)
-                self.assertIsNone(self.ctx.claude.capture(config_only=True)["identity"])
-
-    def test_a_switch_that_died_before_any_of_its_writes_is_put_right_by_one_recover(self):
-        self.at_every_write(lambda n: self.write_login(self.target, self.record("switch"), dies_before=n))
-
-    def test_a_recover_that_died_before_any_of_its_writes_is_put_right_by_the_next_one(self):
-        def scene(n):
-            self.write_login(self.target, self.record("switch"))                     # the switch wrote it all, then died
-            if self.journal:
-                self.claude_is_killed_mid_save(self.target)                          # Claude ran since, and was killed
-            self.write_login(self.outgoing, self.record("recover"), dies_before=n)   # so did the first Recover
-
-        self.at_every_write(scene)
-
-
-class RecordsOfTheShippedVersionTest(DesktopLoginCase):
-    """The shipped 2.0.0 wrote a Desktop login in another order: the cookies first, the account name last. A
-    record it left open when it died between the two is on disk when this version starts, with one account's
-    name beside another account's cookies. Recover must not save that as anyone's login."""
-
-    def shipped_version_wrote(self, account, record, *, the_name_too):
-        claude, saved = self.ctx.claude, self.vault.get(account["id"])
-        for name in claude.scope.cookie_files[1:]:
-            record.write(claude.cookie_dir / name, None)
-        record.write(claude.cookie_dir / claude.scope.cookie_files[0], claude_provider._checked_cookies(saved["cookies"]))
-        if the_name_too:
-            path = Path(self.paths.claude_profile) / "config.json"
-            config = {key: value for key, value in json.loads(path.read_text()).items() if key not in claude.scope.auth_keys}
-            record.write(path, json_bytes({**config, **saved["auth"]}))
-
-    def test_a_switch_that_died_before_the_account_name(self):
-        self.shipped_version_wrote(self.target, self.record("switch"), the_name_too=False)
-        self.recover_once()
-
-    def test_a_recover_that_died_before_the_account_name(self):
-        self.shipped_version_wrote(self.target, self.record("switch"), the_name_too=True)       # the switch, whole
-        self.shipped_version_wrote(self.outgoing, self.record("recover"), the_name_too=False)   # its undo, part way
-        self.recover_once()
-
-    def test_a_switch_that_wrote_everything_still_has_its_renewed_login_kept(self):
-        """The reverse: a whole login that Claude renewed since is saved under its own account, as before."""
-        self.shipped_version_wrote(self.target, self.record("switch"), the_name_too=True)
-        path = Path(self.paths.claude_profile) / "config.json"
-        renewed = {**json.loads(path.read_text()), "userThemeMode": "dark"}     # Claude ran and saved its settings again
-        path.write_bytes(json_bytes(renewed))
-        before = self.vault.get(self.target["id"])["captured"]
-        self.recover_once()
-        self.assertGreater(self.vault.get(self.target["id"])["captured"], before, "the login Claude held was not kept")
 
 
 class TerminalRecoverCase(DeckCase):
@@ -520,7 +356,7 @@ class TerminalRecordStaysWhileTheLoginIsMixedTest(TerminalRecoverCase):
         """Neither can be settled yet. Each press goes to the client that was tried longest ago."""
         self.die("after the login is written")                     # a terminal switch died
         record = FileTransaction(self.vault, self.engine.roots())
-        record.doc.update(provider="claude", purpose="switch")      # and a Desktop one
+        record.doc.update(provider="codex", purpose="switch")       # and a Codex one
         record.save()
         self.assertEqual(len(self.pending_records()), 2)
 
@@ -532,8 +368,8 @@ class TerminalRecordStaysWhileTheLoginIsMixedTest(TerminalRecoverCase):
             went.append(switching._recovery_provider(self.engine))
             with self.assertRaises(recovery.StillNeeded):
                 recovery.press(self.engine, went[-1], stays)
-        self.assertEqual(went, ["claude_cli", "claude", "claude_cli", "claude"])
-        recovery.press(self.engine, "claude", lambda tx: tx.close() or "Done.")      # the Desktop one settles
+        self.assertEqual(went, ["claude_cli", "codex", "claude_cli", "codex"])
+        recovery.press(self.engine, "codex", lambda tx: tx.close() or "Done.")       # the Codex one settles
         self.assertEqual(switching._recovery_provider(self.engine), "claude_cli")
         self.assertEqual(self.engine.recovery_left, ["claude_cli"])
 
@@ -567,105 +403,50 @@ class RecoverAsksTheProviderAgainTest(TerminalRecoverCase):
         self.assertEqual(saved, live["claudeAiOauth"]["refreshToken"], "the target's renewed login was not saved")
 
 
-class DesktopRecoverThatFailsPartWayTest(DesktopLoginCase):
-    """The same for Claude Desktop: a Recover whose own write stops part way leaves Claude signed out, and
-    the record stays so the next press finishes the job."""
-
-    def test_a_recover_whose_own_write_fails_part_way_can_be_pressed_again(self):
-        self.write_login(self.target, self.record("switch"))       # the switch wrote it all, then the app died
-        self.pending_records()
-        write, failed = FileTransaction.write, []
-
-        def the_disk_refuses_the_cookies_once(tx, path, data):
-            if Path(path).name == "Cookies" and data is not None and not failed:
-                failed.append(path)
-                raise OSError(28, "No space left on device")
-            return write(tx, path, data)
-
-        with mock.patch.object(FileTransaction, "write", the_disk_refuses_the_cookies_once):
-            self.assertNotEqual(self.act("claude", "recover")["outcome"], "success")
-            self.assertTrue(failed)
-            self.assertIsNone(self.ctx.claude.capture(config_only=True)["identity"], "a half-written login names an account")
-            self.assertTrue(self.pending_records(), "Claude is signed out part way and no record is left to finish from")
-            self.recover_once()
-
-    def test_the_message_says_claude_was_left_closed(self):
-        """Third review: Recover closed Claude and stopped before it would reopen it, so it says so."""
-        self.write_login(self.target, self.record("switch"))
-        self.pending_records()
-        self.procs.launch_claude(None)                              # Claude is open when Recover is pressed
-        self.assertTrue(self.procs.claude_desktop())
-        write = FileTransaction.write
-
-        def the_disk_refuses_the_cookies(tx, path, data):
-            if Path(path).name == "Cookies" and data is not None:
-                raise OSError(28, "No space left on device")
-            return write(tx, path, data)
-
-        with mock.patch.object(FileTransaction, "write", the_disk_refuses_the_cookies):
-            message = self.act("claude", "recover")["error"]["message"]
-        self.assertEqual(self.procs.claude_desktop(), [])
-        self.assertIn("Claude was left closed.", message)
-        self.assertIn("press Recover again", message)
-        self.recover_once()
-
-
-class DesktopCancelDuringTheLaneWaitTest(DeckCase):
-    """A real Desktop switch that waited for its sessions also waits for the terminal switch running beside
-    it. A Cancel pressed during that second wait is accepted, so Claude must not be closed after it."""
+class CodexCancelDuringTheLaneWaitTest(DeckCase):
+    """A real Codex switch that waited for its sessions also waits for the terminal switch running beside
+    it. A Cancel pressed during that second wait is accepted, so nothing of Codex is stopped or written
+    after it. A session opened during that wait stops the switch too."""
 
     def start_a_switch_when_idle_with_a_terminal_switch_beside_it(self):
-        self.outgoing, target = self.active("claude"), self.spare("claude")
-        self.busy = [s for s in self.engine.snapshot()["providers"]["claude"]["running"]["sessions"] if s["status"] == "busy"]
-        self.assertTrue(self.busy)
-        self.procs.relaunch_identity = self.identity(target["id"])
+        self.outgoing, self.target = self.active("codex"), self.add_codex_account()
+        self.sessions = self.procs.codex_consumers()
+        self.assertTrue(self.sessions)
         self.held, self.released = watch_the_lane_wait(self.engine.runner)
-        self.act("claude", "switch", target["id"], consent="idle", wait=False)
+        self.act("codex", "switch", self.target, consent="idle", wait=False)
         self.wait_for_phase("waiting_idle")
-        self.job = self.engine.runner._current
         self.beside = Beside()
         self.addCleanup(self.beside.finish.set)
         self.engine.submit(self.beside)
         self.assertTrue(self.beside.running.wait(5))
-        self.running = {row.pid for row in self.procs.claude_desktop()}
-        return target
+        for row in self.sessions:                       # the sessions close while the terminal switch is mid-way
+            self.procs.exit_process(row.pid)
+        self.assertTrue(self.held.wait(10))             # no session is open: only the terminal switch holds it now
 
-    def sessions_go(self, status):
-        for session in self.busy:
-            self.procs.set_session_status(session["pid"], status, age_s=60 if status == "idle" else 0)
+    def assert_nothing_of_codex_changed(self):
+        self.assertNotIn("codex_daemon_stop", [call[0] for call in self.procs.calls])
+        self.assertEqual(self.signed_in("codex"), self.identity(self.outgoing["id"]))
+        self.assertEqual(self.pending_records(), [])
 
-    def test_a_session_that_starts_working_during_the_second_wait_is_waited_for(self):
-        """Third review: "switch when idle" means idle at the moment Claude is closed, so the sessions are
-        looked at again once the terminal switch has ended."""
-        target = self.start_a_switch_when_idle_with_a_terminal_switch_beside_it()
-        self.sessions_go("idle")
-        self.assertTrue(self.held.wait(10))             # idle now: only the terminal switch holds the Desktop job
-        self.sessions_go("busy")                        # a session starts working again
-        self.beside.finish.set()
-        self.assertTrue(self.released.wait(10))
-        self.assertTrue(until(lambda: not self.job.wait_over, 10), "the sessions were not looked at again")
-        self.assertEqual({row.pid for row in self.procs.claude_desktop()}, self.running,
-                         "Claude was closed while a session was working")
-        self.assertEqual(self.engine.snapshot()["pending"]["phase"], "waiting_idle")
-        self.sessions_go("idle")
-        self.assertTrue(self.engine.runner.wait(60))
-        self.assertEqual(self.engine.snapshot()["report"]["outcome"], "success")
-        self.assert_consistent("claude", self.identity(target["id"]))
-
-    def test_claude_stays_open_after_a_cancel_made_while_the_terminal_switch_finished(self):
+    def test_codex_is_left_alone_after_a_cancel_made_while_the_terminal_switch_finished(self):
         self.start_a_switch_when_idle_with_a_terminal_switch_beside_it()
-        self.sessions_go("idle")
-        self.assertTrue(self.held.wait(10))             # the sessions are idle: only the terminal switch holds it now
-        self.assertEqual({row.pid for row in self.procs.claude_desktop()}, self.running,
-                         "Claude was closed while the terminal switch was still writing")
+        self.assert_nothing_of_codex_changed()          # nothing yet: the terminal switch is still writing
         self.assertTrue(self.engine.runner.cancel())
         self.beside.finish.set()
         self.assertTrue(self.engine.runner.wait(30))
-        self.assertEqual({row.pid for row in self.procs.claude_desktop()}, self.running,
-                         "Claude was closed after the user cancelled")
-        self.assertEqual(self.signed_in("claude"), self.identity(self.outgoing["id"]))
-        self.assertEqual(self.pending_records(), [])
+        self.assert_nothing_of_codex_changed()
         self.assertEqual(self.engine.snapshot()["report"]["outcome"], "cancelled")
+
+    def test_a_session_opened_during_the_second_wait_stops_the_switch_before_it_writes(self):
+        self.start_a_switch_when_idle_with_a_terminal_switch_beside_it()
+        self.procs.add_codex("codex_tui")               # the user opens Codex again
+        self.beside.finish.set()
+        self.assertTrue(self.released.wait(10))
+        self.assertTrue(self.engine.runner.wait(30))
+        report = self.engine.snapshot()["report"]
+        self.assertEqual((report["outcome"], report["error"]["code"]), ("failed", "busy"), report)
+        self.assertEqual(self.signed_in("codex"), self.identity(self.outgoing["id"]))
+        self.assertEqual(self.pending_records(), [])
 
 
 class SetAsideRecordsAreKeptTest(TerminalRecoverCase):
@@ -715,7 +496,7 @@ class RecordStatusMatchesTheDiskTest(DeckCase):
         """Third review: Recover goes by the record's list of changes to tell whether a write began."""
         tx = FileTransaction(self.vault, self.engine.roots())
         tx.save()
-        path = Path(self.paths.claude_profile) / "config.json"
+        path = Path(self.paths.codex_home) / "auth.json"
         before = path.read_bytes()
         with mock.patch.object(self.vault, "put", side_effect=OSError(28, "No space left on device")):
             with self.assertRaises(OSError):

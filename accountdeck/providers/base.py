@@ -6,20 +6,11 @@ from enum import Enum
 
 from .. import __version__
 
-AUTH_KEYS = ("oauth:tokenCache", "oauth:tokenCacheV2", "lastKnownAccountUuid")
-COOKIE_FILES = ("Cookies", "Cookies-journal", "Cookies-wal", "Cookies-shm")   # inside <profile>\Network
-SESSION_COOKIES = ("sessionKey", "sessionKeyV3", "sessionKeyLC", "sessionKeyV3LC")
-WEB_COOKIES = SESSION_COOKIES + ("lastActiveOrg", "cf_clearance", "__cf_bm", "anthropic-device-id")
-CLAUDE_HOSTS = ("claude.ai", "www.claude.ai")
-
 OAUTH_HOST = "api.anthropic.com"
 OAUTH_PATH = "/api/oauth/"
 OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 OAUTH_BETA = "oauth-2025-04-20"
-WEB_ORIGIN = "https://claude.ai"
-WEB_ORGS_URL = "https://claude.ai/api/organizations"
-WEB_PLATFORM = "web_claude_ai"
 USER_AGENT = f"AccountDeck2/{__version__} (+local)"
 
 
@@ -27,9 +18,8 @@ class CredentialState(str, Enum):
     """How an account's usage can be read; the value is what the state contract shows."""
     LIVE = "live"                        # active in the official app, which owns the token
     FRESH = "fresh"                      # saved token valid for more than 3 minutes
-    EXPIRED = "expired"                  # saved token expired: last-good reading plus the optional cookie route
-    WEB_ONLY = "web_only"                # no OAuth entry, but a web sign-in cookie
-    REAUTH_REQUIRED = "reauth_required"  # only through errors.reauth_escalation (or a refused Codex refresh)
+    EXPIRED = "expired"                  # saved token expired: the last good reading is shown
+    REAUTH_REQUIRED = "reauth_required"  # the saved sign-in no longer works: the user signs in again
     ACCESS_EXPIRED = "access_expired"    # Codex: the access token lapsed; the client renews it when it runs
     UNKNOWN = "unknown"
 
@@ -39,10 +29,10 @@ class Reading:
     """One usage read. `usage` None means nothing new: keep the last good reading.
 
     `outcomes` lists (route, kind, http_class) per request made ("ok" for success), for the
-    re-auth escalation and the observed-outage rule. `credential` is a state the adapter asks the
+    observed-outage rule. `credential` is a state the adapter asks the
     engine to record (None = unchanged). `meta` holds secret-free diagnostics only."""
     usage: dict | None
-    source: str | None = None            # "oauth" | "cookie" | "helper"
+    source: str | None = None            # "oauth" | "helper"
     error: Exception | None = None       # a DeckError (usually ProviderError) when nothing was read
     outcomes: tuple = ()
     credential: str | None = None

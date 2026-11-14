@@ -432,7 +432,7 @@ class ChromeSweepRowsTest(DashboardTestCase):
         self.show(state)
         gone = self.browser.js("(() => { const row = document.querySelector('#other-accounts li.row');"
                                " const name = row.querySelector('.row-name').textContent; row.remove(); return name; })()")
-        self.assertEqual(self.drawn(state), [f"#other-accounts drew 7 of 8 rows, missing ['{gone}']"])
+        self.assertEqual(self.drawn(state), [f"#other-accounts drew 2 of 3 rows, missing ['{gone}']"])
 
     def test_a_row_drawn_twice_or_in_the_wrong_list_fails(self):
         state = fixtures.example_state("typical", now=time.time())
@@ -446,7 +446,7 @@ class ChromeSweepRowsTest(DashboardTestCase):
         wrong = self.drawn(state)
         self.assertEqual(len(wrong), 2, wrong)
         self.assertIn("#accounts drew 4 of 5 rows, missing", wrong[0])
-        self.assertIn("#other-accounts drew 9 of 8 rows, not its own or twice", wrong[1])
+        self.assertIn("#other-accounts drew 4 of 3 rows, not its own or twice", wrong[1])
 
     def swept(self, state):
         """What `sweep` says about the page as it is drawn now. The demo and Chrome are stand-ins: the demo
@@ -475,11 +475,11 @@ class ChromeSweepRowsTest(DashboardTestCase):
         self.show(state)
         ok, words = self.swept(state)
         self.assertTrue(ok, words)
-        self.assertIn("rows=13/13", words)
+        self.assertIn("rows=8/8", words)
         self.browser.js("document.querySelector('#other-accounts li.row').remove()")
         ok, words = self.swept(state)
         self.assertFalse(ok, words)
-        self.assertIn("ROWS #other-accounts drew 7 of 8 rows", words)
+        self.assertIn("ROWS #other-accounts drew 2 of 3 rows", words)
 
 
 class WholeCheckSummaryTest(unittest.TestCase):
