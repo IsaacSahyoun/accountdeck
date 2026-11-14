@@ -28,8 +28,11 @@ class WaitThenWrite(Operation):
 
 
 class Beside(Operation):
-    """A terminal switch, which may run beside another client's wait."""
+    """A terminal switch, which may run beside another client's wait. It holds until the test sets `finish`.
+    `let_go_by_the_test` is False when it gave up waiting instead: whatever the test did after that was not
+    done beside it."""
     beside_waits = True
+    let_go_by_the_test = None
 
     def __init__(self):
         super().__init__("switch", provider="claude_cli", label="stand-in", consent="now",
@@ -39,7 +42,7 @@ class Beside(Operation):
     def run(self):
         with self.step("switch", phase="restoring", message="Switching…", cancellable=False):
             self.running.set()
-            self.finish.wait(10)
+            self.let_go_by_the_test = self.finish.wait(10)
 
 
 def until(condition, seconds=5):

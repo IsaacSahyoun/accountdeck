@@ -811,27 +811,67 @@ class ReviewFindingsTest(EngineCase):
         would read is the switch's to change, so it must not run."""
         for provider in ("claude_cli", "codex", "muse"):
             with self.subTest(provider=provider):
-                ran, waiting = [], threading.Event()
-                scheduler = RefreshScheduler(lambda account_id: ran.append(account_id) or "ok", workers=3)
-                self.addCleanup(scheduler.shutdown)
-                lock = scheduler.account_lock("one")
-                lock.acquire()
-                the_lock = scheduler.account_lock
+                self.assertEqual(self.reads_run_after_a_pause_during_the_wait_for_the_lock(provider), [])
 
-                def asked(account_id):          # the read asks for the lock, then waits for it
-                    waiting.set()
-                    return the_lock(account_id)
+    def reads_run_after_a_pause_during_the_wait_for_the_lock(self, provider):
+        ran, waiting = [], threading.Event()
+        scheduler = RefreshScheduler(lambda account_id: ran.append(account_id) or "ok", workers=3)
+        self.addCleanup(scheduler.shutdown)
+        lock, the_lock = scheduler.account_lock("one"), scheduler.account_lock
 
-                scheduler.account_lock = asked
-                read = threading.Thread(target=scheduler._read, args=(Target("one", provider, "k"), time.time), daemon=True)
-                read.start()
-                self.assertTrue(waiting.wait(5))
-                scheduler.pause(provider)
-                lock.release()
-                read.join(5)
-                self.assertFalse(read.is_alive())
-                self.assertEqual(ran, [])
+        def asked(account_id):          # the read asks for the lock, then waits for it
+            waiting.set()
+            return the_lock(account_id)
 
+        scheduler.account_lock = asked
+        read = threading.Thread(target=scheduler._read, args=(Target("one", provider, "k"), time.time), daemon=True)
+        lock.acquire()
+        try:
+            read.start()
+            asked_for_it = waiting.wait(5)
+            scheduler.pause(provider)
+        finally:                        # whatever happened, the read is let through and ends before the next case
+            lock.release()
+            read.join(5)
+        self.assertTrue(asked_for_it, "the read never asked for the account's lock")
+        self.assertFalse(read.is_alive())
+        return ran
+
+
+    def test_a_read_that_waited_for_the_helper_does_not_run_once_its_client_is_paused(self):
+        """Codex and Muse reads take turns at one helper each. A switch can begin while a read, already holding the
+        account's lock, waits for its turn. When the turn comes, the read must not run."""
+        for provider in ("codex", "muse"):
+            with self.subTest(provider=provider):
+                self.assertEqual(self.reads_run_after_a_pause_during_the_wait_for_the_helper(provider), [])
+
+    def reads_run_after_a_pause_during_the_wait_for_the_helper(self, provider):
+        ran, waiting = [], threading.Event()
+        scheduler = RefreshScheduler(lambda account_id: ran.append(account_id) or "ok", workers=3)
+        self.addCleanup(scheduler.shutdown)
+        turn = scheduler.helper_lock(provider)
+
+        class Asked:                    # the read asks for its turn, then waits for it
+            def __enter__(self):
+                waiting.set()
+                return turn.__enter__()
+
+            def __exit__(self, *failure):
+                return turn.__exit__(*failure)
+
+        scheduler._helpers[provider] = Asked()
+        read = threading.Thread(target=scheduler._read, args=(Target("one", provider, "k"), time.time), daemon=True)
+        turn.acquire()
+        try:
+            read.start()
+            asked_for_it = waiting.wait(5)
+            scheduler.pause(provider)
+        finally:
+            turn.release()
+            read.join(5)
+        self.assertTrue(asked_for_it, "the read never asked for its turn at the helper")
+        self.assertFalse(read.is_alive())
+        return ran
 
     def test_an_older_copy_reappearing_in_muses_folder_is_never_saved(self):
         engine = self.make()

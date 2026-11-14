@@ -428,6 +428,13 @@ class CodexCancelDuringTheLaneWaitTest(DeckCase):
             self.procs.exit_process(row.pid)
         self.assertTrue(self.held.wait(10))             # no session is open: only the terminal switch holds it now
 
+    def let_the_terminal_switch_finish(self):
+        """Ends the job beside the switch and waits for both. The test acted while that job held the switch only
+        if the job was still holding: one that gave up waiting by itself proves nothing."""
+        self.beside.finish.set()
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assertTrue(self.beside.let_go_by_the_test, "the terminal switch gave up waiting before the test let it go")
+
     def assert_nothing_of_codex_changed(self):
         self.assertNotIn("codex_daemon_stop", [call[0] for call in self.procs.calls])
         self.assertEqual(self.signed_in("codex"), self.identity(self.outgoing["id"]))
@@ -437,30 +444,27 @@ class CodexCancelDuringTheLaneWaitTest(DeckCase):
         self.start_a_switch_when_idle_with_a_terminal_switch_beside_it()
         self.assert_nothing_of_codex_changed()          # nothing yet: the terminal switch is still writing
         self.assertTrue(self.engine.runner.cancel())
-        self.beside.finish.set()
-        self.assertTrue(self.engine.runner.wait(30))
+        self.let_the_terminal_switch_finish()
         self.assert_nothing_of_codex_changed()
         self.assertEqual(self.engine.snapshot()["report"]["outcome"], "cancelled")
 
     def test_a_session_opened_during_the_second_wait_stops_the_switch_before_it_writes(self):
         self.start_a_switch_when_idle_with_a_terminal_switch_beside_it()
         self.procs.add_codex("codex_tui")               # the user opens Codex again
-        self.beside.finish.set()
-        self.assertTrue(self.released.wait(10))
-        self.assertTrue(self.engine.runner.wait(30))
+        self.let_the_terminal_switch_finish()
+        self.assertTrue(self.released.is_set())
         report = self.engine.snapshot()["report"]
-        self.assertEqual((report["outcome"], report["error"]["code"]), ("failed", "busy"), report)
+        self.assertEqual((report["outcome"], (report["error"] or {}).get("code")), ("failed", "busy"), report)
         self.assert_nothing_of_codex_changed()          # the daemon the new session talks to is still running
 
     def test_a_daemon_started_during_the_second_wait_is_not_stopped(self):
         """The user confirmed a plan with no daemon in it. One that starts later is not the switch's to stop."""
         self.start_a_switch_when_idle_with_a_terminal_switch_beside_it(daemon=False)
         self.procs.add_codex("codex_daemon")
-        self.beside.finish.set()
-        self.assertTrue(self.released.wait(10))
-        self.assertTrue(self.engine.runner.wait(30))
+        self.let_the_terminal_switch_finish()
+        self.assertTrue(self.released.is_set())
         report = self.engine.snapshot()["report"]
-        self.assertEqual((report["outcome"], report["error"]["code"]), ("failed", "busy"), report)
+        self.assertEqual((report["outcome"], (report["error"] or {}).get("code")), ("failed", "busy"), report)
         self.assert_nothing_of_codex_changed()
 
 

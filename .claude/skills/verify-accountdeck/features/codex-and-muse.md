@@ -52,7 +52,7 @@ Each stage of a Codex switch has a scenario that holds it there: `switching` (wa
 
 Tests to reuse:
 - `tests/test_switch_safety.py`: `CodexSwitchTest`, `CodexInterruptedSwitchTest`, `CodexRenewalTest`, `CodexHelperFolderTest`, `MuseSwitchTest`, `MuseInterruptedSwitchTest`;
-- `tests/test_muse.py` (59 tests): the usage parser, the adapter, the engine, and `RealFormatTest` for the real file format;
+- `tests/test_muse.py` (60 tests): the usage parser, the adapter, the engine, and `RealFormatTest` for the real file format;
 - `tests/test_second_review.py`, `CodexRecoverWaitsForUsageChecksTest`, `ConfirmationStillHoldsAfterTheLaneWaitTest`, `CodexCancelDuringTheLaneWaitTest` (a terminal switch beside a Codex wait); `tests/test_switch_safety.py`, `WaitDeadlineTest`;
 - every row action for a Codex and a Muse row: `tests/test_dashboard.py`, `EveryClientRowsTest`.
 

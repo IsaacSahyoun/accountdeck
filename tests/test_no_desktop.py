@@ -335,10 +335,38 @@ class UnfinishedDesktopSwitchTest(LeftByAnOlderBuild):
         """The 2.0.0 build could leave two: the switch's own record, and the one it made while it put Claude's
         session list back. Both are set aside, and the page says so once."""
         first, second = self.leave(named=True), self.leave(named=False)
-        self.restart()
+        files = second[2]               # the folder once both records were written
+        with touches(self.folder) as seen:
+            self.restart()
+        self.assertEqual(seen, [], "the app used a file in Claude Desktop's data folder")
         for key, record, _files in (first, second):
-            self.assert_set_aside(key, record, tree(self.folder))
+            self.assert_set_aside(key, record, files)
         self.assertEqual(len(self.desktop_notices()), 1)
+
+    def test_a_record_set_aside_at_a_later_look_gets_no_second_notice(self):
+        """The set-aside of one of the two records fails at start, and works when the app looks again after a
+        job. The page already says the switch was set aside, so it does not say it twice."""
+        first, second = self.leave(named=True), self.leave(named=False)
+        set_aside = Vault.set_aside
+
+        def fails_for_the_first(vault, key):
+            if key == first[0]:
+                raise OSError(28, "No space left on device")
+            return set_aside(vault, key)
+
+        files = second[2]               # the folder once both records were written
+        with touches(self.folder) as seen:
+            with mock.patch.object(Vault, "set_aside", fails_for_the_first):
+                self.restart()
+            self.assertTrue(self.vault.path(first[0]).exists())
+            self.assertEqual(len(self.desktop_notices()), 1)
+            self.engine.look_for_unfinished()
+        self.assertEqual(seen, [], "the app used a file in Claude Desktop's data folder")
+        for key, record, _files in (first, second):
+            self.assert_set_aside(key, record, files)
+        self.assertEqual(len(self.desktop_notices()), 1)
+        self.restart()                  # a new run of the app has nothing left to set aside
+        self.assertEqual(self.desktop_notices(), [])
 
     def test_no_file_the_record_names_is_ever_used(self):
         """Starting, ticking, a switch of each client and a press of Recover, with the record still open because

@@ -63,9 +63,10 @@ def pending(engine):
     """The keys of the open records a press of Recover settles. A record that cannot be read is one of them:
     Recover sets it aside. A record of a client this build does not manage is not. Nothing here can put
     that client's login right, so the copy that owns the sign-ins sets the record aside, kept as it is, and
-    says so once, however many records that one unfinished switch left. Another copy leaves it where it is.
-    A set-aside that fails leaves the record open and out of the list, and the next start tries again."""
-    keys, told = [], False
+    says so once in a run of the app, however many records that one unfinished switch left and at whichever
+    look each was set aside. Another copy leaves it where it is. A set-aside that fails leaves the record
+    open and out of the list, and the next look tries again."""
+    keys = []
     for key in recover_transactions(engine.vault):
         try:
             managed = client_of(engine.vault.get(key)) is not None
@@ -75,7 +76,8 @@ def pending(engine):
             keys.append(key)
         elif engine.owns_login:
             try:
-                told = set_aside(engine, key, None if told else UNMANAGED) or told
+                if set_aside(engine, key, None if engine.told_unmanaged else UNMANAGED):
+                    engine.told_unmanaged = True
             except OSError as exc:
                 diagnostics.log_exception("recovery.unmanaged_kept", exc)
     return keys
