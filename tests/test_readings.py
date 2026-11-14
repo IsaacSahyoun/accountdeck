@@ -268,8 +268,7 @@ EXPECTED = {
     "Beta's week ends in 2 d, early switch is off":    ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 2 d, 85% used":               ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 2 d, its Fable limit at 90%": ".. .. .. hd hd hW Tb Tb hW Ob Ob hW",
-    # Beta's week ends first and its reading is too old to act on: it is read again (hC) before anything moves.
-    "Beta's week ends in 2 d, its reading 20 min old": "hC .. .. hC hC hW hC hC hW hC hC hW",
+    "Beta's week ends in 2 d, its reading 20 min old": ".. .. .. hC hC hW hC hC hW hC hC hW",
     "Beta's week ends in 2 d, manual choice 5 s ago":  "hm hm hm hm hm hW hm hm hW Ob Ob hW",
     "Beta's week ends in 2 d, early switch 1 h ago":   "he .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     # A try of the early switch that failed counts like one that worked (ht). The threshold does not wait for it.
@@ -389,46 +388,23 @@ class SoonestWeekFirstTest(unittest.TestCase):
         self.assertEqual(self.play(accounts, cli_order="most_room")[0], [("threshold", "beta")])
         self.assertEqual(self.play(accounts)[0], [("threshold", "gamma")])
 
-    def test_it_waits_for_a_new_reading_of_a_week_that_ends_sooner(self):
-        """Beta's week ends first and its reading is 20 minutes old. A move to Gamma now would be followed by a
-        move to Beta as soon as the pause between early switches allows, so Beta is read again first."""
-        alpha = account("alpha", 20, 6 * DAY, active=True)
+    def test_an_old_reading_of_a_week_that_ends_sooner_is_passed_over_not_waited_for(self):
+        """Beta's week ends first and its reading is 20 minutes old. The terminals go to Gamma, and on to Beta
+        after the pause between early switches if Beta is read by then. Waiting for Beta was tried and taken
+        out (2026-11-14): an account that cannot be read would hold every early switch back, and at the
+        threshold it would keep the terminals on an account until that ran out."""
         old_beta, gamma = account("beta", 40, DAY, age=1200), account("gamma", 40, 3 * DAY)
 
-        def decides(*others, history=None):
-            result = cli_policy.evaluate([alpha, *copy.deepcopy(list(others))], SETTINGS, history or {}, NOW)
-            return (result["action"], result["target"], result["hold"], result["refresh"])
+        def decides(used, *others, **settings):
+            result = cli_policy.evaluate([account("alpha", used, 6 * DAY, active=True), *copy.deepcopy(list(others))],
+                                         {**SETTINGS, **settings}, {}, NOW)
+            return (result["action"], result["target"], result["kind"], result["hold"], result["refresh"])
 
-        waits = ("none", None, "Checking Beta before switching", ["beta"])
-        self.assertEqual(decides(old_beta, gamma), waits)
-        self.assertEqual(decides(old_beta), waits)
-        # Once Beta is read, the terminals go there. Had its week filled up meanwhile, they go to Gamma.
-        self.assertEqual(decides(account("beta", 40, DAY), gamma)[:2], ("switch", "beta"))
-        self.assertEqual(decides(account("beta", 85, DAY), gamma)[:2], ("switch", "gamma"))
-        # An old reading that could not change the move is not waited for.
-        for name, other in {"its week ends after Gamma's": account("beta", 40, 4 * DAY, age=1200),
-                            "85% of its week was used": account("beta", 85, DAY, age=1200)}.items():
-            with self.subTest(name):
-                self.assertEqual(decides(other, gamma), ("switch", "gamma", None, []))
-        self.assertEqual(decides(account("beta", 40, 7 * DAY, age=1200)), ("none", None, None, []))
-        self.assertEqual(decides(old_beta, history={"left": "beta", "left_at": NOW - 600}), ("none", None, None, []))
-        # The holds come first: nothing is read for a move that would not be made.
-        self.assertEqual(decides(old_beta, gamma, history={"manual_at": NOW - 5})[2:], ("Your manual choice is held for 2 hours", []))
-        self.assertEqual(decides(old_beta, gamma, history={"early_at": NOW - HOUR})[2:],
-                         ("An early switch happened less than 2 hours ago", []))
-
-    def test_at_the_threshold_it_waits_for_that_reading_while_the_account_in_use_still_works(self):
-        old_gamma, beta = account("gamma", 40, 2 * DAY, age=1200), account("beta", 30, 4 * DAY)
-
-        def decides(used, **settings):
-            result = cli_policy.evaluate([account("alpha", used, 6 * DAY, active=True), beta, old_gamma], {**SETTINGS, **settings}, {}, NOW)
-            return (result["action"], result["target"], result["hold"], result["refresh"])
-
-        self.assertEqual(decides(96), ("none", None, "Checking Gamma before switching", ["gamma"]))
-        self.assertEqual(decides(99), ("none", None, "Checking Gamma before switching", ["gamma"]))
-        # Alpha's week ran out: nothing is waited for, and Gamma is read again from Beta.
-        self.assertEqual(decides(100), ("switch", "beta", None, []))
-        self.assertEqual(decides(96, cli_early_switch=False), ("switch", "beta", None, []))
+        self.assertEqual(decides(20, old_beta, gamma), ("switch", "gamma", "early", None, []))
+        self.assertEqual(decides(20, old_beta), ("none", None, None, None, []))
+        # At the threshold too: the account in use is left at once for the one that can be used now.
+        self.assertEqual(decides(96, old_beta, gamma), ("switch", "gamma", "threshold", None, []))
+        self.assertEqual(decides(96, old_beta, gamma, cli_order="most_room"), ("switch", "gamma", "threshold", None, []))
 
     def test_the_pause_between_early_switches_is_said_only_while_it_holds_a_move_back(self):
         """After an early switch the terminals are on the week that ends soonest and nothing more would move
@@ -480,6 +456,7 @@ class SoonestWeekFirstTest(unittest.TestCase):
                  "left out": account("beta", 40, 2 * DAY, excluded=True),
                  "less than 20% of its week left": account("beta", 81, 2 * DAY),
                  "its Fable limit nearly used up": account("beta", 40, 2 * DAY, model=90),
+                 "a reading 20 minutes old": account("beta", 40, 2 * DAY, age=1200),
                  "never read": account("beta", 40, 2 * DAY, age=None),
                  "its week already ended": account("beta", 40, -60)}
         for name, other in cases.items():

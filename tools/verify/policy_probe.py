@@ -68,11 +68,11 @@ show("   Beta's week ends in 2 days and 85% of it is used", [alpha, ends_in("bet
 show("   Beta's week ends in 2 days and the user chose Alpha 5 seconds ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"manual_at": NOW - 5})
 show("   Beta's week ends in 2 days and an early switch happened 1 hour ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"early_at": NOW - 3600})
 show("   Beta's week ends in 2 days and an early switch failed 1 hour ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"early_tried": NOW - 3600})
-show("   Beta's week ends in 2 days and its reading is 20 minutes old, Gamma's ends in 4 days",
+show("   Beta's week ends in 2 days and its reading is 20 minutes old, Gamma's ends in 4 days: Beta is passed over",
      [alpha, dict(ends_in("beta", "Beta", 40, 2), last_good_at=NOW - 1200), ends_in("gamma", "Gamma", 40, 4)])
 print("F. The same rule at the threshold. Alpha is at 96%, the order is \"most room first\", Beta has the most room and Gamma's week ends first:")
 full = ends_in("alpha", "Alpha", 96, 6, active=True)
 show("   the early switch is on", [full, ends_in("beta", "Beta", 10, 4), ends_in("gamma", "Gamma", 40, 2)], cli_order="most_room")
 show("   the early switch is off", [full, ends_in("beta", "Beta", 10, 4), ends_in("gamma", "Gamma", 40, 2)], cli_order="most_room", cli_early_switch=False)
-show("   the early switch is on and Gamma's reading is 20 minutes old",
+show("   the early switch is on and Gamma's reading is 20 minutes old: it is passed over",
      [full, ends_in("beta", "Beta", 10, 4), dict(ends_in("gamma", "Gamma", 40, 2), last_good_at=NOW - 1200)], cli_order="most_room")

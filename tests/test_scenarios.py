@@ -54,9 +54,11 @@ class ScenarioTest(unittest.TestCase):
         reading of the account it wants, so the check here is what the rule decides, not only what it starts.
         Two more did minutes later, when their own script changed the readings: `resetting` after its refill
         at 150 seconds, `outage` once its incident ended at 600. So the demo clock is moved on here, 25 minutes
-        in steps of 30 seconds, and the early switch has to decide nothing the whole way. A demo's script may
-        still take the account in use to the threshold (`typical` does, about 10 minutes in): that is the
-        threshold rule's move, not the early switch's, and it is left alone here.
+        in steps of 30 seconds, and the early switch has to start nothing and decide nothing the whole way.
+        Both are asked: a check that starts an early switch writes down that it tried, and the rule then
+        holds, so the decision after that check no longer shows it. A demo's script may still take the
+        account in use to the threshold (`typical` does, about 10 minutes in): that is the threshold rule's
+        move, not the early switch's, and it is left alone here.
         A job a scenario's picture shows is started when the demo is built, before this check."""
         for scenario in demo.SCENARIOS:
             with self.subTest(scenario=scenario):
@@ -64,8 +66,8 @@ class ScenarioTest(unittest.TestCase):
                 engine = None
                 try:
                     engine = demo.build_demo(root, scenario, start=False, inline=True)
-                    submitted = []
-                    engine.submit = lambda op: submitted.append((op.kind, op.provider))    # kept, never run
+                    submitted = []       # kept, never run: the job, its client and why auto-switch started it
+                    engine.submit = lambda op: submitted.append((op.kind, op.provider, getattr(op, "auto_kind", None)))
                     engine.tick()
                     self.assertEqual(submitted, [])
                     wants = cli_auto.decision(engine)
@@ -75,6 +77,7 @@ class ScenarioTest(unittest.TestCase):
                         engine.tick()
                         wants = cli_auto.decision(engine)
                         self.assertNotEqual(wants["kind"], "early", f"{later} seconds in: {wants['reason']}")
+                        self.assertNotIn("early", [why for _job, _client, why in submitted], f"{later} seconds in")
                 finally:
                     if engine is not None:
                         engine.stop()

@@ -67,10 +67,8 @@ and however far off the other account's reset is. It moves when the other accoun
 resets more than an hour before the weekly limit of the account in use. The other account has to be
 one auto-switch could move to at your percentage anyway (room in its weekly and its Fable limit, a
 reading at most 15 minutes old), with at least 20% of its week still unused. A week that has not
-started is never moved to. When the account whose week resets soonest has an older reading,
-AccountDeck reads it again before it moves anywhere. With this on, a switch at your percentage goes
-to that same account, whatever order you chose under **Next account**, so the terminals change once
-and not twice. An early switch happens at most once every 2 hours, and one that failed is tried
+started is never moved to. With this on, a switch at your percentage goes to that same account,
+whatever order you chose under **Next account**, so the terminals change once and not twice. An early switch happens at most once every 2 hours, and one that failed is tried
 again 2 hours later. Turn it off in **Settings → Auto-Switch** if you want switches only at your own
 percentage, in your own order.
 
