@@ -309,7 +309,12 @@ class Page:
             time.sleep(0.03)
 
     def open(self, server):
-        """Opens the dashboard of `server` the way the app does and waits for its first drawing."""
+        """Opens the dashboard of `server` the way the app does and waits for its first drawing. The page of
+        the test before is closed first, and what it reported is read before the list is emptied: that page
+        outlives its server, and a problem it reported while no test was reading would otherwise count
+        against this one."""
+        self.load("about:blank")
+        self.wait("location.href === 'about:blank'", "the page before to close")
         self.problems.clear()
         self.load(f"http://127.0.0.1:{server.server_port}/#token={server.token}")
         self.wait(support.DRAWN, "the dashboard with its first state")
@@ -493,6 +498,24 @@ class DashboardTestCase(unittest.TestCase):
             time.sleep(0.02)
         return [(name, {key: value for key, value in body.items() if key != "action"})
                 for name, body in server.engine.actions]
+
+
+class PageBeforeTest(DashboardTestCase):
+    def test_a_problem_of_the_page_before_is_not_counted_against_the_next_page(self):
+        """A class's tests share one browser, and each opens the page of its own server. The page of the test
+        before stays open after its server is gone and keeps asking it for the state. Chrome reports each refused
+        request, and the test browser reads a report only when it is next spoken to. That was after `open` had
+        emptied the list, so the next test found a problem that was not its own (it failed one test in the
+        whole check of 2026-11-13, in Chrome). Here the page before reports a problem while nobody is reading
+        the browser, and asks its server for the state right after, which tells the test that it has."""
+        state = fixtures.example_state("typical")
+        before = self.show(state)
+        asked, answer = threading.Event(), before.engine.snapshot
+        before.engine.snapshot = lambda rev=None: (asked.set(), answer(rev))[1]
+        self.browser.js("setTimeout(() => { console.error('a problem of the page before'); AD.api.poll(); }, 0), 1")
+        self.assertTrue(asked.wait(WAIT), "the page before never asked for the state")
+        self.show(state)
+        self.assertEqual(self.browser.problems, [])
 
 
 class ScenariosDrawTest(DashboardTestCase):
