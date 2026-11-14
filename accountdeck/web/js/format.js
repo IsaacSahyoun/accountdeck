@@ -67,7 +67,7 @@
     },
 
     accounts: {
-      title: 'Claude Code accounts', count: '{n} accounts', countOne: '1 account',
+      title: 'Claude Code', count: '{n} accounts', countOne: '1 account',
       sub: 'Every open terminal follows the account in use.', add: 'Add Account',
       sorts: {
         room: 'Most room left', fable: 'Most Fable 5.1 room', weekly: 'Most weekly room',

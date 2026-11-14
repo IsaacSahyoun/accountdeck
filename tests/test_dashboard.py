@@ -530,7 +530,7 @@ class ScenariosDrawTest(DashboardTestCase):
                 self.assertEqual(sorted(shown), sorted(a["label"] for a in state["accounts"]))
                 self.assertEqual(self.browser.problems, [])
                 titles = self.browser.js("[...document.querySelectorAll('.section-title')].map((t) => t.textContent)")
-                self.assertEqual(titles, ["Claude Code accounts", "Claude Desktop", "Codex", "Muse Code"])
+                self.assertEqual(titles, ["Claude Code", "Claude Desktop", "Codex", "Muse Code"])
 
 
 class TerminalRowsTest(DashboardTestCase):
