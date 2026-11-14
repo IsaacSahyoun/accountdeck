@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 import sys
 
-from . import intel, rules
+from . import __version__, intel, rules
 from .cli_policy import evaluate
 from .contract import PROVIDERS, platform_block, validate_plan, validate_state
 from .rules import PRIMARY_KINDS, REFILL_KEEP, clock_text
@@ -663,7 +663,7 @@ def example_state(scenario, now=BASE_NOW):
     switching = {p: pending is not None and pending["provider"] == p for p in PROVIDERS}
     active = {p: next((a["id"] for a in accounts if a["provider"] == p and a["active"]), None) for p in PROVIDERS}
     return {
-        "app": "accountdeck2", "version": "2.0.0", "rev": 4812, "now": now,
+        "app": "accountdeck2", "version": __version__, "rev": 4812, "now": now,
         "mode": spec.get("mode", "live"), "safe_mode": spec.get("safe_mode", False), "ready": spec.get("ready", True),
         "read_only": spec.get("read_only", False), "settings": settings,
         "providers": {
