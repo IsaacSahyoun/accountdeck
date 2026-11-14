@@ -519,10 +519,13 @@ class SoonestWeekFirstTest(unittest.TestCase):
 
     def test_the_threshold_still_comes_first(self):
         """An account in use that reached the threshold is left for the first account in the user's order, here
-        Beta with the most room, though Gamma's week ends sooner. The early switch's wait does not hold it."""
-        result = self.decide(account("beta", 30, 4 * DAY), account("gamma", 40, 2 * DAY), alpha=(96, 6 * DAY), cli_order="most_room",
-                             history={"early_at": NOW - 60, "early_tried": NOW - 60})
-        self.assertEqual((result["action"], result["kind"], result["target"]), ("switch", "threshold", "beta"))
+        Beta with the most room, though Gamma's week ends sooner. The early switch is not asked: it neither
+        picks the target nor holds the switch back with its wait."""
+        for name, history in (("no switch before", {}), ("an early switch a minute ago", {"early_at": NOW - 60, "early_tried": NOW - 60})):
+            with self.subTest(name):
+                result = self.decide(account("beta", 30, 4 * DAY), account("gamma", 40, 2 * DAY), alpha=(96, 6 * DAY),
+                                     cli_order="most_room", history=history)
+                self.assertEqual((result["action"], result["kind"], result["target"], result["hold"]), ("switch", "threshold", "beta", None))
 
     def test_the_reason_says_how_far_off_the_end_is(self):
         said = {name: self.decide(account("beta", 40, ends))["reason"]
