@@ -24,7 +24,8 @@
   limit that ran out (the account still works for the other models). It is not held against an account
   whose week ran out or that needs sign-in, and once auto-switch has moved the terminals off the chosen
   account for that, nothing is held;
-- the optional early switch spends weekly allowance that expires within 24 hours, at most every 2 hours.
+- the optional early switch keeps the terminals on the usable account whose week ends soonest, so allowance
+  is spent before it expires, however far off that end is. It moves at most every 2 hours.
 """
 from functools import cmp_to_key
 import math
@@ -98,7 +99,10 @@ def ended(window, now):
 
 
 def duration(seconds):
+    """"45 min", "12h 0m" or "2d 5h"."""
     minutes = max(0, math.ceil(seconds / 60))
+    if minutes >= 1440:
+        return f"{minutes // 1440}d {minutes % 1440 // 60}h"
     return f"{minutes // 60}h {minutes % 60}m" if minutes >= 60 else f"{minutes} min"
 
 
@@ -305,8 +309,10 @@ def _refills_first(rows, threshold, now):
 
 
 def _early(rows, active, history, now):
-    """The optional early switch: move to an account whose week ends within 24 hours and before the active one's,
-    to spend allowance that would expire. Returns the fields of the result that change."""
+    """The optional early switch: move to the usable account whose week ends soonest, when it ends before the
+    week of the account in use. Allowance left at the end of a week is lost, so the week nearest its end is spent
+    first, however far off that end is. A week that has not started has no end and is not moved to. Returns the
+    fields of the result that change."""
     last = history.get("last") or {}
     early_at = history.get("early_at", last.get("at", -1e20) if last.get("kind") == "early" else -1e20)
     if now - early_at < 2 * HOUR:
@@ -316,7 +322,7 @@ def _early(rows, active, history, now):
     mine = active["weekly_reset"]
     just_left = history.get("left") if now - history.get("left_at", -1e20) < 1800 else None
     early = [row for row in rows if row["skip"] is None and row["weekly_reset"] is not None and mine is not None
-             and 0 < row["weekly_reset"] - now <= 24 * HOUR and row["weekly_reset"] < mine
+             and now < row["weekly_reset"] < mine
              and row["values"][0][1] <= 80 and row["id"] != just_left]
     if not early:
         return {}

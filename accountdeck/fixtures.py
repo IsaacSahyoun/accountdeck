@@ -296,7 +296,14 @@ def _scene_typical(spec, now):
     spec["notices"] = [{"id": "n_12", "level": "info", "message": "Alpha is ready.", "at": now - 900, "sticky": False}]
 
 
+# A demo holds still: its picture is the state it starts in. In the scenarios that use this, the week of the
+# account in use is not the one that ends first, so with the early switch on the demo would move its terminals
+# moments after it starts (`cli_policy._early`).
+_HOLDS_STILL = {"cli_early_switch": False}
+
+
 def _scene_resets_soon(spec, now):
+    spec["settings"] = dict(_HOLDS_STILL)
     spec["accounts"] = [
         _terminal("cli_alpha", "Alpha", [_w("seven_day", 100, 750)], checked=-90),
         _terminal("cli_beta", "Beta", [_w("seven_day", 55, 345600)], active=True, checked=-400,
@@ -309,6 +316,7 @@ def _scene_resets_soon(spec, now):
 
 
 def _scene_refilled(spec, now):
+    spec["settings"] = dict(_HOLDS_STILL)
     spec["accounts"] = [
         _terminal("cli_alpha", "Alpha", [_w("seven_day", 2, 604200, refilled=(-600, -240, 100))],
                   active=True, checked=-240, credential={"state": "live", "expires_in": 6000}),
@@ -390,7 +398,7 @@ def _scene_stale(spec, now):
 
 
 def _scene_fable_binding(spec, now):
-    spec["settings"] = {"pinned_model": "Fable"}
+    spec["settings"] = {"pinned_model": "Fable", **_HOLDS_STILL}
     spec["accounts"] = [
         _terminal("cli_alpha", "Alpha", [_w("seven_day", 40, 170000), _w("seven_day_fable", 92, 170000)], active=True,
                   checked=-100, credential={"state": "live", "expires_in": 6000}),
@@ -482,10 +490,8 @@ def _scene_loading(spec, now):
     ]
 
 
-# The early switch is off here: among 35 Claude Code accounts one always has a week that ends before the week of
-# the account in use, and the demo would move its terminals at its first check.
 def _scene_fifty(spec, now):
-    spec["settings"] = {"density": "rows", "cli_early_switch": False}
+    spec["settings"] = {"density": "rows", **_HOLDS_STILL}
     spec["accounts"] = _fifty_accounts()
     spec["events"] = [{"id": 412, "at": now - 30, "kind": "refresh", "message": "Refreshed 50 accounts."}]
 

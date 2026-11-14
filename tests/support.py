@@ -154,18 +154,19 @@ def once_the_login_is(engine, refresh_token, then):
     return fired
 
 
-def with_reading(engine, key, *, weekly, fable=None):
+def with_reading(engine, key, *, weekly, fable=None, ends=4 * 86400):
     """Give a Claude account a reading taken this second, with this percent of its week used. `fable` is the
-    percent used of its Fable weekly limit. Without it the reading has no such limit."""
+    percent used of its Fable weekly limit. Without it the reading has no such limit. The week, and the Fable
+    limit with it, ends `ends` seconds from now."""
     now = engine.clock()
     usage = copy.deepcopy(engine.store.account(key)["last_good_usage"])
     usage["checked"] = now
     for window in usage["windows"]:
         if window.get("kind") == "weekly":
-            window.update(used=float(weekly), reset=now + 4 * 86400)
+            window.update(used=float(weekly), reset=now + ends)
     usage["windows"] = [w for w in usage["windows"] if w.get("kind") != "model"]
     if fable is not None:
-        usage["windows"].append(fable_window(float(fable), now + 4 * 86400))
+        usage["windows"].append(fable_window(float(fable), now + ends))
     engine.store.observe(key, usage, at=now)
 
 

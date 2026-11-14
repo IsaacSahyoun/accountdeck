@@ -356,6 +356,93 @@ class TerminalInterruptedSwitchTest(DeckCase):
         self.assertEqual(self.pending_records(), [])
 
 
+class TerminalSoonestWeekTest(DeckCase):
+    """The early switch through the real engine: the terminals end up signed in to the account whose week ends
+    soonest, however far off that end is. The rule's own answers are in `tests.test_readings`
+    (`SoonestWeekFirstTest` and the decision table)."""
+    DAY = 86400
+
+    def setUp(self):
+        super().setUp()
+        self.engine.sense_active()
+        self.first = self.active("claude_cli")
+        usable = [row for row in self.rows("claude_cli") if not row["active"] and row["switchable"]
+                  and row.get("health", "ok") == "ok" and not row.get("excluded")]
+        self.later, self.soonest = usable[:2]
+        self.read(self.first, weekly=20, ends=6 * self.DAY)
+        self.read(self.later, weekly=30, ends=4 * self.DAY)
+        self.read(self.soonest, weekly=30, ends=2 * self.DAY)
+
+    def read(self, row, **reading):
+        support.with_reading(self.engine, row["id"], **reading)
+
+    def started(self):
+        """What one check of auto-switch starts, without running it."""
+        submitted, submit = [], self.engine.submit
+        self.engine.submit = lambda op: submitted.append((op.kind, op.provider))
+        try:
+            cli_auto.tick(self.engine)
+        finally:
+            self.engine.submit = submit
+        return submitted
+
+    def switched(self):
+        before = self.engine.store.setting("cli_history", {}).get("last")
+        cli_auto.tick(self.engine)
+        self.assertTrue(self.engine.runner.wait(30))
+        last = self.engine.store.setting("cli_history", {}).get("last")
+        self.assertNotEqual(last, before, "auto-switch did not switch")
+        return last
+
+    def test_the_terminals_move_to_the_account_whose_week_ends_soonest(self):
+        last = self.switched()
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("early", self.first["id"], self.soonest["id"]))
+        self.assertEqual(last["reason"], f"Using {self.soonest['label']}'s weekly allowance before it resets in 2d 0h (70% left).")
+        self.assert_consistent("claude_cli", self.identity(self.soonest["id"]))
+        # It stays there. The next check starts nothing, and neither does one after the 2 hours between early switches.
+        self.assertEqual(self.started(), [])
+        self.engine.clock.advance(2 * 3600 + 60)
+        for row, ends in ((self.first, 6), (self.later, 4), (self.soonest, 2)):
+            self.read(row, weekly=30, ends=ends * self.DAY - 2 * 3600 - 60)
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["hold"]), ("none", None))
+        self.assertEqual(self.started(), [])
+
+    def test_an_undo_takes_the_terminals_back_and_is_held(self):
+        """The reverse. An Undo is the user's own choice, so the rule does not move the terminals again: first
+        because an early switch just happened, and after those 2 hours because the choice is still held."""
+        self.switched()
+        self.engine.clock.advance(300)
+        plan = self.engine.action("cli-undo", {"provider": "claude_cli"})["plan"]
+        self.assertEqual(plan["blockers"], [])
+        self.engine.action("switch", {"id": self.first["id"], "provider": "claude_cli", "plan_id": plan["plan_id"]})
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["hold"]), ("none", "An early switch happened less than 2 hours ago"))
+        self.assertEqual(self.started(), [])
+        self.engine.clock.advance(2 * 3600 - 300 + 10)          # 2 hours after the early switch, not yet after the Undo
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["hold"]), ("none", "Your manual choice is held for 2 hours"))
+        self.assertEqual(self.started(), [])
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def test_with_the_setting_off_the_terminals_stay(self):
+        self.engine.prefs.update({"cli_early_switch": False})
+        self.assertEqual(cli_auto.decision(self.engine)["action"], "none")
+        self.assertEqual(self.started(), [])
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def test_a_week_that_ends_soonest_is_left_at_the_threshold_for_the_next_soonest(self):
+        """After the early switch the account is used like any other: at 95% the terminals move on, to the week
+        that ends next."""
+        self.switched()
+        self.read(self.soonest, weekly=96, ends=2 * self.DAY)
+        last = self.switched()
+        self.assertEqual((last["kind"], last["to"]), ("threshold", self.later["id"]))
+        self.assert_consistent("claude_cli", self.identity(self.later["id"]))
+
+
 class TerminalFableLimitTest(DeckCase):
     """Auto-switch and the Fable weekly limit, through the real engine: who is signed in afterwards. The
     rule's own answers are in `tests.test_readings` (the decision table and `FableLimitTest`)."""

@@ -7,7 +7,7 @@ import unittest
 os.environ["ACCOUNTDECK_SAFE_MODE"] = "1"
 os.environ["ACCOUNTDECK_DEMO"] = "1"
 
-from accountdeck import contract, demo, fixtures  # noqa: E402
+from accountdeck import cli_auto, contract, demo, fixtures  # noqa: E402
 
 
 class ScenarioTest(unittest.TestCase):
@@ -46,11 +46,13 @@ class ScenarioTest(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(fixtures._SHAPES[key], usage._describe(key))
 
-    def test_no_demo_starts_a_job_at_its_first_check(self):
-        """A demo that switches by itself at its first check shows another page than the scenario's picture, and
-        that switch races whatever stops the demo. `fifty` did, once its 35 accounts were Claude Code's: the early
-        switch moved the terminals to the account whose week ends first. A job a scenario's picture shows is
-        started when the demo is built, before this check."""
+    def test_no_demo_moves_its_terminals_by_itself(self):
+        """A demo that switches by itself shows another page than the scenario's picture, and that switch races
+        whatever stops the demo. `fifty` did at its first check, once its 35 accounts were Claude Code's: the
+        early switch moved the terminals to the account whose week ends first. Three more did about 10 seconds
+        after their start, once the early switch had no 24-hour limit: the first check only asks for a new
+        reading of the account it wants, so the check here is what the rule decides, not only what it starts.
+        A job a scenario's picture shows is started when the demo is built, before this check."""
         for scenario in demo.SCENARIOS:
             with self.subTest(scenario=scenario):
                 root = tempfile.mkdtemp(prefix="ad2-scenario-")
@@ -61,6 +63,8 @@ class ScenarioTest(unittest.TestCase):
                     engine.submit = lambda op: submitted.append((op.kind, op.provider))    # kept, never run
                     engine.tick()
                     self.assertEqual(submitted, [])
+                    wants = cli_auto.decision(engine)
+                    self.assertEqual((wants["action"], wants["target"], wants["reason"]), ("none", None, ""))
                 finally:
                     if engine is not None:
                         engine.stop()

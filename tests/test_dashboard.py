@@ -802,6 +802,10 @@ class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
         words = self.browser.js("document.getElementById('settings-body').textContent")
         self.assertIn("Of its weekly or Fable weekly limit.", words)
         self.assertNotIn("5-hour", words)
+        # The early switch has no 24-hour limit (2026-11-14), and its words say what it does now.
+        self.assertIn("Use weekly allowance before it resets", words)
+        self.assertIn("Keeps your terminals on the account whose week resets soonest, so its unused allowance is spent first.", words)
+        self.assertNotIn("about to reset", words)
 
     def test_no_words_of_the_page_call_the_fable_limit_fable_5_1(self):
         """Isaac, 2026-11-14: it is a Fable limit, not Fable 5.1's. Every sentence the page can write is in

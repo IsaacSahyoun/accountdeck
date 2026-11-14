@@ -56,3 +56,13 @@ show("   Alpha's week is at 99%, so it still works. Beta's Fable limit is out",
 show("   Alpha's Sonnet limit is out: another model's limit is not acted on",
      [answered("alpha", "Alpha", {"seven_day": dict(week, utilization=40), "seven_day_sonnet": dict(week, utilization=100)}, active=True),
       fable("beta", "Beta", 30, 30)])
+print("E. The early switch: the week that ends soonest is used first. Alpha is in use, 20% of its week used, and its week ends in 6 days:")
+def week(key, label, used, days, **more):
+    return account(key, label, used, NOW + days * 86400, **more)
+alpha = week("alpha", "Alpha", 20, 6, active=True)
+show("   Beta's week ends in 12 hours", [alpha, week("beta", "Beta", 40, 0.5)])
+show("   Beta's week ends in 2 days, Gamma's in 4 days", [alpha, week("beta", "Beta", 40, 2), week("gamma", "Gamma", 40, 4)])
+show("   Beta's week ends in 7 days, after Alpha's", [alpha, week("beta", "Beta", 40, 7)])
+show("   Beta's week ends in 2 days and 85% of it is used", [alpha, week("beta", "Beta", 85, 2)])
+show("   Beta's week ends in 2 days and the user chose Alpha 5 seconds ago", [alpha, week("beta", "Beta", 40, 2)], {"manual_at": NOW - 5})
+show("   Beta's week ends in 2 days and an early switch happened 1 hour ago", [alpha, week("beta", "Beta", 40, 2)], {"early_at": NOW - 3600})

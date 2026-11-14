@@ -60,12 +60,13 @@ that account still works for the other models. Change it in
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
 switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 
-**Early switch:** **Use weekly allowance before it resets** also starts on. With it on, AccountDeck
-can move Claude Code to another account long before 95%, for example when the account in use is
-only 20% used. It does this when the other account's weekly limit resets within 24 hours, sooner
-than the weekly limit of the account in use, and at least 20% of that week is still unused. The
-other account also needs room in its Fable limit.
-This happens at most once every 2 hours. Turn it off in **Settings → Auto-Switch** if you want
+**Early switch:** **Use weekly allowance before it resets** also starts on. Allowance that is left
+when a week resets is lost, so with this on AccountDeck keeps Claude Code on the account whose week
+resets soonest. It can move long before 95%, for example when the account in use is only 20% used,
+and however far off the other account's reset is. It moves when the other account's weekly limit
+resets sooner than the weekly limit of the account in use and at least 20% of that week is still
+unused. The other account also needs room in its Fable limit, and a week that has not started is
+never moved to. This happens at most once every 2 hours. Turn it off in **Settings → Auto-Switch** if you want
 switches only at your own percentage.
 
 **Your own choice:** When you switch Claude Code accounts yourself, or choose **Undo**, auto-switch

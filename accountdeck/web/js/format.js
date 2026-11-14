@@ -184,7 +184,7 @@
       order: 'Next account', orderBy: 'Order', aboutVersion: 'Version {version}', orders: { soonest_reset: 'Soonest reset first', most_room: 'Most room left first', manual: 'My own order' },
       orderNow: 'Order right now', orderManual: 'Your order (top goes first)', orderEmpty: 'Add terminal accounts to see the order.',
       orderReset: 'Reset to Automatic Order', moveUp: 'Move {label} up', moveDown: 'Move {label} down',
-      early: 'Use weekly allowance before it resets', earlyHint: 'Switches early to an account whose unused weekly limit is about to reset.',
+      early: 'Use weekly allowance before it resets', earlyHint: 'Keeps your terminals on the account whose week resets soonest, so its unused allowance is spent first.',
       alertsOn: 'Show alerts in AccountDeck', alertsOnHint: 'Low limits, refills and switches appear on this page.',
       browser: 'Browser notifications', browserOn: 'On in this browser.', browserOff: 'Off. The browser asks for your permission once.',
       browserBlocked: "Blocked in this browser's site settings.", browserUnsupported: "This browser can't show notifications.",
