@@ -43,10 +43,10 @@ T="$TRIAL/Library/Application Support/AccountDeck2"
 The first run downloads Python and two packages, about 30 MB, each checked against its SHA-256. The second run must say "unchanged" for the app code, the runtime and the app. Then drive the installed form with its own runtime, on fake data:
 ```sh
 "$PY" -E -s tools/verify/drive.py "$T/runtime/python/bin/python3.14" "$T/app" typical "$PROOF/trial" '[
-  {"more": "Beta", "client": "claude"}, {"click": "Rename…", "in": "menu"},
+  {"more": "Beta", "client": "claude_cli"}, {"click": "Rename…", "in": "menu"},
   {"wait": "document.getElementById(\"modal\").open"}, {"type": "Work account"},
   {"click": "Rename", "in": "sheet"}, {"wait": "!document.getElementById(\"modal\").open"},
-  {"row": "Work account", "client": "claude"}
+  {"row": "Work account", "client": "claude_cli"}
 ]' | tee "$PROOF/trial-drive.txt"
 ```
 This catches a file the app needs that the installer leaves out.
@@ -66,8 +66,10 @@ done
 
 ## 4. Nothing in flight
 Ask Isaac to look at the live dashboard:
-- no switch is running;
+- no switch is running, and no sign-in is waiting to be finished;
 - no banner offers Recover. If one does, he presses Recover with the installed version first. Never carry an open switch record across an install.
+
+When the live app is a build before 2.1 and the new one is 2.1 or later, say this before he quits: the new build does not manage Claude Desktop. His saved Claude Desktop accounts will no longer be listed. They stay in the data folder, encrypted, and going back to the old build shows them again. Anything he wants done with Claude Desktop through AccountDeck, he does now, with the installed version.
 
 Then he chooses Quit AccountDeck 2 in the menu bar. Check it is gone: `pgrep -f "run.py --app"` prints nothing.
 
@@ -109,15 +111,15 @@ trash "$LIVE"; cp -Rp "$LIVE-backup-$STAMP" "$LIVE"; trash "$LIVE/AccountDeck 2.
 ```
 A restored vault holds the logins as they were at the backup. A client that renewed its login since then may ask for a new sign-in. Say that before you do it.
 
-The database's schema number is 2 in both the 2.0.0 build and the code after it. Whether the 2.0.0 code reads everything the newer code writes has not been checked.
+The database's schema number is 2 in both the 2.0.0 build and the code after it. Whether the 2.0.0 code reads everything the newer code writes has not been checked. One part has: a 2.1 build leaves the Claude Desktop rows and saved logins of 2.0.0 as they were (`tests/test_no_desktop.py`, `HiddenAccountTest`).
 
 ## 9. The checks only the real Mac can show
 Isaac does these, and you write down what he saw, with the commit, in `$PROOF/real-mac.txt`. Until they are done, the report says the build is installed and not checked on real logins.
 
-1. The app opens, the icon is in the menu bar, and the dashboard window shows every saved account with no banner. No password prompt appeared, or one did and he chose Always Allow.
+1. The app opens, the icon is in the menu bar, and the dashboard window shows every saved Claude Code, Codex and Muse account with no banner. After the first install of 2.1 the page has no Claude Desktop section. No password prompt appeared, or one did and he chose Always Allow.
 2. Each client's account marked "In use" is the one he is really signed in to.
 3. A terminal switch: Switch to another Claude Code account, send a message in a terminal that was already open, and Claude Code answers as the new account. Switch back.
-4. A Desktop "switch when idle": with a Claude Code session working in Claude Desktop, choose Switch When Claude Is Idle. The banner shows it waiting. When the session ends, Claude closes and opens again as the new account. Switch back.
+4. Claude Desktop is left alone: it was not closed by the install or the first start, and it is signed in to the account it had before.
 5. A Codex or Muse switch, if he uses them.
 6. The menu bar: a "Switch … To" submenu, Refresh Now, and Open Dashboard in Browser.
 7. The first automatic switch when it comes, and its Undo.

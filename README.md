@@ -1,13 +1,13 @@
 # AccountDeck 2 for Mac
 
-AccountDeck 2 keeps Claude, Codex and Muse usage, reset times, and saved logins in one local dashboard.
+AccountDeck 2 keeps Claude Code, Codex and Muse Code usage, reset times, and saved logins in one local dashboard.
 It lives in your menu bar. Use it with your own accounts on your own Mac user account.
 
 ## Requirements
 
 - An Apple silicon Mac (M1 or newer), with macOS Sonoma 14 or newer.
 - Internet access for the first install and for sign-in and usage checks.
-- Claude Code, Claude Desktop, Codex, or Muse Code. Use whichever you have; you do not need all four.
+- Claude Code, Codex, or Muse Code. Use whichever you have; you do not need all three.
   Install and sign in to each client you want to manage. Codex needs its command-line tool.
 
 The installer downloads a pinned Python runtime and its libraries. You do not need Python,
@@ -32,15 +32,14 @@ Or choose **Add Account**. A separate Terminal window opens for sign-in. Close t
 when sign-in is finished; only then is the account saved. A private browser window helps you
 choose a different account. Repeat to save more accounts.
 
-**Claude Desktop, Codex and Muse Code:** Their sections show the current login when it can be read.
+**Codex and Muse Code:** Their sections show the current login when it can be read.
 Choose **Save Current Account** to keep it, or **Add Account** for another login.
-Desktop may close briefly to save a complete sign-in. Codex adds accounts in a separate folder.
+Codex adds accounts in a separate folder.
 Codex and Muse must keep their login in a file; see Help below.
 If a client is not installed, leave its section alone.
 
 **Switch:** Choose **Switch…** beside a saved account and review the plan. Claude Code terminals
-follow the new login on their next message. Desktop switches may close and reopen Claude;
-save Chat and Cowork work first. Codex and Muse switches wait for their sessions to close.
+follow the new login on their next message. Codex and Muse switches wait for their sessions to close.
 A switch that waits gives up after 30 minutes and changes nothing; confirm it again then.
 Settings, MCP definitions, plugins, projects, and transcripts stay shared.
 
@@ -59,7 +58,7 @@ that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a reading at most
 15 minutes old. Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
-switch has a 10-minute **Undo**. Desktop, Codex and Muse only switch when you ask.
+switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 
 **Early switch:** **Use weekly allowance before it resets** also starts on. With it on, AccountDeck
 can move Claude Code to another account long before 95%, for example when the account in use is
@@ -110,6 +109,13 @@ The same steps apply to the uninstall shortcut. Do not use `sudo` or disable Gat
 **Why avoid `/login`, `/logout`, and Log Out?** After saving your accounts, use AccountDeck's
 **Add Account** and **Switch…** to change accounts. Logging out in a client can revoke a sign-in
 that AccountDeck saved. Use **Sign In Again** if a saved login expires or is revoked.
+
+**Where did Claude Desktop go?** Version 2.1 does not manage Claude Desktop. Sign in and out in Claude Desktop
+itself. Accounts an earlier version saved for it are no longer listed. They stay in the data folder, encrypted,
+and AccountDeck does not use them. If an earlier version was in the middle of a Claude Desktop switch, a notice
+says so once: open Claude Desktop and check the account, and sign in again if it is the wrong one. A move bundle
+from a PC can still hold Claude Desktop accounts. The import leaves them out and says how many, and that bundle
+gets no confirmation code, so the PC keeps its accounts.
 
 **Codex says file storage is required.** AccountDeck exchanges only `auth.json`. In
 `~/.codex/config.toml`, set `cli_auth_credentials_store = "file"` (replace an existing value;

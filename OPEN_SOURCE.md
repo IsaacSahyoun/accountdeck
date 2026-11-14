@@ -12,6 +12,8 @@ AccountDeck is a Python/web implementation. These projects informed its design. 
 | [Codex Account Switcher](https://github.com/korsun009/codex-account-switcher) | `709ca1c91fdb0e885b7c0cc5337769149f2a20ca` | Windows DPAPI vault and shared configuration/history |
 | [Codex Account Switcher](https://github.com/liuzhao1225/codex-account-switcher) | `7312cfac3184b77e756a704748a9dab04b443ef8` | Identity verification around account handoff |
 
+Versions before 2.1 also switched Claude Desktop. The Desktop parts of this table informed that code, which 2.1 removed.
+
 All listed projects are MIT except SnlperStripes/claude-account-switcher, which is Apache-2.0. No upstream graphical application or executable is installed by AccountDeck. The notice for adapted source is included below.
 
 Runtime dependency: [cryptography](https://github.com/pyca/cryptography), distributed under Apache-2.0 or BSD-3-Clause. Its installed package includes its license notices.

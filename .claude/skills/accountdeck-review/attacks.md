@@ -5,11 +5,11 @@ The attacks that found real bugs in the three reviews of 2026-11-12. A reviewer 
 ## A login on disk
 A switch must never lose a login, mix two accounts' pieces, or file a login under the wrong account.
 1. **The app dies between two writes.** List every write in order. After each one, say what is on disk, who the client would open as, and what Recover does next. Do it for Recover's own writes too.
-2. **Pieces of two accounts in one login.** One account's name beside another account's token or cookies. Include the files the client writes by itself, such as Claude Desktop's settings journal.
+2. **Pieces of two accounts in one login.** One account's name beside another account's token or cookies. Include the files the client writes by itself, such as a token Claude Code or Codex renews.
 3. **Recover pressed once, twice, and after a failed press.** Can it loop, block for good, skip a record, or leave a leftover record? What does the user see and what can they do?
 4. **The client changes its own login in the middle.** Claude Code or Codex renews its token, or the user signs in as someone else, between the app's read and its write.
 5. **A file that cannot be read, or is half written.** Is it kept before it is replaced? Is "I cannot tell" ever treated as "it is fine"?
-6. **Data an older version wrote.** Open records, set-aside records, saved pauses and settings from the installed version, read by the new code on its first start.
+6. **Data an older version wrote.** Open records, set-aside records, saved pauses and settings from the installed version, read by the new code on its first start. Builds before 2.1 also saved accounts, logins and switch records for Claude Desktop, which the new code does not manage: it must never list, change or delete them, and never open a file of Claude Desktop's own.
 7. **The outside is down.** The provider cannot be reached, the Keychain is locked, the disk is full.
 
 ## Two jobs at once
@@ -29,7 +29,7 @@ The dashboard is a web page served on `127.0.0.1`. Any website the user visits c
 18. **An old page and a new server.** A window left open across an install runs the old page against the new answers.
 
 ## Every way in
-19. **All four clients.** A fix for one client's switch usually has three siblings.
+19. **All three clients.** A fix for one client's switch usually has two siblings.
 20. **The dashboard and the menu bar.** Both start a switch.
 21. **The reverse of every new state.** If a thing can be left out, set aside, paused or held, how does it come back?
 

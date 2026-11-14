@@ -1,6 +1,6 @@
 # AccountDeck 2
 
-A Mac menu bar app in Python 3.14 with a web dashboard on `127.0.0.1`. It saves and switches the logins of four clients on one Mac user account: Claude Code in the terminal (`claude_cli`), Claude Desktop (`claude`), Codex (`codex`) and Muse Code (`muse`). The app shows the dashboard in a window of its own, a WKWebView, so WebKit is the browser engine a person sees.
+A Mac menu bar app in Python 3.14 with a web dashboard on `127.0.0.1`. It saves and switches the logins of three clients on one Mac user account: Claude Code in the terminal (`claude_cli`), Codex (`codex`) and Muse Code (`muse`). Builds before 2.1 also switched Claude Desktop (`claude`). This one does not: it never lists what those builds saved for it and never opens a file of Claude Desktop's own (`tests/test_no_desktop.py`). The app shows the dashboard in a window of its own, a WKWebView, so WebKit is the browser engine a person sees.
 
 ## The rule that comes first
 The copy of this app installed on this Mac holds real logins. A dev run or a test that reaches them can sign real accounts out.
@@ -38,8 +38,8 @@ tools/verify/final_check.sh "$COPY" ~/.accountdeck/proof/<task> under-load
 ```
 
 ## Where things are
-- `accountdeck/engine.py` runs everything. `switching.py` sends an action to a client's switch: `switch_cli.py` (Claude Code), `switch_claude.py` (Desktop), `switch_codex.py`, `switch_muse.py`.
-- `recovery.py` settles a switch that stopped part way. `core.py` holds the encrypted vault, the store and the write-ahead switch record (`FileTransaction`). `operations.py` is the job runner. `stop_ladder.py` closes a client's sessions.
+- `accountdeck/engine.py` runs everything. `switching.py` sends an action to a client's switch: `switch_cli.py` (Claude Code), `switch_codex.py`, `switch_muse.py`.
+- `recovery.py` settles a switch that stopped part way. `core.py` holds the encrypted vault, the store and the write-ahead switch record (`FileTransaction`). `operations.py` is the job runner.
 - `server.py` is the local web server and its request rules. `web/` is the dashboard: plain JavaScript and CSS, no build step.
 - `platform/` is the Mac side: the menu bar item, the dashboard window (`dashboard_window.py`), the Keychain.
 - `demo.py` and `fixtures.py` build the 23 demo scenarios the tests and tools use.

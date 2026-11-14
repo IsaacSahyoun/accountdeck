@@ -1,8 +1,8 @@
 # Account rows and the More menu
 
-Status: rename driven 2026-11-12 through `drive.py` in the WebKit window (below), on the app code of commit 5c9b5da. Remove and Sign In Again are a draft. The tests named here are in the final check.
+Status: rename driven 2026-11-13 through `drive.py` in the WebKit window (below), on the app code of the commit that took Claude Desktop out. Remove and Sign In Again are a draft. The tests named here are in the final check.
 
-One row design serves all four clients (`accountdeck/web/js/rows.js`).
+One row design serves all three clients (`accountdeck/web/js/rows.js`).
 
 ## Sub-features
 - A row shows the name, badges (In use, Next up, Left out, Not saved), plan and email, and the limits with their meters.
@@ -20,17 +20,17 @@ One row design serves all four clients (`accountdeck/web/js/rows.js`).
 ## Driving it
 ```sh
 "$PY" -E -s tools/verify/drive.py "$PY" "$COPY" typical "$PROOF" '[
-  {"more": "Beta", "client": "claude"},
+  {"more": "Beta", "client": "claude_cli"},
   {"click": "Rename…", "in": "menu"},
   {"wait": "document.getElementById(\"modal\").open && document.activeElement.value === \"Beta\""},
   {"type": "Work account"},
   {"click": "Rename", "in": "sheet"},
   {"wait": "!document.getElementById(\"modal\").open"},
-  {"row": "Work account", "client": "claude"},
+  {"row": "Work account", "client": "claude_cli"},
   {"accounts": true}
 ]'
 ```
-It works when the row reads "Work account" and `accounts` shows `('claude', 'Work account', '')` while the Claude Code account named Beta keeps its name.
+It works when the row reads "Work account" and `accounts` shows `('claude_cli', 'Work account', '')` while every other account keeps its name.
 
 Handles: a row is `li.row[data-id="<account id>"]`, the menu is `#menu` (a popover), a sheet is `#modal` (a dialog), and the row button carries `data-primary`.
 
@@ -40,7 +40,7 @@ Tests to reuse: `tests/test_dashboard.py`, `TerminalRowsTest`, `OtherClientsRows
 - Two clients can hold an account with the same name. Always name the client.
 - A `shot` grows the window to the page's height, and the menu closes when the window changes size. The menu also fades in, so a picture taken right after `more` shows no menu. To picture an open menu, wait for the fade and keep the window as it is:
   ```json
-  {"more": "Beta", "client": "claude"},
+  {"more": "Beta", "client": "claude_cli"},
   {"wait": "getComputedStyle(document.getElementById(\"menu\")).opacity === \"1\""},
   {"shot": "menu-open", "view": true}
   ```

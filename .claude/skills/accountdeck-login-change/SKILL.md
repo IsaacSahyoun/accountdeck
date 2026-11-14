@@ -1,11 +1,11 @@
 ---
 name: accountdeck-login-change
-description: The loop for any change to AccountDeck 2's login code (a client's switch, Recover, the vault, the switch record, the job runner, the stop ladder). Covers the crash table before code, tests for every crash point, client and old-version record, the take-the-fix-out check, and the three-model review of the change and of its fixes. Use when you fix a bug or build a feature in that code, or when the message starts with /accountdeck-login-change.
+description: The loop for any change to AccountDeck 2's login code (a client's switch, Recover, the vault, the switch record, the job runner). Covers the crash table before code, tests for every crash point, client and old-version record, the take-the-fix-out check, and the three-model review of the change and of its fixes. Use when you fix a bug or build a feature in that code, or when the message starts with /accountdeck-login-change.
 ---
 
 # AccountDeck login change
 
-For a change to `accountdeck/switch_*.py`, `switching.py`, `recovery.py`, `core.py`, `operations.py`, `stop_ladder.py`, `file_switch.py`, `cli_accounts.py` or `providers/`. This code writes real logins, and a bug in it signs a real account out or files a login under the wrong account. Isaac's rule for it is one builder, many independent reviewers, and no open critical or high finding.
+For a change to `accountdeck/switch_*.py`, `switching.py`, `recovery.py`, `core.py`, `operations.py`, `file_switch.py`, `cli_accounts.py` or `providers/`. This code writes real logins, and a bug in it signs a real account out or files a login under the wrong account. Isaac's rule for it is one builder, many independent reviewers, and no open critical or high finding.
 
 It is the `/fixbug` loop with AccountDeck's own steps added. Where the two differ, this one wins. The ideas come from pstack's `blast-radius` and `statechart` skills, without the model checker.
 
@@ -23,18 +23,18 @@ Write it in your notes and keep it for the reviewers. For the path you are chang
 | 1: … | … | … | … | … |
 
 - One row per write, in order, for the switch and for Recover's own writes.
-- Include the files the client writes by itself: Claude Code renewing its token, Claude Desktop's settings journal.
+- Include the files the client writes by itself: Claude Code or Codex renewing its token.
 - A row where the client would open as a mix of two accounts, or where Recover would save a mix, is a bug in the design. Change the write order until no such row is left. The rule that has worked: take the account's name off first and put it back last, so a half-written login reads as signed out.
 
 Then name the one fact the change is safe because of, in one sentence, and plan the test that proves it by a run. If you cannot name it, you do not understand the change yet.
 
 ## 3. Build it, one change at a time
 Read `.claude/skills/accountdeck-review/attacks.md` and write a test for every attack the change can reach. The ones that are never optional:
-- **The app dies at each write.** `tests/test_switch_safety.py` has the pattern: `Crash` is the exception that kills the app at a step. `TerminalInterruptedSwitchTest` and `DesktopInterruptedSwitchTest` each have a `test_the_app_dies_at_each_step`, and Codex and Muse have their own `InterruptedSwitchTest` classes. After each crash the test presses Recover and checks who is signed in and what the vault holds.
-- **Recover dies too, and is pressed twice.** `HalfWrittenDesktopLoginTest` and `DesktopRecoverThatFailsPartWayTest` in `tests/test_second_review.py`.
-- **A record the installed version wrote.** `RecordsOfTheShippedVersionTest` builds records the way the 2.0.0 build did. If you change what a record holds, add the old shape here.
+- **The app dies at each write.** `tests/test_switch_safety.py` has the pattern: `Crash` is the exception that kills the app at a step. `TerminalInterruptedSwitchTest` has `test_the_app_dies_at_each_step`, and Codex and Muse have their own `InterruptedSwitchTest` classes. After each crash the test presses Recover and checks who is signed in and what the vault holds.
+- **Recover fails part way, and is pressed twice.** `TerminalRecordStaysWhileTheLoginIsMixedTest` in `tests/test_second_review.py`.
+- **Data the installed version wrote.** `TerminalInterruptedSwitchTest.test_a_record_the_shipped_app_left_is_settled_after_a_renewal` builds a record the way the 2.0.0 build did, and `tests/test_no_desktop.py` builds the rows, saved logins and records that build kept for Claude Desktop, which this build no longer manages. If you change what a record holds, add the old shape.
 - **A job beside the wait.** `tests/test_one_writer.py` (`Beside`, `until`) and `watch_the_lane_wait` in `tests/test_second_review.py`. A test that acts during a wait first waits for the signal that the job is held there. It never sleeps.
-- **All four clients.** A fix for one switch usually has three siblings. Say which clients the bug cannot reach, and why.
+- **All three clients.** A fix for one switch usually has two siblings. Say which clients the bug cannot reach, and why.
 - **The reverse.** If the change adds a state (left out, set aside, kept, held), add the way back and test it.
 
 Every test fails before its fix and passes after. Keep both outputs.

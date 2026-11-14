@@ -49,10 +49,10 @@ The 23 scenarios are in `accountdeck/fixtures.py` (`SCENARIOS`, one line each). 
 
 | Scenario | What it sets up |
 |---|---|
-| `typical` | all four clients with saved accounts, one in use each, a mix of meter states |
+| `typical` | all three clients with saved accounts, one in use each, a mix of meter states |
 | `terminal` | Claude Code accounts with the automatic order and an Undo |
-| `first-run` | first start: the terminal login saved by itself, Desktop signed in but not saved |
-| `switching`, `stopping`, `needs-reconfirm`, `report` | a Desktop switch held at each stage |
+| `first-run` | first start: the terminal login saved by itself, Codex signed in but not saved |
+| `switching`, `stopping`, `needs-reconfirm`, `report` | a Codex switch held at each stage |
 | `needs-signin`, `stale`, `rate-limited`, `outage`, `blocked-cloudflare` | each kind of trouble a row can show |
 | `empty`, `loading`, `read-only`, `fifty` | no accounts, first readings in flight, another copy owns the logins, 50 accounts |
 
@@ -84,18 +84,18 @@ The dashboard tests run in WebKit unless `ACCOUNTDECK_TEST_BROWSER=chrome`. A da
 ```sh
 "$PY" -E -s tools/verify/drive.py "$PY" "$COPY" typical "$PROOF" '[
   {"shot": "1-before"},
-  {"more": "Beta", "client": "claude"},
+  {"more": "Beta", "client": "claude_cli"},
   {"click": "Rename…", "in": "menu"},
   {"wait": "document.getElementById(\"modal\").open && document.activeElement.value === \"Beta\""},
   {"type": "Work account"},
   {"click": "Rename", "in": "sheet"},
   {"wait": "!document.getElementById(\"modal\").open"},
-  {"row": "Work account", "client": "claude"},
+  {"row": "Work account", "client": "claude_cli"},
   {"accounts": true},
   {"shot": "2-after"}
 ]' 2>&1 | tee "$PROOF/drive.txt"
 ```
-`accounts` prints what the app itself says, not what the page shows, and checks nothing. `{"in_use": "Gamma", "client": "claude"}` is the step that fails when the app does not say so. Use both to check the side effect, and quote the `accounts` line in your report.
+`accounts` prints what the app itself says, not what the page shows, and checks nothing. `{"in_use": "Alpha", "client": "claude_cli"}` is the step that fails when the app does not say so. Use both to check the side effect, and quote the `accounts` line in your report.
 
 - A long step list goes in a file, `$PROOF/steps.json`, passed in place of the JSON. The file is evidence too, and a single quote in a step no longer breaks the command.
 - A `shot` overwrites a picture of the same name. Point your tries at `$PROOF/explore` and keep `$PROOF` for the final run.
@@ -125,15 +125,14 @@ It runs the doctor, the suite in WebKit, the suite in Chrome, the probes, the bu
 Traps when driving:
 - This Mac has no `node`. Check JavaScript syntax with `jsc` (the command is in `AGENTS.md`).
 - A demo in the background ignores Ctrl-C, and a killed demo leaves its temp folder. The tools give each demo a temp folder of its own (`accountdeck2-demo-run-*`), stop the demo through its API and remove that folder and no other. The `switching` and `stopping` scenarios answer 409 to a stop, so the tools end those themselves.
-- A `wait` or a `click` gives up after 15 seconds, and the failure reads "the page never showed". A Desktop switch in a demo takes about 22 seconds, because "Checking the sign-in" watches Claude for 20 real seconds. Give that wait `"seconds": 60`.
+- A `wait` or a `click` gives up after 15 seconds, and the failure reads "the page never showed". A step that takes longer gets `"seconds": 60`.
 - A sheet's progress list ends with a step named Done, and the report has a Done button. To wait for the report, wait for the button, not the word.
 - A picture of an open sheet shows the page's words through the sheet, sharp. The sheet blurs what is behind it (`backdrop-filter`), and the picture of a window that is not on screen does not draw the blur. It is the camera, as far as anyone knows. The real-Mac checks in the install skill settle it.
-- The same name can be in two clients. `typical` has a Beta in Claude Code and a Beta in Claude Desktop. Name the client.
+- The same name can be in two clients. Name the client in every step that names a row.
 - The page knows when it is in the app's window, by the user agent `AccountDeck2App/2`, and shows no browser notification controls there. The WebKit window sends that user agent.
 - The WebKit window is never shown on your screen, and the page still counts as visible and in front. A page that stops updating is a bug, not the window.
 - A test that acts "while the job is waiting" must wait for a signal that the job is held there, not sleep. `watch_the_lane_wait` in `tests/test_second_review.py` is the pattern.
 - Call `engine.sense_active()` before you ask the auto-switch policy anything, or it sees no account in use. `cli_policy.evaluate` is pure, so a decision can be run on hand-made readings.
-- In the demo, the cookies Claude Desktop holds for the account in use are not the same bytes as that account's saved copy. A test that asks "whose cookies are these" accepts both.
 - The server of commit 359ac07, the 2.0.0 build, let only 5 requests wait, so a page load failed at random in Chrome (6 of 35 loads on 2026-11-12). A half-drawn dashboard on that build is this bug, not your change.
 - `text-overflow: ellipsis` draws no dots on a flex or grid box. The words are cut in the middle of a letter instead. `look_sweep.py` lists those as `cut`.
 - In zsh, `kill $PIDS` does not split the variable. Keep pids in an array.
@@ -161,11 +160,11 @@ The tools stop the demos they start and remove those demos' temp folders. The pr
 
 ## The real Mac
 Nothing in this skill touches the real app, and no fake-data run proves these:
-- the real Keychain, and the real login files of Claude Code, Claude Desktop, Codex and Muse;
-- Claude Desktop really closing and opening again;
+- the real Keychain, and the real login files of Claude Code, Codex and Muse;
+- Claude Desktop left alone: the app never closes it, opens it or changes who it is signed in as;
 - the menu bar item and its menus, and Mac notifications;
 - the app's own window: its size and place kept between runs, ⌘W and ⌘Q, links that open in the default browser;
-- an upgrade of data the installed version wrote.
+- an upgrade of data the installed version wrote, the Claude Desktop accounts of a build before 2.1 among it (`features/no-claude-desktop.md`).
 
 They are checked once, by Isaac, after an install. The list of checks is in `.claude/skills/accountdeck-install/SKILL.md`. Until then a report says "not checked on the real Mac".
 

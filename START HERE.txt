@@ -1,8 +1,8 @@
 AccountDeck 2 for Mac
 
-Use your own Claude, Codex and Muse accounts on your own Mac login.
+Use your own Claude Code, Codex and Muse Code accounts on your own Mac login.
 Requires Apple silicon (M1 or newer), macOS Sonoma 14 or newer, and internet access.
-Install Claude Code, Claude Desktop, Codex, or Muse Code first. You can use any of them on its own.
+Install Claude Code, Codex, or Muse Code first. You can use any of them on its own.
 
 1. Double-click the zip in Finder to unzip it.
 2. Open AccountDeck2-mac and double-click Install AccountDeck.command.
@@ -28,7 +28,7 @@ Do not use sudo. Do not disable Gatekeeper system-wide.
 First run:
 - Claude Code: your current login is saved once verified. Use Add Account for more.
   Finish the sign-in in its new Terminal window, then close that window.
-- Claude Desktop / Codex / Muse Code: choose Save Current Account, or Add Account.
+- Codex / Muse Code: choose Save Current Account, or Add Account.
   Codex and Muse need file-based login storage. README.md explains how to set it.
 - Choose Switch beside a saved account. Review the plan before continuing.
 - Rename or remove any saved account from the ... menu in its row.

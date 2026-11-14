@@ -3,7 +3,7 @@
 Status: draft. The tests named here are in the final check, and `look_sweep.py` drew every scenario below on 2026-11-12. Nobody has driven these by hand through this skill.
 
 ## Sub-features
-- Each account shows its limits. Claude Code and Claude Desktop have a weekly limit and a model's weekly limit where Claude reports one. Claude dropped its 5-hour limit, and the app makes no limit of a 5-hour number an answer still carries (`usage.claude_usage`). Codex and Muse have a 5-hour and a weekly limit.
+- Each account shows its limits. Claude Code has a weekly limit and a model's weekly limit where Claude reports one. Claude dropped its 5-hour limit, and the app makes no limit of a 5-hour number an answer still carries (`usage.claude_usage`). Codex and Muse have a 5-hour and a weekly limit.
 - A note per limit: "Resets in 40m", "Refilled at 2:06 PM", "Starts with your next message", "Back in 1h 30m".
 - The card "In use by your terminals", the Next reset card and the Auto-switch card on the left. The in-use card's big number names the limit closest to full, and that limit's bar sits under the number with no line of its own (`tests/test_dashboard.py`, `InUseCardTest`).
 - A row says when its reading is old, when checks are paused, when sign-in is needed, and when the provider has an incident.

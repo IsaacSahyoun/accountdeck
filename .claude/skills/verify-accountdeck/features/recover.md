@@ -10,7 +10,8 @@ A switch saves a record before it changes a login and closes the record when it 
 - A record stays open while the login is not known to be one account's. The user's way out is to press Recover again, or to sign in again in the client and then press Recover.
 - A record nobody can read or apply is set aside: kept encrypted for 30 days, out of the pending list, with a notice.
 - A login file Recover cannot read is kept before it is replaced.
-- A record the 2.0.0 build left open is settled by writing the previous account from the vault, saving nothing from the mixed files.
+- A terminal record the 2.0.0 build left open is settled like one of this build's.
+- A record of a client this build does not manage is not Recover's. Builds before 2.1 switched Claude Desktop, and a Desktop switch one of them never finished left such a record. The copy that owns the logins sets it aside at start, with a notice, and no file it names is opened (`no-claude-desktop.md`).
 
 ## How to get to it (user's view)
 - Dashboard: a banner with a Recover button, then a sheet ("Recover the previous sign-in?").
@@ -18,10 +19,9 @@ A switch saves a record before it changes a login and closes the record when it 
 
 ## Driving it
 No demo scenario starts with an open record, so Recover is driven through tests, which build the record on the fake disk:
-- a crash at each step of a switch, then Recover: `tests/test_switch_safety.py`, `TerminalInterruptedSwitchTest`, `DesktopInterruptedSwitchTest`, `CodexInterruptedSwitchTest`, `MuseInterruptedSwitchTest`;
-- Recover that itself fails or dies: `tests/test_second_review.py`, `DesktopRecoverThatFailsPartWayTest`, `HalfWrittenDesktopLoginTest`;
-- a record that has to stay, and the order of presses: `TerminalRecordStaysWhileTheLoginIsMixedTest`;
-- records of the 2.0.0 build: `RecordsOfTheShippedVersionTest`;
+- a crash at each step of a switch, then Recover: `tests/test_switch_safety.py`, `TerminalInterruptedSwitchTest`, `CodexInterruptedSwitchTest`, `MuseInterruptedSwitchTest`;
+- Recover that itself fails part way, a record that has to stay, and the order of presses: `tests/test_second_review.py`, `TerminalRecordStaysWhileTheLoginIsMixedTest`, `RecoverAsksTheProviderAgainTest`;
+- records of the 2.0.0 build: `TerminalInterruptedSwitchTest.test_a_record_the_shipped_app_left_is_settled_after_a_renewal`, and for a Desktop record `tests/test_no_desktop.py`, `UnfinishedDesktopSwitchTest`;
 - unreadable logins and set-aside records: `UnreadableLoginIsKeptTest`, `SetAsideRecordsAreKeptTest`, `RecordStatusMatchesTheDiskTest`;
 - Recover leaves finished switches alone: `tests/test_one_writer.py`, `RecoverLeavesFinishedSwitchesAloneTest`.
 
