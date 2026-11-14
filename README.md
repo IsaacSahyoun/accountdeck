@@ -56,7 +56,8 @@ no account has room in both limits, it first moves to an account that still has 
 both. If there is none, it moves to an account that has only its Fable limit used up, because
 that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a reading at most
-15 minutes old. Right after a weekly limit refills, it waits for a new reading of the
+15 minutes old. Once the account in use has run out, it does not wait for an account whose usage
+could not be read: it moves to the next one that is ready. Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
 switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 
@@ -64,13 +65,15 @@ switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 when a week resets is lost, so with this on AccountDeck keeps Claude Code on the account whose week
 resets soonest. It can move long before 95%, for example when the account in use is only 20% used,
 and however far off the other account's reset is. It moves when the other account's weekly limit
-resets more than an hour before the weekly limit of the account in use. The other account has to be
+resets more than an hour before the weekly limit of the account in use. Of weeks that reset within
+the hour of each other, the one with more room is used first. The other account has to be
 one auto-switch could move to at your percentage anyway (room in its weekly and its Fable limit, a
 reading at most 15 minutes old), with at least 20% of its week still unused. A week that has not
-started is never moved to. With this on, a switch at your percentage goes to that same account,
-whatever order you chose under **Next account**, so the terminals change once and not twice. An early switch happens at most once every 2 hours, and one that failed is tried
-again 2 hours later. Turn it off in **Settings → Auto-Switch** if you want switches only at your own
-percentage, in your own order.
+started is never moved to. The early switch waits 2 hours after any automatic switch, so a switch at
+your percentage is not followed by a second one right away, and one that failed is tried again 2 hours
+later. A switch at your percentage still goes to the first account in the order you chose under
+**Next account**. Turn the early switch off in **Settings → Auto-Switch** if you want switches only at
+your own percentage.
 
 **Your own choice:** When you switch Claude Code accounts yourself, or choose **Undo**, auto-switch
 leaves that choice alone for 2 hours. After that the early switch moves the terminals again if

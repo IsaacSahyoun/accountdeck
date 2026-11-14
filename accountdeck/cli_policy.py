@@ -14,7 +14,8 @@
   use that still works is never left for such an account;
 - an account past the threshold is used only on a reading at most 15 minutes old, like an eligible one.
   An older one is read again, and an account with a new reading behind it in the order is used first.
-  An account in use that works for no model does not wait for a reading while another account is ready;
+  An account in use that works for no model does not wait for a reading while another account is ready.
+  That goes for the first account in the order too, when the last try to read it failed;
 - holds: an expired idle terminal token. An Anthropic incident never holds (the owner's choice,
   2026-10-09): a switch only needs the target's own fresh reading;
 - a window of the account in use whose reset time has passed has refilled, so its last number is not
@@ -26,8 +27,9 @@
   account for that, nothing is held;
 - the optional early switch keeps the terminals on the usable account whose week ends soonest, so allowance
   is spent before it expires, however far off that end is. Weeks that end within the hour of each other end
-  together. It moves at most every 2 hours, counted from a switch that did not finish too. With it on, a
-  switch at the threshold goes to that same account, whatever the order.
+  together, and of those the one with the most room is used first. It waits 2 hours after any automatic
+  switch, and after one of its own that did not finish. Where a switch at the threshold goes is the order's
+  to say, as before.
 """
 from functools import cmp_to_key
 import math
@@ -37,6 +39,7 @@ from .rules import clock_text
 from .usage import is_fable
 
 HOUR = 3600
+READY = 180     # a switch is made on a reading at most this old: `cli_auto.tick` reads an older one again first
 
 
 def number(value):
@@ -112,8 +115,7 @@ def duration(seconds):
 # there: the active account stays until it reaches it, and a target needs this much room below it.
 DRAIN_CEILING, DRAIN_ROOM = 99, 2
 MANUAL_HOLD = "Your manual choice is held for 2 hours"
-EARLY_DONE = "An early switch happened less than 2 hours ago"
-EARLY_TRIED = "The last early switch did not finish. It is tried again 2 hours after it"
+EARLY_PAUSE = "The early switch waits 2 hours after an automatic switch"
 
 
 def evaluate(accounts, settings, history, now):
@@ -122,9 +124,6 @@ def evaluate(accounts, settings, history, now):
     order with why it is skipped, "exhausted": every account is low}."""
     threshold = settings.get("cli_threshold", 95)
     rows = _ordered([_row(account, settings, threshold, now) for account in accounts], settings)
-    early = settings.get("cli_early_switch", True)
-    if early:
-        rows = _soonest_first(rows, now)
     result = {"action": "none", "target": None, "kind": None, "reason": "", "hold": None, "refresh": [],
               "next_up": [{key: row[key] for key in ("id", "label", "skip", "room", "weekly_reset")} for row in rows],
               "exhausted": False}
@@ -140,7 +139,7 @@ def evaluate(accounts, settings, history, now):
     elif need["refilled"]:
         result.update(hold=f"{active['label']}'s {need['refilled'][0]} limit has refilled. Waiting for its new reading.",
                       refresh=[active["id"]])
-    elif early:
+    elif settings.get("cli_early_switch", True):
         result.update(_early(rows, active, history, now))
     return result
 
@@ -177,9 +176,11 @@ def _row(account, settings, threshold, now):
     # is used when the account in use works for none. `week_only` names that limit.
     week_only = (f"{spent[0][0]} limit is at {spent[0][1]:g}%"
                  if spent and all(w.get("kind") == "model" for _, _, w in spent) else None)
+    # Its reading has to be taken again before a switch, and the last try to take it failed (`cli_auto.inputs`).
+    unread = bool(account.get("unread")) and age is not None and age > READY
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
             "weekly_reset": reset(values[0][2]), "account": account, "values": values,
-            "drainable": usable and not spent, "week_only": week_only, "stale": stale, "old": old}
+            "drainable": usable and not spent, "week_only": week_only, "stale": stale, "old": old, "unread": unread}
 
 
 def _ordered(rows, settings):
@@ -263,8 +264,14 @@ def _leave(need, rows, active, history, settings, now):
         return {"hold": MANUAL_HOLD}
     eligible = [row for row in rows if row["skip"] is None]
     if eligible:
-        first = eligible[0]
-        why = f"{first['label']}'s week resets soonest" if first.get("soonest") else f"{first['label']} is first in your eligible order"
+        # The executor reads the first account again when its reading is over 3 minutes old, and switches once
+        # that reading is there. When the last try to read it failed (its reads are paused after an HTTP 429,
+        # say), that can take until its reading is too old to count. An account in use that works for no model
+        # does not wait for it: the first account that is ready is used.
+        ready = [row for row in eligible if not row["unread"]] if not need["yields"] else eligible
+        first = (ready or eligible)[0]
+        why = (f"{eligible[0]['label']} could not be read again, so {first['label']} is next" if first is not eligible[0] else
+               f"{first['label']} is first in your eligible order")
         return {"action": "switch", "target": first["id"], "kind": kind, "reason": f"{label} {need['why']}; {why}."}
     # An account with room and an old reading is read again. While the account in use still works, that is
     # waited for. Once it works for no model, an account that is ready now is used first (further down).
@@ -316,51 +323,35 @@ def _refills_first(rows, threshold, now):
     return f" {label} refills first, {clock_text(at, now)}."
 
 
-def _sooner(rows, than, now, left=None):
-    """The early switch's pick from the row `than`, or None: the usable account whose week ends soonest, when
-    that is more than an hour before `than`'s week ends. Weeks within the hour end together, as in `_ordered`:
-    a reset time differs by a second from reading to reading (`SAME_RESET`), and an hour of allowance is not
-    worth a switch. Its week has started and not ended, at least a fifth of it is unused, and it is not `left`,
-    the account just left. An account whose reading is too old to act on is passed over, not waited for: one
-    that cannot be read would hold every early switch back, and at the threshold it would keep the terminals
-    on an account until that ran out."""
-    mine = than["weekly_reset"]
-    if mine is None:
-        return None
-    able = [row for row in rows if row["skip"] is None and row["id"] not in (than["id"], left)
-            and row["weekly_reset"] is not None and now < row["weekly_reset"] < mine - HOUR
-            and row["values"][0][1] <= 80]
-    return min(able, key=lambda row: (row["weekly_reset"], row["label"].casefold()), default=None)
-
-
-def _soonest_first(rows, now):
-    """The switching order with the early switch on: the account it would move to from the first eligible one
-    goes first. A switch at the threshold then lands where the early switch would take the terminals next,
-    which is one switch and not two, and the order the page shows names the account that is used next."""
-    first = next((row for row in rows if row["skip"] is None), None)
-    pick = _sooner(rows, first, now) if first else None
-    return [dict(pick, soonest=True)] + [row for row in rows if row is not pick] if pick else rows
-
-
 def _early(rows, active, history, now):
-    """The optional early switch: move to the usable account whose week ends soonest, when it ends before the
-    week of the account in use (`_sooner`). Allowance left at the end of a week is lost, so the week nearest
-    its end is spent first, however far off that end is. A week that has not started has no end and is not
-    moved to. Returns the fields of the result that change."""
-    last = history.get("last") or {}
-    early_at = history.get("early_at", last.get("at", -1e20) if last.get("kind") == "early" else -1e20)
+    """The optional early switch: move to the usable account whose week ends soonest, when that is more than an
+    hour before the week of the account in use ends. Allowance left at the end of a week is lost, so the week
+    nearest its end is spent first, however far off that end is. Weeks within the hour end together, as in
+    `_ordered`: a reset time differs by a second from reading to reading (`SAME_RESET`), and an hour of
+    allowance is not worth a switch. The target's week has started and not ended, and at least a fifth of it
+    is unused. An account whose reading is too old to act on is passed over, not waited for: one that cannot
+    be read would hold every early switch back. Returns the fields of the result that change."""
+    mine = active["weekly_reset"]
     just_left = history.get("left") if now - history.get("left_at", -1e20) < 1800 else None
-    target = _sooner(rows, active, now, just_left)
-    # The pause between early switches is said only while it holds a move back. It counts from a switch that
-    # was started too (`early_tried`, written by `cli_auto.tick`): one that failed is not started again 5
-    # seconds later, with a call to renew the login and an alert each time.
-    if target and now - early_at < 2 * HOUR:
-        return {"hold": EARLY_DONE}
-    if target and now - history.get("early_tried", -1e20) < 2 * HOUR:
-        return {"hold": EARLY_TRIED}
+    able = [row for row in rows if row["skip"] is None and row["weekly_reset"] is not None and mine is not None
+            and now < row["weekly_reset"] < mine - HOUR and row["values"][0][1] <= 80 and row["id"] != just_left]
+    # It waits 2 hours after any automatic switch (`last`, which only those write). A switch the account in
+    # use needed is then not followed minutes later by a second change of login, which would also take the
+    # Undo of the first away. It waits as long after one of its own that was started (`early_tried`, written
+    # by `cli_auto.tick`): one that failed is not started again 5 seconds later, with a call to renew the
+    # login and an alert each time. The wait is said only while it holds a move back.
+    times = ((history.get("last") or {}).get("at"), history.get("early_at"), history.get("early_tried"))
+    switched_at = max((at for at in times if number(at) is not None), default=-1e20)      # an old `last` can have no time
+    if able and now - switched_at < 2 * HOUR:
+        return {"hold": EARLY_PAUSE}
     if _held(history, active, now):
         return {"hold": MANUAL_HOLD}
-    if target is None:
+    if not able:
         return {}
+    # Of the weeks that end within the hour of the soonest, the one with the most room: the account `_ordered`
+    # puts first, so the page names it as next.
+    soonest = min(row["weekly_reset"] for row in able)
+    target = min((row for row in able if row["weekly_reset"] - soonest <= HOUR),
+                 key=lambda row: (-row["room"], row["label"].casefold()))
     return {"action": "switch", "target": target["id"], "kind": "early",
             "reason": f"Using {target['label']}'s weekly allowance before it resets in {duration(target['weekly_reset'] - now)} ({100 - target['values'][0][1]:g}% left)."}

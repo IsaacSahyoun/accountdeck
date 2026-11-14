@@ -57,6 +57,8 @@ def inputs(engine):
                      "health": row["flags"].get("health", "ok"),
                      "live_expired": row["flags"].get("live_expired", False),
                      "last_good_at": row["last_good_at"],
+                     # The last try to read it failed: a good reading clears the error (`Store.observe`).
+                     "unread": bool(row["error"]),
                      "windows": (row["last_good_usage"] or {}).get("windows", [])})
     return rows
 
@@ -111,7 +113,7 @@ def tick(engine):
         target = engine.cli.row(result["target"])
     except DeckError:          # removed since the decision was made; the next tick decides again
         return
-    if target["last_good_at"] is None or engine.clock() - target["last_good_at"] > 180:
+    if target["last_good_at"] is None or engine.clock() - target["last_good_at"] > cli_policy.READY:
         engine.scheduler.request(target["id"], engine.clock())
         return     # re-evaluate after the governed read, including every changed window
     from .switch_cli import CLISwitch
@@ -123,6 +125,6 @@ def tick(engine):
         return
     if result["kind"] == "early":
         # A switch that fails before it writes leaves no trace, and the next tick would start it again. The
-        # rule waits 2 hours after a try of the early switch, whether it worked or not (`cli_policy._early`).
+        # rule waits 2 hours after an early switch was started, whether it worked or not (`cli_policy._early`).
         with history(engine) as past:
             past["early_tried"] = engine.clock()

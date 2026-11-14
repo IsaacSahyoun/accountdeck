@@ -68,11 +68,21 @@ show("   Beta's week ends in 2 days and 85% of it is used", [alpha, ends_in("bet
 show("   Beta's week ends in 2 days and the user chose Alpha 5 seconds ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"manual_at": NOW - 5})
 show("   Beta's week ends in 2 days and an early switch happened 1 hour ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"early_at": NOW - 3600})
 show("   Beta's week ends in 2 days and an early switch failed 1 hour ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"early_tried": NOW - 3600})
+show("   Beta's week ends in 2 days, Gamma's 30 minutes later with more room: a tie, and the one with more room is used",
+     [alpha, ends_in("beta", "Beta", 40, 2), ends_in("gamma", "Gamma", 20, 2 + 1 / 48)])
 show("   Beta's week ends in 2 days and its reading is 20 minutes old, Gamma's ends in 4 days: Beta is passed over",
      [alpha, dict(ends_in("beta", "Beta", 40, 2), last_good_at=NOW - 1200), ends_in("gamma", "Gamma", 40, 4)])
-print("F. The same rule at the threshold. Alpha is at 96%, the order is \"most room first\", Beta has the most room and Gamma's week ends first:")
+print("F. A switch at the threshold follows the order, and the early switch waits 2 hours after it. The order is \"most room first\", Beta has the most room and Gamma's week ends first:")
 full = ends_in("alpha", "Alpha", 96, 6, active=True)
-show("   the early switch is on", [full, ends_in("beta", "Beta", 10, 4), ends_in("gamma", "Gamma", 40, 2)], cli_order="most_room")
-show("   the early switch is off", [full, ends_in("beta", "Beta", 10, 4), ends_in("gamma", "Gamma", 40, 2)], cli_order="most_room", cli_early_switch=False)
-show("   the early switch is on and Gamma's reading is 20 minutes old: it is passed over",
-     [full, ends_in("beta", "Beta", 10, 4), dict(ends_in("gamma", "Gamma", 40, 2), last_good_at=NOW - 1200)], cli_order="most_room")
+show("   Alpha reaches 96%", [full, ends_in("beta", "Beta", 10, 4), ends_in("gamma", "Gamma", 40, 2)], cli_order="most_room")
+moved = [ends_in("alpha", "Alpha", 96, 6), ends_in("beta", "Beta", 10, 4, active=True), ends_in("gamma", "Gamma", 40, 2)]
+def after(seconds):
+    return {"left": "alpha", "left_at": NOW - seconds, "last": {"from": "alpha", "to": "beta", "at": NOW - seconds, "kind": "threshold",
+                                                                "reason": "", "undo_until": NOW - seconds + 600}}
+show("   5 seconds after that switch, Beta in use", moved, after(5), cli_order="most_room")
+show("   2 hours after that switch", moved, after(7200), cli_order="most_room")
+print("G. Alpha's week ran out. Beta is first in the order, its reading is 4 minutes old and the last try to read it failed. Gamma is ready:")
+out = ends_in("alpha", "Alpha", 100, 6, active=True)
+unread = dict(ends_in("beta", "Beta", 30, 2), last_good_at=NOW - 240, unread=True)
+show("   Gamma is used, and Beta is not waited for", [out, unread, ends_in("gamma", "Gamma", 10, 4)])
+show("   Alpha is at 96% and still works: Beta is waited for", [full, unread, ends_in("gamma", "Gamma", 10, 4)])

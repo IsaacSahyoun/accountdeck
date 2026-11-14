@@ -365,9 +365,9 @@ class TerminalSoonestWeekTest(DeckCase):
     def setUp(self):
         super().setUp()
         self.engine.sense_active()
-        # The demo's terminals have just left an account at the threshold, and for 30 minutes the early switch
-        # does not go back to the account just left. These tests start after that, so both other accounts count.
-        self.engine.clock.advance(31 * 60)
+        # The demo's terminals have just left an account at the threshold, and the early switch waits 2 hours
+        # after any automatic switch. These tests start after that.
+        self.engine.clock.advance(2 * 3600 + 60)
         self.first = self.active("claude_cli")
         usable = [row for row in self.rows("claude_cli") if not row["active"] and row["switchable"]
                   and row.get("health", "ok") == "ok" and not row.get("excluded")]
@@ -416,7 +416,7 @@ class TerminalSoonestWeekTest(DeckCase):
 
     def test_an_undo_takes_the_terminals_back_and_is_held_for_two_hours(self):
         """The reverse. An Undo is the user's own choice, so the rule does not move the terminals again: first
-        because an early switch just happened, and after those 2 hours because the choice is still held. Two
+        because an automatic switch just happened, and after those 2 hours because the choice is still held. Two
         hours after the Undo the hold is over, like any manual choice's, and the week that ends soonest is
         used first again."""
         self.switched()
@@ -427,9 +427,11 @@ class TerminalSoonestWeekTest(DeckCase):
         self.assertTrue(self.engine.runner.wait(30))
         self.assert_consistent("claude_cli", self.identity(self.first["id"]))
         decision = cli_auto.decision(self.engine)
-        self.assertEqual((decision["action"], decision["hold"]), ("none", "An early switch happened less than 2 hours ago"))
+        self.assertEqual((decision["action"], decision["hold"]), ("none", "The early switch waits 2 hours after an automatic switch"))
         self.assertEqual(self.started(), [])
         self.engine.clock.advance(2 * 3600 - 300 + 10)          # 2 hours after the early switch, not yet after the Undo
+        for row, ends in ((self.first, 6), (self.later, 4), (self.soonest, 2)):       # new readings: the move is there to hold back
+            self.read(row, weekly=30, ends=ends * self.DAY - 2 * 3600 - 10)
         decision = cli_auto.decision(self.engine)
         self.assertEqual((decision["action"], decision["hold"]), ("none", "Your manual choice is held for 2 hours"))
         self.assertEqual(self.started(), [])
@@ -440,21 +442,26 @@ class TerminalSoonestWeekTest(DeckCase):
         decision = cli_auto.decision(self.engine)
         self.assertEqual((decision["action"], decision["kind"], decision["target"]), ("switch", "early", self.soonest["id"]))
 
-    def test_at_the_threshold_one_switch_takes_the_terminals_to_the_week_that_ends_soonest(self):
-        """The order is "most room first" and another account has the most room. A switch there would be
-        followed by the early switch a check later: two changes of login, and the Undo of the first gone."""
+    def test_after_a_switch_at_the_threshold_the_early_switch_waits_two_hours(self):
+        """The order is "most room first", so at the threshold the terminals go to the account with the most
+        room. The week of another account ends sooner. The early switch moves there 2 hours later, not at the
+        next check: that would be two changes of login in a row, and the Undo of the first would be gone."""
         self.engine.prefs.update({"cli_order": "most_room"})
         self.read(self.first, weekly=96, ends=6 * self.DAY)
         self.read(self.later, weekly=10, ends=4 * self.DAY)
         last = self.switched()
-        self.assertEqual((last["kind"], last["from"], last["to"]), ("threshold", self.first["id"], self.soonest["id"]))
-        self.assertEqual(last["reason"], f"{self.first['label']} reached 95% of its weekly limit; "
-                                         f"{self.soonest['label']}'s week resets soonest.")
-        self.assert_consistent("claude_cli", self.identity(self.soonest["id"]))
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("threshold", self.first["id"], self.later["id"]))
+        self.assert_consistent("claude_cli", self.identity(self.later["id"]))
         decision = cli_auto.decision(self.engine)
-        self.assertEqual((decision["action"], decision["hold"]), ("none", None))
+        self.assertEqual((decision["action"], decision["hold"]), ("none", "The early switch waits 2 hours after an automatic switch"))
         self.assertEqual(self.started(), [])
-        self.assertEqual(self.engine.store.setting("cli_history", {})["last"], last)
+        self.assertEqual(self.engine.store.setting("cli_history", {})["last"], last)       # the Undo is still that switch's
+        self.engine.clock.advance(2 * 3600 + 5)
+        self.read(self.later, weekly=10, ends=4 * self.DAY - 2 * 3600 - 5)
+        self.read(self.soonest, weekly=30, ends=2 * self.DAY - 2 * 3600 - 5)
+        last = self.switched()
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("early", self.later["id"], self.soonest["id"]))
+        self.assert_consistent("claude_cli", self.identity(self.soonest["id"]))
 
     def test_an_early_switch_that_does_not_finish_is_not_tried_again_at_every_check(self):
         """A switch that fails before it writes leaves nothing behind, so the next check, 5 seconds later, would
@@ -472,7 +479,7 @@ class TerminalSoonestWeekTest(DeckCase):
         self.assert_consistent("claude_cli", self.identity(self.first["id"]))
         decision = cli_auto.decision(self.engine)
         self.assertEqual((decision["action"], decision["hold"]),
-                         ("none", "The last early switch did not finish. It is tried again 2 hours after it"))
+                         ("none", "The early switch waits 2 hours after an automatic switch"))
         # 2 hours later it is tried again, and once the login can be renewed the terminals move.
         self.engine.clock.advance(2 * 3600 + 5)
         for row, ends in ((self.first, 6), (self.later, 4), (self.soonest, 2)):
@@ -481,6 +488,25 @@ class TerminalSoonestWeekTest(DeckCase):
         last = self.switched()
         self.assertEqual((last["kind"], last["to"]), ("early", self.soonest["id"]))
         self.assertEqual(len(tried), 2)
+
+    def test_an_account_that_ran_out_is_left_for_a_ready_one_while_the_soonest_week_cannot_be_read(self):
+        """A switch is made on a reading at most 3 minutes old, and an older one is read again first. The reading
+        of the week that ends soonest is 4 minutes old and Claude refuses a new one (HTTP 429, which pauses its
+        reads for 15 minutes). That account is first in the order, and the account in use has run out. The
+        terminals go to the next account, which is ready: waiting for the paused one kept them on an account
+        that works for no model."""
+        def refused(credentials):
+            raise DeckError("Too many requests.", "rate_limited", 900)
+        self.engine.clock.advance(240)
+        self.engine.cli.adapter.usage = refused
+        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "rate_limited")
+        del self.engine.cli.adapter.usage
+        self.assertGreater(self.engine.store.account(self.soonest["id"])["paused_until"], self.engine.clock())
+        self.read(self.first, weekly=100, ends=6 * self.DAY - 240)
+        self.read(self.later, weekly=10, ends=4 * self.DAY - 240)
+        last = self.switched()
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.later["id"]))
+        self.assert_consistent("claude_cli", self.identity(self.later["id"]))
 
     def test_with_the_setting_off_the_terminals_stay(self):
         self.engine.prefs.update({"cli_early_switch": False})
