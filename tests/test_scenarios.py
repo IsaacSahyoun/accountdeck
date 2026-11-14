@@ -36,6 +36,16 @@ class ScenarioTest(unittest.TestCase):
                         engine.stop()
                     shutil.rmtree(root, ignore_errors=True)
 
+    def test_the_demos_name_claudes_limits_as_the_parser_does(self):
+        """The demo data writes its limits out by hand (`fixtures._SHAPES`). A name changed in the parser and
+        not there would stay in every demo and in every picture of the look sweep."""
+        from accountdeck import usage
+        claude = [key for key in fixtures._SHAPES if key == "five_hour" or key.startswith("seven_day")]
+        self.assertIn("seven_day_fable", claude)
+        for key in claude:
+            with self.subTest(key=key):
+                self.assertEqual(fixtures._SHAPES[key], usage._describe(key))
+
     def test_no_demo_starts_a_job_at_its_first_check(self):
         """A demo that switches by itself at its first check shows another page than the scenario's picture, and
         that switch races whatever stops the demo. `fifty` did, once its 35 accounts were Claude Code's: the early
