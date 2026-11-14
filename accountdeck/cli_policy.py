@@ -8,8 +8,9 @@
   threshold in every considered window; left-out, frozen and needs-sign-in accounts never qualify;
   when none qualifies but some are only too old, those are read again first (`refresh`);
 - a switch is made on a reading at most 3 minutes old (`READY`), and the executor reads an older one again
-  first. So an account whose reading is older than that, and whose last try at a new one failed, is not
-  eligible until a read of it works: waiting for it kept the terminals on an account that had run out;
+  first. So an account whose reading is older than that, and whose reads are paused (Claude refused one), is
+  not eligible while the pause lasts: nothing reads it until then, and waiting for it kept the terminals on
+  an account that had run out;
 - once no account qualifies, every account is used up to DRAIN_CEILING (99 %): the active one stays
   until it reaches it, then a target with DRAIN_ROOM points left below it is used;
 - an account in use that works for no model (its week ran out, or it needs sign-in) is left, after every
@@ -153,11 +154,12 @@ def _row(account, settings, threshold, now):
     room = min(threshold - used for _, used, _ in values) if known else None
     age = max(0, now - account["last_good_at"]) if number(account.get("last_good_at")) is not None else None
     # A reading too old to act on is read again first. That is one over 15 minutes old. It is also one the
-    # executor takes again before it switches (older than `READY`) when the last try to take it failed, which
-    # is a try later than the last good reading: Claude refusing a read (HTTP 429) pauses the account's reads
-    # for 15 minutes, and a switch that waited for it kept the terminals on an account that had run out.
-    tried = number(account.get("tried_at"))
-    unread = age is not None and READY < age <= 900 and tried is not None and tried > account["last_good_at"]
+    # executor takes again before it switches (older than `READY`) while the account's reads are paused. Claude
+    # refusing a read (HTTP 429) pauses them for 15 minutes. Until then the scheduler starts no read of the
+    # account and the Refresh button is refused, and a switch that waited kept the terminals on an account
+    # that had run out.
+    pause = number(account.get("paused_until"))
+    unread = age is not None and READY < age <= 900 and pause is not None and pause > now
     old = age is not None and (age > 900 or unread)
     skip, past, stale = None, False, False
     if account.get("active"):
@@ -175,7 +177,7 @@ def _row(account, settings, threshold, now):
         skip, past = f"{label} at {used:g}%", True
     elif old:
         # Room at its last reading: read it again when it is needed.
-        skip, stale = "usage check failed" if unread else f"reading {math.ceil(age / 60)} min old", True
+        skip, stale = "usage checks paused" if unread else f"reading {math.ceil(age / 60)} min old", True
     # Skipped only for being past the threshold (not health, freshness or choice): usable when all are.
     usable = skip is None or past
     spent = [(label, used, w) for label, used, w in values

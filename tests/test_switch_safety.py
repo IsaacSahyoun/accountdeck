@@ -508,13 +508,12 @@ class TerminalSoonestWeekTest(DeckCase):
         self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.later["id"]))
         self.assert_consistent("claude_cli", self.identity(self.later["id"]))
 
-    def test_a_login_save_does_not_hide_that_an_account_could_not_be_read(self):
+    def test_a_login_save_does_not_hide_that_the_reads_of_an_account_are_paused(self):
         """Every switch files the login of the account the terminals leave, and that save clears the row's
-        `error` while the reads of the account stay paused. So the rule does not go by `error`. The row keeps
-        the time of the last try (`flags["checked"]`), and a try later than the last good reading is one that
-        failed. Here Claude refuses a read of the account in use, the user switches away from it, and the
-        account they switched to runs out. The paused account is first in the order, and the terminals go
-        past it to one that is ready."""
+        `error` while the reads of the account stay paused. So the rule does not go by `error`. It goes by the
+        pause itself (`paused_until`), which no save of a login changes. Here Claude refuses a read of the
+        account in use, the user switches away from it, and the account they switched to runs out. The paused
+        account is first in the order, and the terminals go past it to one that is ready."""
         def refused(credentials):
             raise DeckError("Too many requests.", "rate_limited", 900)
         self.act("claude_cli", "switch", account=self.soonest["id"])
@@ -533,6 +532,68 @@ class TerminalSoonestWeekTest(DeckCase):
         last = self.switched()
         self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.later["id"]))
         self.assert_consistent("claude_cli", self.identity(self.later["id"]))
+
+    def test_a_paused_account_is_used_again_once_a_read_of_it_works(self):
+        """The reverse. Claude refuses a read of the week that ends soonest, and the account is passed over
+        while its reads are paused. Then a read of it works, which ends the pause, and the account that ran out
+        is left for it: it is first in the order again."""
+        def refused(credentials):
+            raise DeckError("Too many requests.", "rate_limited", 900)
+        self.engine.clock.advance(240)
+        self.engine.cli.adapter.usage = refused
+        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "rate_limited")
+        del self.engine.cli.adapter.usage
+        self.read(self.first, weekly=100, ends=6 * self.DAY - 240)
+        self.read(self.later, weekly=10, ends=4 * self.DAY - 240)
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["target"]), ("switch", self.later["id"]))
+        self.assertEqual([row["skip"] for row in decision["next_up"] if row["id"] == self.soonest["id"]], ["usage checks paused"])
+        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "ok")
+        self.assertIsNone(self.engine.store.account(self.soonest["id"])["paused_until"])
+        self.read(self.soonest, weekly=30, ends=2 * self.DAY - 240)
+        last = self.switched()
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.soonest["id"]))
+        self.assert_consistent("claude_cli", self.identity(self.soonest["id"]))
+
+    def test_a_writer_of_flags_cannot_hide_that_the_reads_of_an_account_are_paused(self):
+        """Every writer of a row's `flags` writes the whole set back, and Leave Out does so under another lock
+        than a read. So a fact a read keeps in `flags` can be lost to an older copy. The time of the last try
+        was such a fact, and the rule then waited on the paused account. The pause is a column of its own."""
+        def refused(credentials):
+            raise DeckError("Too many requests.", "rate_limited", 900)
+        self.engine.clock.advance(240)
+        before = self.engine.store.account(self.soonest["id"])["flags"]                     # what Leave Out read
+        self.engine.cli.adapter.usage = refused
+        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "rate_limited")
+        del self.engine.cli.adapter.usage
+        self.assertNotEqual(self.engine.store.account(self.soonest["id"])["flags"], before, "the read wrote no flag: this test proves nothing")
+        self.engine.store.update(self.soonest["id"], flags=dict(before, excluded=False))     # what it then wrote
+        self.read(self.first, weekly=100, ends=6 * self.DAY - 240)
+        self.read(self.later, weekly=10, ends=4 * self.DAY - 240)
+        last = self.switched()
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.later["id"]))
+
+    def test_a_read_that_works_is_not_taken_for_one_that_failed_when_the_clock_is_set_back(self):
+        """A read is dated when it starts, and its reading when the answer is there, by two reads of the clock.
+        With the clock set back between the two the try is dated later than its own reading, and a rule that
+        compared those times took a read that worked for one that failed. The rule goes by the pause, and a
+        read that works leaves none: the account is still the one the terminals go to."""
+        usage = self.engine.cli.adapter.usage
+
+        def after_the_clock_is_set_back(credentials):
+            self.engine.clock.advance(-10)
+            return usage(credentials)
+        self.engine.cli.adapter.usage = after_the_clock_is_set_back
+        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "ok")
+        del self.engine.cli.adapter.usage
+        self.read(self.soonest, weekly=30, ends=2 * self.DAY)
+        row = self.engine.store.account(self.soonest["id"])
+        self.assertGreater(row["flags"]["checked"], row["last_good_at"], "the try is not dated later than its reading: this test proves nothing")
+        self.engine.clock.advance(200)
+        self.read(self.first, weekly=100, ends=6 * self.DAY)
+        self.read(self.later, weekly=10, ends=4 * self.DAY)
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["target"], decision["kind"]), ("switch", self.soonest["id"], "out"))
 
     def test_with_the_setting_off_the_terminals_stay(self):
         self.engine.prefs.update({"cli_early_switch": False})

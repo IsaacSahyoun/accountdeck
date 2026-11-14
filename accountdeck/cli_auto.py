@@ -57,9 +57,9 @@ def inputs(engine):
                      "health": row["flags"].get("health", "ok"),
                      "live_expired": row["flags"].get("live_expired", False),
                      "last_good_at": row["last_good_at"],
-                     # When it was last tried. A try later than the last good reading is one that failed. The row's
-                     # `error` does not say so: a save of the login clears it (`CLIAccounts.save`).
-                     "tried_at": row["flags"].get("checked"),
+                     # Until when Claude's refusal of a read pauses the account's reads. The row's `error` does not
+                     # say so: a save of the login clears it while the pause lasts (`CLIAccounts.save`).
+                     "paused_until": row["paused_until"],
                      "windows": (row["last_good_usage"] or {}).get("windows", [])})
     return rows
 

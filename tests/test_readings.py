@@ -435,39 +435,41 @@ class SoonestWeekFirstTest(unittest.TestCase):
         self.assertEqual(decides(96, old_beta, gamma), ("switch", "gamma", "threshold", None, []))
         self.assertEqual(decides(96, old_beta, gamma, cli_order="most_room"), ("switch", "gamma", "threshold", None, []))
 
-    def test_an_account_that_could_not_be_read_is_not_switched_to_until_a_read_works(self):
+    def test_an_account_whose_reads_are_paused_is_passed_over(self):
         """A switch is made on a reading at most 3 minutes old (`cli_policy.READY`), and `cli_auto.tick` reads an
-        older one again first. Beta's reading is 4 minutes old and the last try at a new one failed, a minute
-        ago, as after an HTTP 429 that pauses its reads. A switch to Beta would wait for a read that does not
+        older one again first. Beta's reading is 4 minutes old and its reads are paused for 10 more minutes, as
+        after an HTTP 429: nothing reads Beta until then. A switch to Beta would wait for a read that does not
         come, on an account that has run out. So Beta is skipped, with words the page shows, and Gamma is next."""
-        unread_beta, gamma = account("beta", 30, 2 * DAY, age=240, tried_at=NOW - 60), account("gamma", 10, 4 * DAY)
+        paused_beta, gamma = account("beta", 30, 2 * DAY, age=240, paused_until=NOW + 600), account("gamma", 10, 4 * DAY)
         for alpha, kind in (((100, 6 * DAY), "out"), ((96, 6 * DAY), "threshold")):
             for order in ("soonest_reset", "manual"):           # Beta is first in both
                 with self.subTest(kind=kind, order=order):
-                    result = self.decide(unread_beta, gamma, alpha=alpha, cli_order=order, cli_manual_order=["beta", "gamma"])
+                    result = self.decide(paused_beta, gamma, alpha=alpha, cli_order=order, cli_manual_order=["beta", "gamma"])
                     self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", kind))
                     self.assertEqual(result["reason"].partition("; ")[2], "Gamma is first in your eligible order.")
-                    self.assertEqual([(row["id"], row["skip"]) for row in result["next_up"] if row["id"] == "beta"], [("beta", "usage check failed")])
+                    self.assertEqual([(row["id"], row["skip"]) for row in result["next_up"] if row["id"] == "beta"], [("beta", "usage checks paused")])
         # The early switch passes it over too.
-        self.assertEqual(self.moves(unread_beta, account("gamma", 10, 4 * DAY)), ("switch", "gamma", "early", None))
-        # Beta is used when its reading is new enough to switch on, and when the last try was the one that gave
-        # its reading: the next read is there a few seconds later.
+        self.assertEqual(self.moves(paused_beta, account("gamma", 10, 4 * DAY)), ("switch", "gamma", "early", None))
+        # Beta is used when its reading is new enough to switch on, when the pause is over, and when it has none.
+        # A read that failed without a pause is tried again, so it is waited for as before.
         out = dict(alpha=(100, 6 * DAY))
-        self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=120, tried_at=NOW - 60), gamma, **out)[:3], ("switch", "beta", "out"))
-        self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240, tried_at=NOW - 240), gamma, **out)[:3], ("switch", "beta", "out"))
+        self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=120, paused_until=NOW + 600), gamma, **out)[:3], ("switch", "beta", "out"))
+        for over in (NOW, NOW - 1, None, "soon"):
+            with self.subTest(paused_until=over):
+                self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240, paused_until=over), gamma, **out)[:3], ("switch", "beta", "out"))
         self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240), gamma, **out)[:3], ("switch", "beta", "out"))
         # With no other account ready it is read again, like a reading that is too old.
-        result = self.decide(unread_beta, **out)
+        result = self.decide(paused_beta, **out)
         self.assertEqual((result["action"], result["hold"], result["refresh"]), ("none", "Checking Beta before switching", ["beta"]))
         # Past 15 minutes the words are those of an old reading.
-        result = self.decide(account("beta", 30, 2 * DAY, age=1200, tried_at=NOW - 60), gamma, **out)
+        result = self.decide(account("beta", 30, 2 * DAY, age=1200, paused_until=NOW + 600), gamma, **out)
         self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], ["reading 20 min old"])
-        # An account past the threshold is used up as a last resort, and one of those that could not be read
-        # does not keep a ready one waiting either.
-        result = self.decide(account("beta", 90, 2 * DAY, age=240, tried_at=NOW - 60), account("gamma", 92, 4 * DAY), **out)
+        # An account past the threshold is used up as a last resort, and a paused one of those does not keep a
+        # ready one waiting either.
+        result = self.decide(account("beta", 90, 2 * DAY, age=240, paused_until=NOW + 600), account("gamma", 92, 4 * DAY), **out)
         self.assertEqual((result["action"], result["target"]), ("switch", "gamma"))
-        # The other way round: Beta has room and could not be read, and Gamma, past the threshold, is ready.
-        result = self.decide(unread_beta, account("gamma", 92, 4 * DAY), **out)
+        # The other way round: Beta has room and is paused, and Gamma, past the threshold, is ready.
+        result = self.decide(paused_beta, account("gamma", 92, 4 * DAY), **out)
         self.assertEqual((result["action"], result["target"], result["reason"]),
                          ("switch", "gamma", "Alpha reached its weekly limit; Beta needs a new reading first, so Gamma is used up to 99%."))
 

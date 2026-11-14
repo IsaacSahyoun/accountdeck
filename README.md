@@ -56,8 +56,8 @@ no account has room in both limits, it first moves to an account that still has 
 both. If there is none, it moves to an account that has only its Fable limit used up, because
 that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a reading at most
-15 minutes old. An account whose usage could not be read is skipped until a read works, so a switch
-never waits on it while another account is ready. Right after a weekly limit refills, it waits for a new reading of the
+15 minutes old. An account whose usage checks are paused (Claude refused one) is skipped while the
+pause lasts, so a switch never waits on it while another account is ready. Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
 switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 
@@ -65,7 +65,7 @@ switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 when a week resets is lost, so with this on AccountDeck keeps Claude Code on the account whose week
 resets soonest. It can move long before 95%, for example when the account in use is only 20% used,
 and however far off the other account's reset is. It moves when the other account's weekly limit
-resets more than an hour before the weekly limit of the account in use. Of weeks that reset within
+resets more than an hour and 5 minutes before the weekly limit of the account in use. Of weeks that reset within
 the hour of each other, the one with more room is used first. The other account has to be
 one auto-switch could move to at your percentage anyway (room in its weekly and its Fable limit, a
 reading at most 15 minutes old), with at least 20% of its week still unused. A week that has not
