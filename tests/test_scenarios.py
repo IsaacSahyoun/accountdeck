@@ -36,6 +36,16 @@ class ScenarioTest(unittest.TestCase):
                         engine.stop()
                     shutil.rmtree(root, ignore_errors=True)
 
+    def test_the_example_of_paused_reads_says_the_paused_account_is_passed_over(self):
+        """The example states hand the rule the page's own account dicts (`fixtures.terminal_autoswitch`). In
+        `rate-limited` Claude has paused Beta's reads. The rule goes by that pause, which those dicts carry, so
+        the example says what the engine says on the same data: Beta is passed over."""
+        state = fixtures.example_state("rate-limited")
+        beta = next(a for a in state["accounts"] if a["provider"] == "claude_cli" and a["label"] == "Beta")
+        self.assertGreater(beta["paused_until"], state["now"])
+        skips = {row["id"]: row["skip"] for row in state["providers"]["claude_cli"]["autoswitch"]["next_up"]}
+        self.assertEqual(skips[beta["id"]], "usage checks paused")
+
     def test_the_demos_name_claudes_limits_as_the_parser_does(self):
         """The demo data writes its limits out by hand (`fixtures._SHAPES`). A name changed in the parser and
         not there would stay in every demo and in every picture of the look sweep."""

@@ -352,8 +352,9 @@ def _early(rows, active, history, now):
         return {"hold": MANUAL_HOLD}
     if not able:
         return {}
-    # Of the weeks that end within the hour of the soonest, the one with the most room, which is how `_ordered`
-    # breaks that tie.
+    # Of the weeks that end within the hour of the soonest, the one with the most room. `_ordered` breaks a tie
+    # of two weeks the same way. Its tie is pairwise, so with three weeks that each end within the hour of the
+    # next its first account can be another one.
     soonest = min(row["weekly_reset"] for row in able)
     target = min((row for row in able if row["weekly_reset"] - soonest <= HOUR),
                  key=lambda row: (-row["room"], row["label"].casefold()))

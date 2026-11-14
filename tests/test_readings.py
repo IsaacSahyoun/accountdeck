@@ -458,6 +458,14 @@ class SoonestWeekFirstTest(unittest.TestCase):
             with self.subTest(paused_until=over):
                 self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240, paused_until=over), gamma, **out)[:3], ("switch", "beta", "out"))
         self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240), gamma, **out)[:3], ("switch", "beta", "out"))
+        # The skip starts where `cli_auto.tick` stops switching without a new read, and ends where an old
+        # reading's skip starts.
+        for age, skip in ((cli_policy.READY, None), (cli_policy.READY + 1, "usage checks paused"), (900, "usage checks paused"),
+                          (901, "reading 16 min old")):
+            with self.subTest(age=age):
+                result = self.decide(account("beta", 30, 2 * DAY, age=age, paused_until=NOW + 600), gamma, **out)
+                self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], [skip])
+                self.assertEqual(result["target"], "beta" if skip is None else "gamma")
         # With no other account ready it is read again, like a reading that is too old.
         result = self.decide(paused_beta, **out)
         self.assertEqual((result["action"], result["hold"], result["refresh"]), ("none", "Checking Beta before switching", ["beta"]))

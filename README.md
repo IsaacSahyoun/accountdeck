@@ -68,7 +68,7 @@ and however far off the other account's reset is. It moves when the other accoun
 resets more than an hour and 5 minutes before the weekly limit of the account in use. Of weeks that reset within
 the hour of each other, the one with more room is used first. The other account has to be
 one auto-switch could move to at your percentage anyway (room in its weekly and its Fable limit, a
-reading at most 15 minutes old), with at least 20% of its week still unused. A week that has not
+reading at most 15 minutes old, usage checks that are not paused), with at least 20% of its week still unused. A week that has not
 started is never moved to. The early switch waits 2 hours after any automatic switch, so a switch at
 your percentage is not followed by a second one right away. An early switch that failed is tried again
 2 hours later. A switch at your percentage still goes to the first account in the order you chose under
