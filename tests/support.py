@@ -64,6 +64,22 @@ def shipped_reading(now, five, weekly, fable=None):
                         window("seven_day", "weekly", "Weekly", "7d", 10080, weekly, now + 4 * 86400)] + model}
 
 
+def shipped_both_names(now, weekly, named, listed, *, reset=None):
+    """A Claude account's reading as the 2.0.0 build saved it from one answer that had the Fable 5.1 limit under
+    its named key (`named` percent used) and in its list (`listed` percent used). That build kept both as
+    limits, and its `raw_windows` says where each number came from. Written out from a run of that build
+    (`21-what-2.0.0-saved-for-both-names.txt` in the proof folder of the Fable 5.1 rule)."""
+    reset = now + 4 * 86400 if reset is None else reset
+    reading = shipped_reading(now, 10.0, weekly, named)
+    five, week, key = reading["windows"]
+    week, key = dict(week, reset=reset), dict(key, reset=reset)
+    entry = dict(key, id="seven_day_fable_5_1", model="Fable 5.1", scope="Fable 5.1", used=listed)
+    raw = [("five_hour", 10.0, now + 7200), ("seven_day", weekly, reset), ("seven_day_fable", named, reset),
+           ("limits[0].weekly_all", weekly, reset), ("limits[1].weekly_scoped.fable_5_1", listed, reset)]
+    return dict(reading, windows=[five, week, key, entry],
+                raw_windows=[{"key": name, "used": used, "reset": at} for name, used, at in raw])
+
+
 @contextlib.contextmanager
 def recover_reads(order):
     """Recover looks the open records up again when it is pressed. Inside this block that look returns

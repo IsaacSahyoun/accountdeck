@@ -274,7 +274,7 @@ class CLISwitch(Operation):
             with cli_auto.history(self.engine) as history:
                 history.update(left=previous, left_at=now)
                 if self.auto_kind == "manual":
-                    history["manual_at"] = now
+                    history.update(manual_at=now, manual_for=self.account)      # the hold is for this account
                     if history.get("last"):
                         history["last"]["undo_until"] = now
                 else:

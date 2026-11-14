@@ -226,12 +226,13 @@ def _need(active, threshold, now):
                          if ended(w, now) and (w.get("blocked") or (used is not None and used >= threshold))]}
 
 
-def _held(history, now):
-    """True for 2 hours after the user's own choice, Undo included, while the chosen account is the one in
-    use. An automatic switch since the choice moved the terminals off it (its week ran out, or it needed
-    sign-in), and the account in use now is not the user's choice."""
-    chosen = history.get("manual_at", -1e20)
-    return now - chosen < 2 * HOUR and (history.get("last") or {}).get("at", -1e20) <= chosen
+def _held(history, active, now):
+    """True for 2 hours after the user's own choice, Undo included, while the account they chose
+    (`manual_for`) is the one in use. Once auto-switch has moved the terminals off it (its week ran out, or
+    it needed sign-in), the account in use is not the user's choice. A history from before `manual_for`
+    has only the time, and holds whichever account is in use, as it did then."""
+    return (now - history.get("manual_at", -1e20) < 2 * HOUR
+            and history.get("manual_for", active["id"]) == active["id"])
 
 
 def _checking(rows):
@@ -247,7 +248,7 @@ def _leave(need, rows, active, history, settings, now):
     kind = "refilled" if history.get("exhausted") else need["trigger"]
     # The user's own choice outranks the threshold and a model's limit that ran out. It does not outrank an
     # account whose week ran out or that needs sign-in: staying there would stop their work.
-    if need["yields"] and _held(history, now):
+    if need["yields"] and _held(history, active, now):
         return {"hold": MANUAL_HOLD}
     eligible = [row for row in rows if row["skip"] is None]
     if eligible:
@@ -265,10 +266,10 @@ def _leave(need, rows, active, history, settings, now):
     # works for all but the model whose limit ran out, so it is better than staying. While the account in
     # use still works, it is not.
     why = f"reached {DRAIN_CEILING}%" if need["trigger"] == "threshold" else need["why"]
-    names = [row["label"] for row in stale]
+    names = [row["label"] for row in stale[:3]] + ([f"{len(stale) - 3} more"] if len(stale) > 3 else [])
     others = (f"every account is past {threshold}%" if not stale else
               f"{names[0]} needs a new reading first" if len(names) == 1 else
-              f"{', '.join(names[:-1][:2])} and {names[-1]} need a new reading first")
+              f"{', '.join(names[:-1])} and {names[-1]} need a new reading first")
     last = [(row, kind, f"{others}, so {row['label']} is used up to {DRAIN_CEILING}%") for row in rows if row["drainable"]]
     if not need["yields"]:
         # These are judged on their week, so the order is the user's order with the week's room as the room.
@@ -310,7 +311,7 @@ def _early(rows, active, history, now):
     early_at = history.get("early_at", last.get("at", -1e20) if last.get("kind") == "early" else -1e20)
     if now - early_at < 2 * HOUR:
         return {"hold": "An early switch happened less than 2 hours ago"}
-    if _held(history, now):
+    if _held(history, active, now):
         return {"hold": MANUAL_HOLD}
     mine = active["weekly_reset"]
     just_left = history.get("left") if now - history.get("left_at", -1e20) < 1800 else None

@@ -494,11 +494,9 @@ class TerminalFableLimitTest(DeckCase):
         ends = float(int(now) + 4 * 86400)
         for row in (self.full, self.roomy):
             self.read(row, weekly=20, fable=20)
-        week = dict(support.shipped_reading(now, 10.0, 30.0)["windows"][1], reset=ends)
-        named = support.fable_window(1.0, ends)
-        listed = dict(named, id="seven_day_fable_5_1", model="Fable 5.1", scope="Fable 5.1", used=80.0)
         for age in (180, 60):          # two readings as that build saved them
-            self.engine.store.observe(self.first["id"], {"checked": now - age, "windows": [week, named, listed]}, at=now - age)
+            saved = support.shipped_both_names(now, 30.0, 1.0, 80.0, reset=ends)
+            self.engine.store.observe(self.first["id"], dict(saved, checked=now - age), at=now - age)
         iso = datetime.fromtimestamp(ends, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         answer = {"seven_day": {"utilization": 30, "resets_at": iso}, "seven_day_fable": {"utilization": 1, "resets_at": iso},
                   "limits": [{"kind": "weekly_all", "percent": 30, "resets_at": iso},
@@ -527,6 +525,7 @@ class TerminalFableLimitTest(DeckCase):
         hold = "Your manual choice is held for 2 hours"
         self.act("claude_cli", "switch", self.full["id"])
         self.assert_consistent("claude_cli", self.identity(self.full["id"]))
+        self.assertEqual(self.engine.store.setting("cli_history", {}).get("manual_for"), self.full["id"])
         self.read(self.full, weekly=96, fable=10)
         self.read(self.roomy, weekly=40, fable=100)
         self.read(self.first, weekly=20, fable=20)
@@ -550,6 +549,22 @@ class TerminalFableLimitTest(DeckCase):
         self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
         decision = cli_auto.decision(self.engine)
         self.assertEqual((decision["action"], decision["hold"]), ("none", hold), "an Undo is the user's choice")
+
+    def test_a_switch_the_app_died_after_does_not_pass_the_hold_on(self):
+        """Found by the fourth review of this change. Auto-switch writes the login and then its history. When
+        the app dies between the two, the history still shows the user's choice as the last thing that
+        happened. The hold is for the account the history names, so the account now in use is not held."""
+        from accountdeck import switch_cli
+        self.act("claude_cli", "switch", self.full["id"])
+        self.read(self.full, weekly=100, fable=10)
+        self.read(self.roomy, weekly=40, fable=100)
+        self.read(self.first, weekly=20, fable=20)
+        history = self.engine.store.setting("cli_history", {})
+        switch_cli.perform(self.engine.cli, self.roomy["id"], leaving=self.identity(self.full["id"]))     # and the app dies here
+        self.assertEqual(self.engine.store.setting("cli_history", {}), history)
+        self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["target"], decision["hold"]), ("switch", self.first["id"], None))
 
     def test_an_undo_of_a_switch_made_for_the_fable_limit_stands(self):
         """The reverse. The account auto-switch left still works for the other models, so the user's Undo is

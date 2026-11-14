@@ -43,12 +43,18 @@ COLUMNS = [(weekly, name, reset) for weekly in WEEKLY_USED for name, reset in WE
 
 BETA = dict(weekly=30)
 SOON = dict(BETA, weekly=50, weekly_reset=12 * HOUR)          # Beta's week ends before Alpha's: the early switch
-UNDONE = {"left": "beta", "left_at": NOW - 5, "manual_at": NOW - 5,
+UNDONE = {"left": "beta", "left_at": NOW - 5, "manual_at": NOW - 5, "manual_for": "alpha",
           "last": {"from": "alpha", "to": "beta", "at": NOW - 60, "kind": "threshold", "reason": "", "undo_until": NOW - 5}}
 # The user chose an account 30 minutes ago. Its week ran out, and 10 minutes ago auto-switch moved the terminals
 # to Alpha. Alpha is not the user's choice.
-MOVED = {"left": "delta", "left_at": NOW - 600, "manual_at": NOW - 1800,
+MOVED = {"left": "delta", "left_at": NOW - 600, "manual_at": NOW - 1800, "manual_for": "delta",
          "last": {"from": "delta", "to": "alpha", "at": NOW - 600, "kind": "out", "reason": "", "undo_until": NOW}}
+# The same Undo with the Mac's clock set back a minute before it: the switch it undid has the later time.
+CLOCK_SET_BACK = dict(UNDONE, last=dict(UNDONE["last"], at=NOW + 55))
+# A history whose last switch has no time (damaged data: no build writes that).
+NO_TIME = dict(UNDONE, last=dict(UNDONE["last"], at=None))
+# A history the build before this one wrote: it has the time of the choice and not the account.
+BEFORE_NAMES = {key: value for key, value in MOVED.items() if key != "manual_for"}
 
 
 def beta(**changes):
@@ -84,6 +90,9 @@ ROWS = {
     "Manual choice 30 min ago, moved by itself since": ([beta()], MOVED, {}, {}),
     "Manual choice 30 min ago, moved by itself since, Alpha's Fable limit is at 100%": ([beta()], MOVED, {}, {"model": 100}),
     "Manual choice 30 min ago, moved by itself since, Beta's week ends in 12 h": ([beta(**SOON)], MOVED, {}, {}),
+    "Undo pressed 5 s ago, the clock was set back before it": ([beta()], CLOCK_SET_BACK, {}, {}),
+    "Undo pressed 5 s ago, the last switch has no time": ([beta()], NO_TIME, {}, {}),
+    "Manual choice 30 min ago, moved by itself since, history of the build before": ([beta()], BEFORE_NAMES, {}, {}),
     "Early switch 1 h ago": ([beta()], {"early_at": NOW - HOUR}, {}, {}),
     "Every account was low before": ([beta()], {"exhausted": True}, {}, {}),
     "Auto-switch is off": ([beta()], {}, {"cli_autoswitch": False}, {}),
@@ -182,12 +191,17 @@ EXPECTED = {
     "Undo pressed 5 s ago, Alpha needs sign-in":       "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
     "Undo pressed 5 s ago, Alpha is marked out":       "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
     "Manual choice 2 h 5 s ago":                       ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
-    # The hold is for the account the user chose. Once auto-switch has moved the terminals off it, the account
-    # in use is not their choice, and the rule acts as if no choice was made. The reverse is the Undo rows: a
-    # choice made after the last automatic switch is held.
+    # The hold is for the account the user chose, which the history names (`manual_for`). Once auto-switch has
+    # moved the terminals off it, the account in use is not their choice, and the rule acts as if no choice
+    # was made. The reverse is the Undo rows: Alpha is the account the user went back to, and it is held.
     "Manual choice 30 min ago, moved by itself since": ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Manual choice 30 min ago, moved by itself since, Alpha's Fable limit is at 100%": "Ob Ob hW Ob Ob hW Ob Ob hW Ob Ob hW",
     "Manual choice 30 min ago, moved by itself since, Beta's week ends in 12 h": "Eb .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    # The account decides, not the order of two times: a clock set back, or a time that is missing, changes nothing.
+    "Undo pressed 5 s ago, the clock was set back before it": "hm hm hm hm hm hW hm hm hW Ob Ob hW",
+    "Undo pressed 5 s ago, the last switch has no time": "hm hm hm hm hm hW hm hm hW Ob Ob hW",
+    # Without the account's name the hold counts for whichever account is in use, as it did in that build.
+    "Manual choice 30 min ago, moved by itself since, history of the build before": "hm hm hm hm hm hW hm hm hW Ob Ob hW",
     "Early switch 1 h ago":                            "he he he Tb Tb hW Tb Tb hW Ob Ob hW",
     "Every account was low before":                    ".. .. .. Rb Rb hW Rb Rb hW Rb Rb hW",
     "Auto-switch is off":                              ".. .. .. .. .. .. .. .. .. .. .. ..",
@@ -235,7 +249,7 @@ EXPECTED = {
 
 
 class AutoSwitchTableTest(unittest.TestCase):
-    """Every decision of `cli_policy.evaluate` for 56 situations times 12 readings of the account in use."""
+    """Every decision of `cli_policy.evaluate` for 59 situations times 12 readings of the account in use."""
     maxDiff = None
 
     def test_the_decision_table(self):
@@ -268,6 +282,9 @@ class AutoSwitchWordsTest(unittest.TestCase):
             "drain beside two old readings": cli_policy.evaluate(
                 [account("alpha", 100, active=True), beta(age=1200), account("delta", 30, age=1200), account("gamma", 90, 2 * DAY)],
                 SETTINGS, {}, NOW)["reason"],
+            "drain beside four old readings": cli_policy.evaluate(
+                [account("alpha", 100, active=True), beta(age=1200), account("gamma", 90, 2 * DAY)]
+                + [account(key, 30, age=1200) for key in ("delta", "epsilon", "zeta")], SETTINGS, {}, NOW)["reason"],
             "early": self.result("Beta's week ends in 12 h")["reason"],
             "has refilled": self.result("Beta has room", weekly=96, reset=-40)["hold"],
             "checking": self.result("Beta's reading is 20 min old", weekly=96)["hold"],
@@ -291,6 +308,8 @@ class AutoSwitchWordsTest(unittest.TestCase):
             "its week alone, sign-in": "Alpha needs sign-in; Beta's week can still be used, though its Fable 5.1 weekly limit is at 100%.",
             "drain beside an old reading": "Alpha reached its weekly limit; Beta needs a new reading first, so Gamma is used up to 99%.",
             "drain beside two old readings": "Alpha reached its weekly limit; Beta and Delta need a new reading first, so Gamma is used up to 99%.",
+            # every account that waits is counted (found by the fourth review: the fourth name was dropped unsaid)
+            "drain beside four old readings": "Alpha reached its weekly limit; Beta, Delta, Epsilon and 1 more need a new reading first, so Gamma is used up to 99%.",
             "early": "Using Beta's weekly allowance before it resets in 12h 0m (50% left).",
             "has refilled": "Alpha's weekly limit has refilled. Waiting for its new reading.",
             "checking": "Checking Beta before switching",
@@ -507,7 +526,7 @@ class FableLimitTest(unittest.TestCase):
 
     def test_a_reading_counts_as_old_after_15_minutes(self):
         """Found by the third review of this change. Every old reading in these tests was 20 or 60 minutes old,
-        so no test held the 15 minutes that the README names."""
+        so no test held the 15 minutes that the rule's header and the README name."""
         kinds = (("with room", 96, dict(weekly=30)), ("past the threshold", 99, dict(weekly=90)),
                  ("used for its week alone", 100, dict(weekly=30, model=100)))
         for name, in_use, other in kinds:
@@ -566,30 +585,40 @@ class FableLimitTest(unittest.TestCase):
                                  [("seven_day", 40), ("seven_day_fable", 100), ("seven_day_fable_2", 20)])
                 alpha = self.terminal("alpha", answer, active=True)
                 self.assertEqual([used for _name, used, _window in cli_policy.considered(alpha, SETTINGS)], [40, 100, 20])
+        # The same once the reading is saved, whatever the two entries call the model (found by the fourth
+        # review: "Fable" beside "fable" or "Fable 5.1" was taken for a named key beside its list entry).
         from accountdeck.usage import saved_reading
-        saved = {"checked": NOW, "windows": copy.deepcopy(claude_usage({**week, "limits": twice}, now=NOW)["windows"])}
-        self.assertIs(saved_reading("claude_cli", saved), saved, "and a saved reading keeps both")
+        for names in (("Fable", "Fable"), ("Fable", "fable"), ("Fable", "Fable 5.1")):
+            with self.subTest("saved", names=names):
+                listed = [dict(entry, scope={"model": {"display_name": name}}) for entry, name in zip(twice, names)]
+                saved = copy.deepcopy(claude_usage({**week, "limits": listed}, now=NOW))
+                self.assertEqual([w["used"] for w in saved["windows"]], [40, 100, 20])
+                self.assertIs(saved_reading("claude_cli", saved), saved)
 
     def test_a_saved_reading_that_names_the_fable_limit_twice_gives_one_limit(self):
         """Data an older build wrote. It saved the listed limit beside the named key's. The named key's is left
         out when the reading is read, and no id changes."""
         from accountdeck.usage import saved_reading
-        week, fable = support.shipped_reading(NOW, 10.0, 40.0, 100.0)["windows"][1:]
-        listed = dict(fable, id="seven_day_fable_5_1", model="Fable 5.1", scope="Fable 5.1", used=20.0)
-        saved = {"checked": NOW, "windows": [week, fable, listed]}
+        saved = support.shipped_both_names(NOW, 40.0, 100.0, 20.0)
+        before = copy.deepcopy(saved)
         for provider in ("claude_cli", "claude"):
             with self.subTest(provider=provider):
                 self.assertEqual([(w["id"], w["used"]) for w in saved_reading(provider, saved)["windows"]],
                                  [("seven_day", 40.0), ("seven_day_fable_5_1", 20.0)])
-        self.assertEqual([(w["id"], w["used"]) for w in saved["windows"]],
-                         [("seven_day", 40.0), ("seven_day_fable", 100.0), ("seven_day_fable_5_1", 20.0)], "the saved reading itself is not changed")
-        for name, windows in (("the list's entry alone", [week, listed]), ("the named key alone", [week, fable])):
+        self.assertEqual(saved, before, "the saved reading itself is not changed")
+        week, fable, listed = saved["windows"][1:]
+        raw = {entry["key"]: entry for entry in saved["raw_windows"]}
+        for name, windows, keys in (("the list's entry alone", [week, listed], ("limits[0].weekly_all", "limits[1].weekly_scoped.fable_5_1")),
+                                    ("the named key alone", [week, fable], ("seven_day", "seven_day_fable"))):
             with self.subTest(name):
-                alone = {"checked": NOW, "windows": windows}
+                alone = {"checked": NOW, "windows": windows, "raw_windows": [raw[key] for key in keys]}
                 self.assertIs(saved_reading("claude_cli", alone), alone)
         sonnet = dict(fable, id="seven_day_sonnet", model="Sonnet", scope="Sonnet", label="Sonnet weekly")
-        other = {"checked": NOW, "windows": [week, sonnet, listed]}
+        other = {"checked": NOW, "windows": [week, sonnet, listed],
+                 "raw_windows": [raw["seven_day"], dict(raw["seven_day_fable"], key="seven_day_sonnet"), raw["limits[1].weekly_scoped.fable_5_1"]]}
         self.assertIs(saved_reading("claude_cli", other), other, "another model's named key is another limit")
+        unsaid = {"checked": NOW, "windows": [week, fable, listed]}
+        self.assertIs(saved_reading("claude_cli", unsaid), unsaid, "a reading that does not say where a number came from keeps it")
         self.assertIs(saved_reading("codex", saved), saved, "only Claude's readings")
 
     def test_the_menu_bar_counts_the_fable_limit_in_both_shapes(self):
