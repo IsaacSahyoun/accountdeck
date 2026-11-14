@@ -6,7 +6,7 @@ Client ids `codex` and `muse`. Each keeps its login in a file. A switch waits fo
 
 ## Sub-features
 - Switch… on a row, with a plan sheet that lists running sessions.
-- Wait for sessions to close, then switch.
+- Wait for sessions to close, then switch. A Codex session or daemon that starts after that wait, while the switch waits for a job beside it, fails the switch: no daemon is stopped and nothing is written.
 - Save Current Account and Add Account. An empty section says how to start.
 - Codex: a login renewed by Codex during or before a switch is saved under its own account.
 - Muse: usage comes from `muse usage --json`, and Muse must keep its login in a file for the app to save it.
@@ -52,7 +52,7 @@ Each stage of a Codex switch has a scenario that holds it there: `switching` (wa
 
 Tests to reuse:
 - `tests/test_switch_safety.py`: `CodexSwitchTest`, `CodexInterruptedSwitchTest`, `CodexRenewalTest`, `CodexHelperFolderTest`, `MuseSwitchTest`, `MuseInterruptedSwitchTest`;
-- `tests/test_muse.py` (58 tests): the usage parser, the adapter, the engine, and `RealFormatTest` for the real file format;
+- `tests/test_muse.py` (59 tests): the usage parser, the adapter, the engine, and `RealFormatTest` for the real file format;
 - `tests/test_second_review.py`, `CodexRecoverWaitsForUsageChecksTest`, `ConfirmationStillHoldsAfterTheLaneWaitTest`, `CodexCancelDuringTheLaneWaitTest` (a terminal switch beside a Codex wait); `tests/test_switch_safety.py`, `WaitDeadlineTest`;
 - every row action for a Codex and a Muse row: `tests/test_dashboard.py`, `EveryClientRowsTest`.
 

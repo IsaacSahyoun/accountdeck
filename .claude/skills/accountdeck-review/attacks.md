@@ -9,7 +9,7 @@ A switch must never lose a login, mix two accounts' pieces, or file a login unde
 3. **Recover pressed once, twice, and after a failed press.** Can it loop, block for good, skip a record, or leave a leftover record? What does the user see and what can they do?
 4. **The client changes its own login in the middle.** Claude Code or Codex renews its token, or the user signs in as someone else, between the app's read and its write.
 5. **A file that cannot be read, or is half written.** Is it kept before it is replaced? Is "I cannot tell" ever treated as "it is fine"?
-6. **Data an older version wrote.** Open records, set-aside records, saved pauses and settings from the installed version, read by the new code on its first start. Builds before 2.1 also saved accounts, logins and switch records for Claude Desktop, which the new code does not manage: it must never list, change or delete them, and never open a file of Claude Desktop's own.
+6. **Data an older version wrote.** Open records, set-aside records, saved pauses and settings from the installed version, read by the new code on its first start. Builds before 2.1 also saved accounts, logins and switch records for Claude Desktop, which the new code does not manage: it must never list, change or delete them, and never open a file in Claude Desktop's data folder (`~/Library/Application Support/Claude`).
 7. **The outside is down.** The provider cannot be reached, the Keychain is locked, the disk is full.
 
 ## Two jobs at once

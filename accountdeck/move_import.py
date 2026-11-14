@@ -603,6 +603,8 @@ def _entry_public(entry):
     if complete:
         message = (f"Every account from this {'hand-over' if entry.get('kind') == 'handover' else 'move'} bundle is "
                    f"saved on this Mac. {CODE_HINT}")
+    elif failures and counts["left_out"]:      # a new export would hold the left-out account again: no "export again"
+        message = f"{_count(len(failures), 'account')} could not be imported. {_left_out(counts['left_out'], 'was')} {NO_CODE}"
     elif failures:
         message = (f"{_count(len(failures), 'account')} could not be imported, so there is no confirmation code. "
                    f"{CANCEL_HINT}")
@@ -742,6 +744,8 @@ def _summary(kind, counts, failures, code, settings):
         if counts["on_pc"]:
             text += (f" {_count(counts['on_pc'], 'account')} still signed in on the PC "
                      f"{_verb(counts['on_pc'], 'is')} listed without a sign-in.")
+    if failures and counts["left_out"]:
+        return f"{text} {_count(len(failures), 'account')} could not be imported. {_left_out(counts['left_out'], 'was')} {NO_CODE}"
     if failures:
         return f"{text} {_count(len(failures), 'account')} could not be imported. {CANCEL_HINT}"
     if settings:

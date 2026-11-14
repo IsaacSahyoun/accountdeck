@@ -75,12 +75,12 @@
         el('output', { class: 'move-code', 'aria-label': `Confirmation code ${code.split('').join(' ')}`, text: code }),
         el('div', null, AD.dom.button('Copy Code', () => copy(code), { small: true, icon: 'copy' }))];
     }
-    // No failures and no code: the server's message says why (an account left out, or an import cut short).
-    if (!(result.failures || []).length) return [p(result.message || 'This import has not finished.', 'modal-error')];
-    return [p('No confirmation code: some accounts could not be imported.', 'modal-error'),
-      el('ul', 'import-list', (result.failures || []).map((f) => el('li', 'import-row',
-        el('span', { text: AD.dom.maskEmail(`${f.label || f.id || 'Account'}: ${f.reason || f.message || 'Import failed'}`) })))),
-      p('Use Cancel Move on the PC and export again.')];
+    // No code: the server's message says why (an account that failed, one left out, or an import cut short)
+    // and what to do on the PC. The accounts that failed are listed under it.
+    const failures = result.failures || [];
+    return [p(result.message || 'This import has not finished.', 'modal-error'),
+      failures.length ? el('ul', 'import-list', failures.map((f) => el('li', 'import-row',
+        el('span', { text: AD.dom.maskEmail(`${f.label || f.id || 'Account'}: ${f.reason || f.message || 'Import failed'}`) })))) : null];
   }
 
   function importResult(result) {
@@ -109,7 +109,7 @@
           if (result.result) importResult(result.result);
           else {
             waitingImport = preview.bundle_id;
-            show('Importing…', p('Your code appears here once every account is stored. It also appears on the dashboard.'), [close()]);
+            show('Importing…', p('The result appears here when the import finishes. It also appears on the dashboard.'), [close()]);
           }
         })]);
     })]);

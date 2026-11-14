@@ -112,7 +112,8 @@ that AccountDeck saved. Use **Sign In Again** if a saved login expires or is rev
 
 **Where did Claude Desktop go?** Version 2.1 does not manage Claude Desktop. Sign in and out in Claude Desktop
 itself. Accounts an earlier version saved for it are no longer listed. They stay in the data folder, encrypted,
-and AccountDeck does not use them. If an earlier version was in the middle of a Claude Desktop switch, a notice
+and AccountDeck does not use them. A line about Claude Desktop in the Activity list is history from the earlier
+version, and newer lines replace it. If an earlier version was in the middle of a Claude Desktop switch, a notice
 says so once: open Claude Desktop and check the account, and sign in again if it is the wrong one. A move bundle
 from a PC can still hold Claude Desktop accounts. The import leaves them out and says how many, and that bundle
 gets no confirmation code, so the PC keeps its accounts.

@@ -1,6 +1,6 @@
 # AccountDeck 2
 
-A Mac menu bar app in Python 3.14 with a web dashboard on `127.0.0.1`. It saves and switches the logins of three clients on one Mac user account: Claude Code in the terminal (`claude_cli`), Codex (`codex`) and Muse Code (`muse`). Builds before 2.1 also switched Claude Desktop (`claude`). This one does not: it never lists what those builds saved for it and never opens a file of Claude Desktop's own (`tests/test_no_desktop.py`). The app shows the dashboard in a window of its own, a WKWebView, so WebKit is the browser engine a person sees.
+A Mac menu bar app in Python 3.14 with a web dashboard on `127.0.0.1`. It saves and switches the logins of three clients on one Mac user account: Claude Code in the terminal (`claude_cli`), Codex (`codex`) and Muse Code (`muse`). Builds before 2.1 also switched Claude Desktop (`claude`). This one does not: it never lists the accounts those builds saved for it and never opens a file in Claude Desktop's data folder, `~/Library/Application Support/Claude` (`tests/test_no_desktop.py`). The app shows the dashboard in a window of its own, a WKWebView, so WebKit is the browser engine a person sees.
 
 ## The rule that comes first
 The copy of this app installed on this Mac holds real logins. A dev run or a test that reaches them can sign real accounts out.

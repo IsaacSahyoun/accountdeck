@@ -408,8 +408,13 @@ class CodexCancelDuringTheLaneWaitTest(DeckCase):
     it. A Cancel pressed during that second wait is accepted, so nothing of Codex is stopped or written
     after it. A session opened during that wait stops the switch too."""
 
-    def start_a_switch_when_idle_with_a_terminal_switch_beside_it(self):
+    def start_a_switch_when_idle_with_a_terminal_switch_beside_it(self, daemon=True):
         self.outgoing, self.target = self.active("codex"), self.add_codex_account()
+        kinds = self.procs.classify(self.procs.snapshot())
+        if not daemon:
+            for row in kinds["codex_daemon"] + kinds["codex_daemon_updater"]:
+                self.procs.exit_process(row.pid)
+        self.assertEqual(self.procs.codex_daemon() is not None, daemon)     # the daemon is what the switch stops
         self.sessions = self.procs.codex_consumers()
         self.assertTrue(self.sessions)
         self.held, self.released = watch_the_lane_wait(self.engine.runner)
@@ -445,8 +450,18 @@ class CodexCancelDuringTheLaneWaitTest(DeckCase):
         self.assertTrue(self.engine.runner.wait(30))
         report = self.engine.snapshot()["report"]
         self.assertEqual((report["outcome"], report["error"]["code"]), ("failed", "busy"), report)
-        self.assertEqual(self.signed_in("codex"), self.identity(self.outgoing["id"]))
-        self.assertEqual(self.pending_records(), [])
+        self.assert_nothing_of_codex_changed()          # the daemon the new session talks to is still running
+
+    def test_a_daemon_started_during_the_second_wait_is_not_stopped(self):
+        """The user confirmed a plan with no daemon in it. One that starts later is not the switch's to stop."""
+        self.start_a_switch_when_idle_with_a_terminal_switch_beside_it(daemon=False)
+        self.procs.add_codex("codex_daemon")
+        self.beside.finish.set()
+        self.assertTrue(self.released.wait(10))
+        self.assertTrue(self.engine.runner.wait(30))
+        report = self.engine.snapshot()["report"]
+        self.assertEqual((report["outcome"], report["error"]["code"]), ("failed", "busy"), report)
+        self.assert_nothing_of_codex_changed()
 
 
 class SetAsideRecordsAreKeptTest(TerminalRecoverCase):

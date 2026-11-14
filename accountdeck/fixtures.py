@@ -482,8 +482,10 @@ def _scene_loading(spec, now):
     ]
 
 
+# The early switch is off here: among 35 Claude Code accounts one always has a week that ends before the week of
+# the account in use, and the demo would move its terminals at its first check.
 def _scene_fifty(spec, now):
-    spec["settings"] = {"density": "rows"}
+    spec["settings"] = {"density": "rows", "cli_early_switch": False}
     spec["accounts"] = _fifty_accounts()
     spec["events"] = [{"id": 412, "at": now - 30, "kind": "refresh", "message": "Refreshed 50 accounts."}]
 

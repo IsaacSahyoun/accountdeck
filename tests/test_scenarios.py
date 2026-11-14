@@ -36,6 +36,24 @@ class ScenarioTest(unittest.TestCase):
                         engine.stop()
                     shutil.rmtree(root, ignore_errors=True)
 
+    def test_a_demo_runs_a_job_at_its_first_check_only_when_its_picture_shows_one(self):
+        """A demo that switches by itself at its first check shows another page than the scenario's picture, and
+        that switch races whatever stops the demo. `fifty` did, once its 35 accounts were Claude Code's: the early
+        switch moved the terminals to the account whose week ends first."""
+        for scenario in demo.SCENARIOS:
+            with self.subTest(scenario=scenario):
+                root = tempfile.mkdtemp(prefix="ad2-scenario-")
+                engine = None
+                try:
+                    engine = demo.build_demo(root, scenario, start=False, inline=True)
+                    engine.tick()
+                    running = engine.runner.pending()
+                    self.assertEqual(running and running["kind"], (fixtures.example_state(scenario)["pending"] or {}).get("kind"))
+                finally:
+                    if engine is not None:
+                        engine.stop()
+                    shutil.rmtree(root, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

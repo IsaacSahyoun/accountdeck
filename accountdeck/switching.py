@@ -147,9 +147,6 @@ def claim(ctx, purpose, body, *, build, provider, account=None) -> Claim:
     if consent is None and plan_id is not None and fresh.plan["confirmation_required"]:
         _reissue(ctx, fresh, plan_id)
         raise DeckError(CONFIRM_MESSAGE, "confirm_required", plan=fresh.plan)
-    if plan_id is not None and (consent or "now") == "now" and fresh.entry.get("activity") != entry.get("activity"):
-        _reissue(ctx, fresh, plan_id)
-        raise DeckError(RECONFIRM_MESSAGE, "needs_reconfirm", plan=fresh.plan)
     if remember and not fresh.plan["remember_available"]:
         raise DeckError("That choice is only available when nothing is working.", "invalid")
     mode = consent or "now"

@@ -122,9 +122,13 @@ class CodexSwitch(FileSwitch):
 
     def wait(self, stack):
         ctx = self.ctx
-        _, daemons, _ = self.sessions_closed(lambda: processes(ctx),
-                                             lambda: plan_codex_switch(ctx, self.account, ignore_op=self.id))
+        self.sessions_closed(lambda: processes(ctx), lambda: plan_codex_switch(ctx, self.account, ignore_op=self.id))
         self.set_phase("stopping", "Stopping the Codex daemon…", cancellable=False)
+        # The phase change can wait for a job running beside this one, so the look from before it is old. A
+        # session opened in that time keeps its daemon, and a daemon the user did not confirm is not stopped.
+        consumers, daemons, found = processes(ctx)
+        if consumers or not set(found.pairs) <= set(self.token.pairs):
+            raise DeckError("Codex started again. Nothing was changed.", "busy")
         if daemons:
             self.codex_exe = ctx.codex.executable()
             result = ctx.procs.codex_daemon_stop(self.codex_exe, ctx.paths.codex_home, daemon_settings(ctx.paths.codex_home))

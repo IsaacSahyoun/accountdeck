@@ -100,7 +100,7 @@ git tag -a <name> <commit> -m "AccountDeck <version>: installed <date>"
 ```sh
 open "$HOME/Applications/AccountDeck 2.app"
 ```
-A dashboard left open in Safari from before is the old page talking to the new app. Reload it.
+A dashboard left open in Safari from before is the old page talking to the new app. Reload it. A page of the 2.0.0 build that is still open after the first install of 2.1 goes on drawing a Claude Desktop section, with no accounts in it and two buttons the new app refuses. A reload removes it.
 
 ## 8. If it goes wrong
 The code goes back first. Quit the app, then install the commit the doctor named in `doctor-before.txt`, the same way (steps 1 and 6 with that commit). The data stays as it is.

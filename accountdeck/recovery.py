@@ -63,9 +63,9 @@ def pending(engine):
     """The keys of the open records a press of Recover settles. A record that cannot be read is one of them:
     Recover sets it aside. A record of a client this build does not manage is not. Nothing here can put
     that client's login right, so the copy that owns the sign-ins sets the record aside, kept as it is, and
-    says so once. Another copy leaves it where it is. A set-aside that fails leaves the record open and out
-    of the list, and the next start tries again."""
-    keys = []
+    says so once, however many records that one unfinished switch left. Another copy leaves it where it is.
+    A set-aside that fails leaves the record open and out of the list, and the next start tries again."""
+    keys, told = [], False
     for key in recover_transactions(engine.vault):
         try:
             managed = client_of(engine.vault.get(key)) is not None
@@ -75,20 +75,23 @@ def pending(engine):
             keys.append(key)
         elif engine.owns_login:
             try:
-                set_aside(engine, key, UNMANAGED)
+                told = set_aside(engine, key, None if told else UNMANAGED) or told
             except OSError as exc:
                 diagnostics.log_exception("recovery.unmanaged_kept", exc)
     return keys
 
 
 def set_aside(engine, key, message):
-    """Takes a record nobody can settle out of the pending list, keeps it, and tells the user."""
+    """Takes a record nobody can settle out of the pending list and keeps it. With a message it tells the
+    user. False when the record was already gone."""
     try:
         engine.vault.set_aside(key)
     except FileNotFoundError:
-        return
+        return False
     diagnostics.log("recovery.set_aside", "warning")
-    engine.notice(message, "warning")
+    if message:
+        engine.notice(message, "warning")
+    return True
 
 
 @dataclass

@@ -791,30 +791,46 @@ class ReviewFindingsTest(EngineCase):
         self.assertEqual(engine.recovery, [])
 
     def test_paused_reads_never_wait_on_a_switchs_locks(self):
-        gate, ran = threading.Event(), []
-
-        def run(account_id):
-            if account_id.startswith("busy"):
-                gate.wait(10)
-            ran.append(account_id)
-            return "ok"
-
-        scheduler = RefreshScheduler(run, workers=3)
+        """A read a worker picks up after its client's switch began gives up at once. Waiting for the account's
+        lock, which the switch holds, would keep that worker for as long as the switch runs."""
+        ran = []
+        scheduler = RefreshScheduler(lambda account_id: ran.append(account_id) or "ok", workers=3)
         self.addCleanup(scheduler.shutdown)
-        scheduler.tick([Target(f"busy{n}", "codex", f"k{n}") for n in range(3)] +
-                       [Target(f"muse{n}", "muse", f"m{n}") for n in range(3)], time.time(), time.time)
-        scheduler.pause("muse")             # a Muse switch starts and takes every Muse account's lock
-        for n in range(3):
-            lock = scheduler.account_lock(f"muse{n}")
-            self.assertTrue(lock.acquire(timeout=1))
-            self.addCleanup(lock.release)
-        gate.set()
-        time.sleep(0.3)
-        scheduler.tick([Target("codex-active", "codex", "kc", active=True)], time.time(), time.time)
-        deadline = time.monotonic() + 3
-        while "codex-active" not in ran and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertIn("codex-active", ran)
+        scheduler.pause("muse")             # a Muse switch starts and takes the account's lock
+        lock = scheduler.account_lock("muse0")
+        lock.acquire()
+        self.addCleanup(lock.release)
+        read = threading.Thread(target=scheduler._read, args=(Target("muse0", "muse", "m0"), time.time), daemon=True)
+        read.start()
+        read.join(5)
+        self.assertFalse(read.is_alive(), "the read is waiting for the lock its client's switch holds")
+        self.assertEqual(ran, [])
+
+    def test_a_read_that_waited_for_the_lock_does_not_run_once_its_client_is_paused(self):
+        """A switch can begin while a read waits for the account's lock. When the read gets the lock, the login it
+        would read is the switch's to change, so it must not run."""
+        for provider in ("claude_cli", "codex", "muse"):
+            with self.subTest(provider=provider):
+                ran, waiting = [], threading.Event()
+                scheduler = RefreshScheduler(lambda account_id: ran.append(account_id) or "ok", workers=3)
+                self.addCleanup(scheduler.shutdown)
+                lock = scheduler.account_lock("one")
+                lock.acquire()
+                the_lock = scheduler.account_lock
+
+                def asked(account_id):          # the read asks for the lock, then waits for it
+                    waiting.set()
+                    return the_lock(account_id)
+
+                scheduler.account_lock = asked
+                read = threading.Thread(target=scheduler._read, args=(Target("one", provider, "k"), time.time), daemon=True)
+                read.start()
+                self.assertTrue(waiting.wait(5))
+                scheduler.pause(provider)
+                lock.release()
+                read.join(5)
+                self.assertFalse(read.is_alive())
+                self.assertEqual(ran, [])
 
 
     def test_an_older_copy_reappearing_in_muses_folder_is_never_saved(self):

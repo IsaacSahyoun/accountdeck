@@ -1,10 +1,12 @@
 """Claude Desktop is not a client of this build. Builds before 2.1 switched it, and a data folder one of them
 used still holds what it saved: account rows, saved logins, a switch record that never finished, settings.
-This build leaves all of that where it is, never lists it, and never opens a file of Claude Desktop's own.
+This build leaves all of that where it is, never lists it, and never opens a file in Claude Desktop's data
+folder, where its login is.
 Each test builds the old data the way the 2.0.0 build wrote it, on the demo's fake disk in safe mode."""
 import contextlib
 import os
 from pathlib import Path
+import plistlib
 import sqlite3
 import sys
 import time
@@ -12,12 +14,13 @@ from unittest import mock
 import uuid
 
 from tests import support
+from tests.test_dashboard import DashboardTestCase
 from tests.test_switch_safety import Crash, DeckCase, codex_login
 
-from accountdeck import contract, core, engine as engine_module, move_bundle, move_import, recovery
+from accountdeck import contract, core, engine as engine_module, fixtures, move_bundle, move_import, recovery
 from accountdeck.core import RECORD_TTL, DeckError, FileTransaction, Store, Vault, read_json
 from accountdeck.engine import Engine
-from accountdeck.platform import menubar
+from accountdeck.platform import libproc, menubar, procs_mac
 from accountdeck.procs import consent_refusal
 from accountdeck.providers import codex as codex_module
 from accountdeck.providers.fake import test_cipher
@@ -105,7 +108,8 @@ class LeftByAnOlderBuild(DeckCase):
 
     def leave_desktop_account(self, label="Desk One"):
         """A Claude Desktop account as the 2.0.0 build left it: its row, a reading with its history, an alert
-        about it, two generations of its saved login, and a PC import of it that was still waiting."""
+        about it, a line of history about a switch to it, two generations of its saved login, and a PC import of it
+        that was still waiting."""
         store, now = self.old_store(), self.engine.clock()
         key = store.save_account("claude", str(uuid.uuid4()), label, label.lower().replace(" ", "-") + "@example.test",
                                  "max", "org of " + label)
@@ -116,6 +120,7 @@ class LeftByAnOlderBuild(DeckCase):
         store.record_refill(key, "seven_day", reset_at=now - 3600, confirmed_at=now - 3000, previous_used=91.0)
         store.add_alert({"kind": "low", "level": "warning", "account": key, "window": "seven_day",
                          "title": f"{label} is getting low", "message": "Claude Desktop is close to its weekly limit."})
+        store.event("switch", f"Switched Claude to {label}.")
         store.close()
         self.vault.put(key, {"version": 3, "identity": "desk", "cookies": "synthetic cookies, the older copy"})
         self.vault.put(key, {"version": 3, "identity": "desk", "cookies": "synthetic cookies, the newer copy"})
@@ -144,7 +149,7 @@ class LeftByAnOlderBuild(DeckCase):
         return self.vault.root / key, self.vault.root / ("deferred-desktop-" + key)
 
     def leave_desktop_folder(self):
-        """Claude Desktop's own folder on this Mac, with a login in it."""
+        """Claude Desktop's data folder on this Mac, with a login in it."""
         folder = self.paths.home / "Library" / "Application Support" / "Claude"
         for name, data in {"Cookies": b"synthetic cookies of the account before the switch",
                            "config.json": b'{"oauth:tokenCache": "synthetic, before the switch"}',
@@ -203,7 +208,11 @@ class HiddenAccountTest(LeftByAnOlderBuild):
         self.assertIsNone(store.account(self.key))
         self.assertIsNone(store.find("claude", self.row["accounts"][0][2]))
         self.assertNotIn(self.key, {alert["account"] for alert in store.alerts(include_dismissed=True)})
-        self.assertNotIn("Desk One", str(state))
+        # A line of history the older build wrote stays in the Activity list, as written, until newer lines push
+        # it out. Nothing else on the page names the account.
+        self.assertEqual([event["message"] for event in state["events"] if "Desk One" in event["message"]],
+                         ["Switched Claude to Desk One."])
+        self.assertNotIn("Desk One", str({**state, "events": []}))
         with self.assertRaises(DeckError) as refused:
             engine.history(self.key)
         self.assertEqual(refused.exception.code, "not_found")
@@ -243,7 +252,7 @@ class HiddenAccountTest(LeftByAnOlderBuild):
         self.assert_untouched()
 
     def test_its_saved_login_is_never_opened_changed_or_removed(self):
-        """Starting, checking usage, switching every client, removing an account and the vault's own clean-up."""
+        """Starting, checking usage, switching every client and removing an account."""
         with touches(*self.login_paths(self.key)) as seen:
             self.restart()
             for _ in range(3):
@@ -255,7 +264,6 @@ class HiddenAccountTest(LeftByAnOlderBuild):
             self.act("muse", "switch", self.spare("muse")["id"])
             self.engine.action("remove", {"id": self.spare("claude_cli")["id"]})
             self.assertTrue(self.engine.runner.wait(30))
-            self.vault.prune(now=time.time() + 400 * 86400)
             self.engine.snapshot()
         self.assertEqual(seen, [])
         self.assert_untouched()
@@ -304,7 +312,7 @@ class UnfinishedDesktopSwitchTest(LeftByAnOlderBuild):
         self.assertEqual(self.engine.recovery, [])
         self.assertFalse(self.vault.path(key).exists(), "the record is still open")
         self.assertEqual(self.vault.path("set-aside-" + key).read_bytes(), record, "the record was not kept as it was")
-        self.assertEqual(tree(self.folder), files, "a file of Claude Desktop's changed")
+        self.assertEqual(tree(self.folder), files, "a file in Claude Desktop's data folder changed")
 
     def test_the_next_start_sets_the_record_aside_and_says_so_once(self):
         for named in (True, False):
@@ -313,7 +321,7 @@ class UnfinishedDesktopSwitchTest(LeftByAnOlderBuild):
                 with touches(self.folder) as seen:
                     self.restart()
                     state = self.engine.snapshot()
-                self.assertEqual(seen, [], "the app used a file of Claude Desktop's")
+                self.assertEqual(seen, [], "the app used a file in Claude Desktop's data folder")
                 self.assert_set_aside(key, record, files)
                 self.assertEqual(state["recovery"], {"pending": False, "count": 0})
                 self.assertNotIn("recovery", [banner["kind"] for banner in state["banners"]])
@@ -323,9 +331,20 @@ class UnfinishedDesktopSwitchTest(LeftByAnOlderBuild):
                 self.assertEqual(self.desktop_notices(), [])
                 self.assertIn("set-aside-" + key + ".dpapi", self.aside())
 
+    def test_two_records_of_one_unfinished_switch_get_one_notice(self):
+        """The 2.0.0 build could leave two: the switch's own record, and the one it made while it put Claude's
+        session list back. Both are set aside, and the page says so once."""
+        first, second = self.leave(named=True), self.leave(named=False)
+        self.restart()
+        for key, record, _files in (first, second):
+            self.assert_set_aside(key, record, tree(self.folder))
+        self.assertEqual(len(self.desktop_notices()), 1)
+
     def test_no_file_the_record_names_is_ever_used(self):
-        """Starting, ticking, a press of Recover and a switch of each client, with the record still open
-        because the set-aside failed every time."""
+        """Starting, ticking, a switch of each client and a press of Recover, with the record still open because
+        the set-aside failed every time. That press names no client and is refused: nothing waits for Recover.
+        A press that does settle another client's record beside this one is in
+        `test_recover_settles_another_clients_record_and_leaves_this_one`."""
         key, record, files = self.leave()
         with mock.patch.object(Vault, "set_aside", side_effect=OSError(28, "No space left on device")):
             with touches(self.folder) as seen:
@@ -335,8 +354,9 @@ class UnfinishedDesktopSwitchTest(LeftByAnOlderBuild):
                 self.close_codex()
                 self.act("codex", "switch", self.add_codex_account())
                 self.act("muse", "switch", self.spare("muse")["id"])
-                with self.assertRaises(DeckError):
+                with self.assertRaises(DeckError) as refused:
                     self.engine.action("recover", {})
+        self.assertEqual(refused.exception.code, "invalid")
         self.assertEqual(seen, [])
         self.assertEqual((self.vault.path(key).read_bytes(), tree(self.folder)), (record, files))
         with touches(self.folder) as seen:               # the watch does see a read
@@ -545,6 +565,28 @@ class DesktopProcessTest(LeftByAnOlderBuild):
         self.engine.action("cancel", {})
         self.assertTrue(self.engine.runner.wait(30))
 
+    def test_the_scan_of_a_real_mac_reads_one_file_of_claude_desktops_app(self):
+        """The process scan on a real Mac knows Codex's app by the bundle id in a running app's Info.plist, so it
+        reads that file of every running app, Claude Desktop's among them. It reads nothing else of Claude.app,
+        and no process of it counts as one of a client's."""
+        app = self.paths.home / "Applications" / "Claude.app" / "Contents"
+        running = {"Claude": "MacOS/Claude", "Claude Helper": "Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper",
+                   "claude": "Resources/claude-code/claude", "cowork-svc": "Resources/cowork-svc",
+                   "ShipIt": "Frameworks/Squirrel.framework/Resources/ShipIt"}
+        for path in running.values():
+            (app / path).parent.mkdir(parents=True, exist_ok=True)
+            (app / path).write_bytes(b"synthetic program")
+        (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "com.anthropic.claudefordesktop"}))
+        (app / "Resources" / "app.asar").write_bytes(b"synthetic app")
+        scan = procs_mac.MacProcessController(self.paths, allow_readonly=True)
+        libproc._bundle_cache.clear()
+        with touches(app.parent) as seen:
+            ours = {name: scan._relevant(name, str(app / path)) for name, path in running.items()}
+            families = {libproc.bundle_family(str(app / path)) for path in running.values()}
+        self.assertEqual(set(ours.values()), {False}, ours)
+        self.assertEqual(families, {"com.anthropic.claudefordesktop"})
+        self.assertEqual({(event, path) for event, path in seen}, {("open", str(app / "Info.plist"))})
+
 
 # ---- a PC bundle that holds a Claude Desktop account ----
 
@@ -658,6 +700,25 @@ class PCBundleWithDesktopTest(LeftByAnOlderBuild):
         self.assertEqual(codex_module.identity_key(self.vault.get(row["id"])), waiting["identity"])
         self.assertNotIn("claude", {found[1] for found in self.everything()[0]})
 
+    def test_an_import_that_also_fails_an_account_still_says_what_was_left_out(self):
+        """A bundle with a Desktop account and an account whose sign-in is another account's. The result, the
+        report and the banner name both, and say why no export of this bundle can get a code."""
+        wrong = self.codex_account("codex-wrong")
+        wrong["identity"] = str(uuid.uuid4())                 # the sign-in inside belongs to someone else
+        body = self.bundle("main", [desktop_account(), self.codex_account("codex-pc"), wrong])
+        result = self.engine.action("import-bundle", body)["result"]
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assertEqual((result["complete"], result["code"], len(result["failures"])), (False, None, 1))
+        self.assertEqual({k: v for k, v in result["counts"].items() if v}, {"new": 1, "left_out": 1, "failed": 1})
+        report = self.engine.snapshot()["report"]
+        self.assertEqual(report["outcome"], "failed")
+        for words in (result["message"], report["summary"], self.engine.snapshot()["move_import"]["imports"][0]["message"]):
+            self.assertIn("1 account could not be imported.", words)
+            self.assertIn("1 Claude Desktop account was left out. This version of AccountDeck does not manage Claude "
+                          "Desktop. There is no confirmation code, because the code covers every account in the bundle.",
+                          words)
+            self.assertNotIn("export again", words, "a new export of this PC would hold the Desktop account again")
+
     def test_a_bundle_without_a_desktop_account_still_gets_its_code(self):
         result = self.engine.action("import-bundle", self.bundle("main", [self.codex_account("codex-pc")]))["result"]
         self.assertTrue(self.engine.runner.wait(30))
@@ -690,3 +751,81 @@ class PCBundleWithDesktopTest(LeftByAnOlderBuild):
         self.assertEqual([(item["complete"], item["code"]) for item in shown], [(True, "ABCD-2345")])
         self.assertEqual(sorted(shown[0]["counts"]), sorted(move_import.OUTCOMES))
         self.assertEqual(self.vault.path(move_import.LEDGER_KEY).read_bytes(), ledger)
+
+    def test_a_second_import_of_a_bundle_an_older_build_finished_has_no_code(self):
+        """The older build stored the bundle's Desktop account too, so it gave the bundle its code. This build
+        leaves that account out, and an import by this build says what this build did: no code, and the PC keeps
+        its accounts. The old code would tell the PC to drop a Desktop account this build cannot use."""
+        body = self.bundle("main", [desktop_account(), self.codex_account("codex-pc")])
+        header, _payload = move_import.open_file(body["path"], body["passphrase"], paths=self.paths)
+        entry = {"bundle_id": header.bundle_id, "kind": "main", "created": header.created,
+                 "at": self.engine.clock() - 500, "complete": True, "code": "ABCD-2345", "dismissed": False,
+                 "counts": {"new": 1, "updated": 0, "filled": 0, "kept": 0, "on_pc": 0, "deferred": 1, "failed": 0},
+                 "failures": [], "accounts": {}, "started": {}}
+        self.vault.put(move_import.LEDGER_KEY, {"imports": [entry]}, generation=False)
+        self.restart()
+        self.assertEqual(self.engine.snapshot()["move_import"]["imports"][0]["code"], "ABCD-2345")
+        result = self.engine.action("import-bundle", body)["result"]
+        self.assertTrue(self.engine.runner.wait(30))
+        self.assertEqual((result["complete"], result["code"], result["failures"]), (False, None, []))
+        self.assertIn("1 Claude Desktop account was left out.", result["message"])
+        self.assertIn("The PC keeps its accounts: use Cancel move there.", result["message"])
+        shown = self.engine.snapshot()["move_import"]["imports"]
+        self.assertEqual([(item["complete"], item["code"]) for item in shown], [(False, None)])
+
+
+class ImportResultOnThePageTest(DashboardTestCase):
+    """The banner of an import that has no code says the server's own words for why, and lists what failed."""
+    BANNER = "(document.querySelector('#banners .banner[data-kind^=move-import]') || {innerText: null}).innerText"
+
+    def banner(self, counts, failures):
+        entry = {"bundle_id": uuid.uuid4().hex, "kind": "main", "at": time.time(), "code": None, "dismissed": False,
+                 "counts": {**dict.fromkeys(move_import.OUTCOMES, 0), **counts}, "failures": failures}
+        state = fixtures.example_state("typical", now=time.time())
+        state["move_import"] = {"imports": [move_import._entry_public(entry)], "on_pc": 0}
+        self.assertEqual(contract.validate_state(state), [])
+        self.show(state)
+        words = self.browser.js(self.BANNER)
+        self.assertEqual(self.browser.problems, [])
+        return " ".join(words.split())
+
+    def test_an_account_left_out_and_an_account_that_failed_are_both_named(self):
+        failed = {"label": "codex-wrong", "provider": "codex", "reason": move_import.REASONS["identity"]}
+        words = self.banner({"new": 1, "left_out": 1, "failed": 1}, [failed])
+        self.assertIn("Import incomplete 1 account could not be imported. 1 Claude Desktop account was left out. This version "
+                      "of AccountDeck does not manage Claude Desktop. There is no confirmation code, because the code covers "
+                      "every account in the bundle. The PC keeps its accounts: use Cancel move there. "
+                      "codex-wrong: Its sign-in in the bundle belongs to another account.", words)
+        self.assertNotIn("export again", words)
+
+    def test_an_account_that_failed_alone_can_be_exported_again(self):
+        failed = {"label": "codex-wrong", "provider": "codex", "reason": move_import.REASONS["identity"]}
+        words = self.banner({"new": 1, "failed": 1}, [failed])
+        self.assertIn("Import incomplete 1 account could not be imported, so there is no confirmation code. Use Cancel move "
+                      "on the PC and export again. codex-wrong: Its sign-in in the bundle belongs to another account.", words)
+
+    def test_the_sheet_of_an_import_that_still_runs_promises_its_result_not_a_code(self):
+        """A bundle with a Claude Desktop account gets no code, so the sheet must not say one is coming."""
+        self.show(fixtures.example_state("typical", now=time.time()))
+        browser = self.browser
+
+        def button(name):
+            return f"[...document.querySelectorAll('#modal button')].find((b) => b.textContent.trim() === '{name}')"
+
+        browser.js("AD.move.open()")
+        browser.click("document.getElementById('move-path')")
+        browser.type("/tmp/accounts.adeck")
+        browser.click("document.getElementById('move-passphrase')")
+        browser.type("a passphrase")
+        browser.click(button("Preview Import"))
+        browser.click(button("Import"))
+        modal = "document.getElementById('modal').innerText"
+        words = " ".join(browser.wait(f"{modal}.includes('Importing') && {modal}").split())
+        self.assertIn("The result appears here when the import finishes. It also appears on the dashboard.", words)
+        self.assertNotIn("code", words.lower())
+        self.assertEqual(browser.problems, [])
+
+    def test_an_account_left_out_alone(self):
+        words = self.banner({"new": 1, "left_out": 1}, [])
+        self.assertIn("Import incomplete 1 Claude Desktop account was left out. This version of AccountDeck does not manage "
+                      "Claude Desktop. The other accounts are saved on this Mac. There is no confirmation code", words)
