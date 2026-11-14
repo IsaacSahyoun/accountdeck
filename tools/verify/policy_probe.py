@@ -17,8 +17,8 @@ def answered(key, label, answer, *, active=False):
     """An account whose limits are what the app makes of one answer from Claude."""
     return account(key, label, None, None, active=active, windows=usage.claude_usage(answer, now=NOW)["windows"])
 
-def show(title, accounts, history=None):
-    r = cli_policy.evaluate(accounts, SETTINGS, history or {}, NOW)
+def show(title, accounts, history=None, **settings):
+    r = cli_policy.evaluate(accounts, {**SETTINGS, **settings}, history or {}, NOW)
     print(f"{title}\n   -> action={r['action']} target={r['target']} hold={r['hold']!r} reason={r['reason']!r}")
 
 WEEK = NOW + 3 * 86400
@@ -57,12 +57,22 @@ show("   Alpha's Sonnet limit is out: another model's limit is not acted on",
      [answered("alpha", "Alpha", {"seven_day": dict(week, utilization=40), "seven_day_sonnet": dict(week, utilization=100)}, active=True),
       fable("beta", "Beta", 30, 30)])
 print("E. The early switch: the week that ends soonest is used first. Alpha is in use, 20% of its week used, and its week ends in 6 days:")
-def week(key, label, used, days, **more):
+def ends_in(key, label, used, days, **more):
     return account(key, label, used, NOW + days * 86400, **more)
-alpha = week("alpha", "Alpha", 20, 6, active=True)
-show("   Beta's week ends in 12 hours", [alpha, week("beta", "Beta", 40, 0.5)])
-show("   Beta's week ends in 2 days, Gamma's in 4 days", [alpha, week("beta", "Beta", 40, 2), week("gamma", "Gamma", 40, 4)])
-show("   Beta's week ends in 7 days, after Alpha's", [alpha, week("beta", "Beta", 40, 7)])
-show("   Beta's week ends in 2 days and 85% of it is used", [alpha, week("beta", "Beta", 85, 2)])
-show("   Beta's week ends in 2 days and the user chose Alpha 5 seconds ago", [alpha, week("beta", "Beta", 40, 2)], {"manual_at": NOW - 5})
-show("   Beta's week ends in 2 days and an early switch happened 1 hour ago", [alpha, week("beta", "Beta", 40, 2)], {"early_at": NOW - 3600})
+alpha = ends_in("alpha", "Alpha", 20, 6, active=True)
+show("   Beta's week ends in 12 hours", [alpha, ends_in("beta", "Beta", 40, 0.5)])
+show("   Beta's week ends in 2 days, Gamma's in 4 days", [alpha, ends_in("beta", "Beta", 40, 2), ends_in("gamma", "Gamma", 40, 4)])
+show("   Beta's week ends in 7 days, after Alpha's", [alpha, ends_in("beta", "Beta", 40, 7)])
+show("   Beta's week ends 30 minutes before Alpha's: weeks within the hour end together", [alpha, ends_in("beta", "Beta", 40, 6 - 1 / 48)])
+show("   Beta's week ends in 2 days and 85% of it is used", [alpha, ends_in("beta", "Beta", 85, 2)])
+show("   Beta's week ends in 2 days and the user chose Alpha 5 seconds ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"manual_at": NOW - 5})
+show("   Beta's week ends in 2 days and an early switch happened 1 hour ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"early_at": NOW - 3600})
+show("   Beta's week ends in 2 days and an early switch failed 1 hour ago", [alpha, ends_in("beta", "Beta", 40, 2)], {"early_tried": NOW - 3600})
+show("   Beta's week ends in 2 days and its reading is 20 minutes old, Gamma's ends in 4 days",
+     [alpha, dict(ends_in("beta", "Beta", 40, 2), last_good_at=NOW - 1200), ends_in("gamma", "Gamma", 40, 4)])
+print("F. The same rule at the threshold. Alpha is at 96%, the order is \"most room first\", Beta has the most room and Gamma's week ends first:")
+full = ends_in("alpha", "Alpha", 96, 6, active=True)
+show("   the early switch is on", [full, ends_in("beta", "Beta", 10, 4), ends_in("gamma", "Gamma", 40, 2)], cli_order="most_room")
+show("   the early switch is off", [full, ends_in("beta", "Beta", 10, 4), ends_in("gamma", "Gamma", 40, 2)], cli_order="most_room", cli_early_switch=False)
+show("   the early switch is on and Gamma's reading is 20 minutes old",
+     [full, ends_in("beta", "Beta", 10, 4), dict(ends_in("gamma", "Gamma", 40, 2), last_good_at=NOW - 1200)], cli_order="most_room")

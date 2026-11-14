@@ -139,18 +139,20 @@ ROWS = {
     "Beta's week ends in 2 d, its reading 20 min old": ([beta(**dict(SOONER, age=1200))], {}, {}, {}),
     "Beta's week ends in 2 d, manual choice 5 s ago": ([beta(**SOONER)], {"manual_at": NOW - 5}, {}, {}),
     "Beta's week ends in 2 d, early switch 1 h ago": ([beta(**SOONER)], {"early_at": NOW - HOUR}, {}, {}),
+    "Beta's week ends in 2 d, an early switch did not finish 1 h ago": ([beta(**SOONER)], {"early_tried": NOW - HOUR}, {}, {}),
     "Beta's week ends in 4 d": ([beta(weekly=50, weekly_reset=4 * DAY)], {}, {}, {}),
 }
 
 HOLDS = {"has refilled": "w", "Checking": "c", "Every account is past": "d", "Usage updates after": "x",
-         "An early switch happened": "e", "Your manual choice": "m"}
+         "An early switch happened": "e", "The last early switch did not finish": "t", "Your manual choice": "m"}
 KINDS = {"threshold": "T", "out": "O", "login": "L", "early": "E", "refilled": "R"}
 
 
 def code(result):
     """One decision as two characters. A switch: its kind (Threshold, Out, Login, Early, Refilled after all were
     low) and the target's initial. A hold: h and its reason (w has refilled, c checking the
-    others, d using every account up, x login expired, e early switch too recent, m manual choice), in capitals
+    others, d using every account up, x login expired, e early switch too recent, t an early switch that did
+    not finish too recent, m manual choice), in capitals
     when the rule also asks for a new reading. XX: every account is low. ..: nothing to do."""
     if result["action"] == "switch":
         return KINDS[result["kind"]] + result["target"][0]
@@ -196,10 +198,11 @@ EXPECTED = {
     # Alpha works for no model, Gamma is used at once, and Beta is read again from there.
     "Beta is 20 min old, Gamma at 90%":                ".. .. .. hC hC hW hC hC hW Og Og hW",
     # Gamma's week ends in 2 days and Alpha's in 3, so the early switch moves to Gamma while Alpha has room (Eg),
-    # whatever the order is set to. The order decides where a switch at the threshold goes.
+    # whatever the order is set to. A switch at the threshold goes to Gamma too (Tg, Og): the order would send
+    # the terminals to Beta, whose week ends a day later, and the early switch would move them on 5 seconds later.
     "Gamma's week ends sooner":                        "Eg .. .. Tg Tg hW Tg Tg hW Og Og hW",
-    "Gamma's week ends sooner, most room first":       "Eg .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
-    "Gamma's week ends sooner, my order Beta first":   "Eg .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Gamma's week ends sooner, most room first":       "Eg .. .. Tg Tg hW Tg Tg hW Og Og hW",
+    "Gamma's week ends sooner, my order Beta first":   "Eg .. .. Tg Tg hW Tg Tg hW Og Og hW",
     "Undo pressed 5 s ago":                            "hm hm hm hm hm hW hm hm hW Ob Ob hW",
     "Undo pressed 5 s ago, Alpha needs sign-in":       "Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb Lb",
     "Undo pressed 5 s ago, Alpha is marked out":       "Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob Ob",
@@ -215,7 +218,9 @@ EXPECTED = {
     "Undo pressed 5 s ago, the last switch has no time": "hm hm hm hm hm hW hm hm hW Ob Ob hW",
     # Without the account's name the hold counts for whichever account is in use, as it did in that build.
     "Manual choice 30 min ago, moved by itself since, history of the build before": "hm hm hm hm hm hW hm hm hW Ob Ob hW",
-    "Early switch 1 h ago":                            "he he he Tb Tb hW Tb Tb hW Ob Ob hW",
+    # The pause between early switches is said (he) only while it holds a move back. Beta's week ends with
+    # Alpha's here, so there is none.
+    "Early switch 1 h ago":                            ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Every account was low before":                    ".. .. .. Rb Rb hW Rb Rb hW Rb Rb hW",
     "Auto-switch is off":                              ".. .. .. .. .. .. .. .. .. .. .. ..",
     "Early switch is off":                             ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
@@ -257,21 +262,24 @@ EXPECTED = {
     "Beta's week ends in 12 h, 85% used":              ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 12 h, left 10 min ago":       ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 12 h, manual choice 5 s ago": "hm hm hm hm hm hW hm hm hW Ob Ob hW",
-    "Beta's week ends in 12 h, early switch 1 h ago":  "he he he Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Beta's week ends in 12 h, early switch 1 h ago":  "he .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     # The same answers with the end of Beta's week 2 days off. A week that ends after Alpha's is never moved to.
     "Beta's week ends in 2 d":                         "Eb .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 2 d, early switch is off":    ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 2 d, 85% used":               ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 2 d, its Fable limit at 90%": ".. .. .. hd hd hW Tb Tb hW Ob Ob hW",
-    "Beta's week ends in 2 d, its reading 20 min old": ".. .. .. hC hC hW hC hC hW hC hC hW",
+    # Beta's week ends first and its reading is too old to act on: it is read again (hC) before anything moves.
+    "Beta's week ends in 2 d, its reading 20 min old": "hC .. .. hC hC hW hC hC hW hC hC hW",
     "Beta's week ends in 2 d, manual choice 5 s ago":  "hm hm hm hm hm hW hm hm hW Ob Ob hW",
-    "Beta's week ends in 2 d, early switch 1 h ago":   "he he he Tb Tb hW Tb Tb hW Ob Ob hW",
+    "Beta's week ends in 2 d, early switch 1 h ago":   "he .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
+    # A try of the early switch that failed counts like one that worked (ht). The threshold does not wait for it.
+    "Beta's week ends in 2 d, an early switch did not finish 1 h ago": "ht .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Beta's week ends in 4 d":                         ".. .. .. Tb Tb hW Tb Tb hW Ob Ob hW",
 }
 
 
 class AutoSwitchTableTest(unittest.TestCase):
-    """Every decision of `cli_policy.evaluate` for 67 situations times 12 readings of the account in use."""
+    """Every decision of `cli_policy.evaluate` for 68 situations times 12 readings of the account in use."""
     maxDiff = None
 
     def test_the_decision_table(self):
@@ -295,7 +303,7 @@ class SoonestWeekFirstTest(unittest.TestCase):
 
     def test_it_moves_to_a_week_that_ends_sooner_however_far_off_its_end_is(self):
         for name, ends in (("12 hours", 12 * HOUR), ("25 hours", 25 * HOUR), ("2 days", 2 * DAY), ("5 days", 5 * DAY),
-                           ("a minute before Alpha's", 6 * DAY - 60)):
+                           ("an hour and a minute before Alpha's", 6 * DAY - HOUR - 60)):
             with self.subTest(ends_in=name):
                 self.assertEqual(self.moves(account("beta", 40, ends)), ("switch", "beta", "early", None))
 
@@ -307,9 +315,154 @@ class SoonestWeekFirstTest(unittest.TestCase):
                                  ("switch", "gamma", "early", None))
 
     def test_it_never_moves_to_a_week_that_ends_later_or_with_the_one_in_use(self):
-        for name, ends in (("with Alpha's", 6 * DAY), ("a minute after", 6 * DAY + 60), ("a day after", 7 * DAY)):
+        """Weeks that end within the hour of each other end together, as they do in the order
+        (`cli_policy._ordered`): an hour of allowance is not worth a switch."""
+        for name, ends in (("an hour before", 6 * DAY - HOUR), ("a minute before", 6 * DAY - 60), ("with Alpha's", 6 * DAY),
+                           ("a minute after", 6 * DAY + 60), ("a day after", 7 * DAY)):
             with self.subTest(ends=name):
                 self.assertEqual(self.moves(account("beta", 40, ends)), ("none", None, None, None))
+
+    def test_two_weeks_that_end_together_never_trade_places(self):
+        """Claude's reset time for one week differs by a second from reading to reading (`cli_policy.SAME_RESET`).
+        Whichever of two such weeks reads a second sooner, the terminals stay where they are."""
+        for alpha_ends, beta_ends in ((6 * DAY, 6 * DAY - 1), (6 * DAY - 1, 6 * DAY)):
+            for in_use in ("alpha", "beta"):
+                with self.subTest(alpha_ends=alpha_ends, beta_ends=beta_ends, in_use=in_use):
+                    accounts = [account("alpha", 20, alpha_ends, active=in_use == "alpha"),
+                                account("beta", 30, beta_ends, active=in_use == "beta")]
+                    self.assertEqual(cli_policy.evaluate(accounts, SETTINGS, {}, NOW)["action"], "none")
+
+    def play(self, accounts, **settings):
+        """The switches the rule makes one after another, each check 5 seconds after the last one's switch, with
+        the history a switch writes (`switch_cli.CLISwitch.run`), until a check decides nothing. With them, the
+        reason of the first."""
+        accounts, history, now, made, said = copy.deepcopy(accounts), {}, NOW, [], ""
+        for _ in range(4):
+            result = cli_policy.evaluate(accounts, {**SETTINGS, **settings}, history, now)
+            if result["action"] != "switch":
+                break
+            made.append((result["kind"], result["target"]))
+            said = said or result["reason"]
+            leaving = next(a["id"] for a in accounts if a["active"])
+            history.update(left=leaving, left_at=now, exhausted=False,
+                           last={"from": leaving, "to": result["target"], "at": now, "kind": result["kind"],
+                                 "reason": result["reason"], "undo_until": now + 600})
+            if result["kind"] == "early":
+                history["early_at"] = now
+            for one in accounts:
+                one["active"] = one["id"] == result["target"]
+            now += 5
+        return made, said
+
+    def test_at_the_threshold_the_terminals_go_straight_to_the_week_that_ends_soonest(self):
+        """One switch, not two. The order the user chose puts Beta first here. A switch to Beta would be followed
+        5 seconds later by the early switch to Gamma, and the Undo of the first would be gone."""
+        accounts = [account("alpha", 96, 6 * DAY, active=True), account("beta", 30, 4 * DAY), account("gamma", 40, 2 * DAY)]
+        for name, order in (("most room first", {"cli_order": "most_room"}),
+                            ("my order, Beta first", {"cli_order": "manual", "cli_manual_order": ["beta", "gamma"]}),
+                            ("soonest reset first", {})):
+            with self.subTest(order=name):
+                self.assertEqual(self.play(accounts, **order),
+                                 ([("threshold", "gamma")], "Alpha reached 95% of its weekly limit; Gamma's week resets soonest."
+                                  if order else "Alpha reached 95% of its weekly limit; Gamma is first in your eligible order."))
+        # The order shows it too: the account the terminals go to next is first.
+        shown = cli_policy.evaluate(accounts, {**SETTINGS, "cli_order": "most_room"}, {}, NOW)["next_up"]
+        self.assertEqual([row["id"] for row in shown], ["gamma", "beta", "alpha"])
+
+    def test_with_the_early_switch_off_the_order_decides_alone(self):
+        accounts = [account("alpha", 96, 6 * DAY, active=True), account("beta", 30, 4 * DAY), account("gamma", 40, 2 * DAY)]
+        made, said = self.play(accounts, cli_order="most_room", cli_early_switch=False)
+        self.assertEqual((made, said), ([("threshold", "beta")], "Alpha reached 95% of its weekly limit; Beta is first in your eligible order."))
+        shown = cli_policy.evaluate(accounts, {**SETTINGS, "cli_order": "most_room", "cli_early_switch": False}, {}, NOW)["next_up"]
+        self.assertEqual([row["id"] for row in shown], ["beta", "gamma", "alpha"])
+
+    def test_a_switch_at_the_threshold_is_not_followed_by_one_to_a_week_that_ends_minutes_sooner(self):
+        """The order calls two weeks that end within the hour a tie and puts the one with more room first. The
+        early switch calls them a tie too, so it does not move on to the other."""
+        accounts = [account("alpha", 96, 6 * DAY, active=True), account("beta", 30, 2 * DAY + 1800), account("gamma", 50, 2 * DAY)]
+        self.assertEqual(self.play(accounts)[0], [("threshold", "beta")])
+
+    def test_at_the_threshold_a_week_that_ends_sooner_is_used_only_with_a_fifth_of_it_left(self):
+        """Gamma's week ends first and 85% of it is used: the early switch would not move there, so it does not
+        go ahead of the user's order. The order still reaches it."""
+        accounts = [account("alpha", 96, 6 * DAY, active=True), account("beta", 30, 4 * DAY), account("gamma", 85, 2 * DAY)]
+        self.assertEqual(self.play(accounts, cli_order="most_room")[0], [("threshold", "beta")])
+        self.assertEqual(self.play(accounts)[0], [("threshold", "gamma")])
+
+    def test_it_waits_for_a_new_reading_of_a_week_that_ends_sooner(self):
+        """Beta's week ends first and its reading is 20 minutes old. A move to Gamma now would be followed by a
+        move to Beta as soon as the pause between early switches allows, so Beta is read again first."""
+        alpha = account("alpha", 20, 6 * DAY, active=True)
+        old_beta, gamma = account("beta", 40, DAY, age=1200), account("gamma", 40, 3 * DAY)
+
+        def decides(*others, history=None):
+            result = cli_policy.evaluate([alpha, *copy.deepcopy(list(others))], SETTINGS, history or {}, NOW)
+            return (result["action"], result["target"], result["hold"], result["refresh"])
+
+        waits = ("none", None, "Checking Beta before switching", ["beta"])
+        self.assertEqual(decides(old_beta, gamma), waits)
+        self.assertEqual(decides(old_beta), waits)
+        # Once Beta is read, the terminals go there. Had its week filled up meanwhile, they go to Gamma.
+        self.assertEqual(decides(account("beta", 40, DAY), gamma)[:2], ("switch", "beta"))
+        self.assertEqual(decides(account("beta", 85, DAY), gamma)[:2], ("switch", "gamma"))
+        # An old reading that could not change the move is not waited for.
+        for name, other in {"its week ends after Gamma's": account("beta", 40, 4 * DAY, age=1200),
+                            "85% of its week was used": account("beta", 85, DAY, age=1200)}.items():
+            with self.subTest(name):
+                self.assertEqual(decides(other, gamma), ("switch", "gamma", None, []))
+        self.assertEqual(decides(account("beta", 40, 7 * DAY, age=1200)), ("none", None, None, []))
+        self.assertEqual(decides(old_beta, history={"left": "beta", "left_at": NOW - 600}), ("none", None, None, []))
+        # The holds come first: nothing is read for a move that would not be made.
+        self.assertEqual(decides(old_beta, gamma, history={"manual_at": NOW - 5})[2:], ("Your manual choice is held for 2 hours", []))
+        self.assertEqual(decides(old_beta, gamma, history={"early_at": NOW - HOUR})[2:],
+                         ("An early switch happened less than 2 hours ago", []))
+
+    def test_at_the_threshold_it_waits_for_that_reading_while_the_account_in_use_still_works(self):
+        old_gamma, beta = account("gamma", 40, 2 * DAY, age=1200), account("beta", 30, 4 * DAY)
+
+        def decides(used, **settings):
+            result = cli_policy.evaluate([account("alpha", used, 6 * DAY, active=True), beta, old_gamma], {**SETTINGS, **settings}, {}, NOW)
+            return (result["action"], result["target"], result["hold"], result["refresh"])
+
+        self.assertEqual(decides(96), ("none", None, "Checking Gamma before switching", ["gamma"]))
+        self.assertEqual(decides(99), ("none", None, "Checking Gamma before switching", ["gamma"]))
+        # Alpha's week ran out: nothing is waited for, and Gamma is read again from Beta.
+        self.assertEqual(decides(100), ("switch", "beta", None, []))
+        self.assertEqual(decides(96, cli_early_switch=False), ("switch", "beta", None, []))
+
+    def test_the_pause_between_early_switches_is_said_only_while_it_holds_a_move_back(self):
+        """After an early switch the terminals are on the week that ends soonest and nothing more would move
+        them, so the page has no pause to show."""
+        beta_in_use = [dict(account("beta", 40, 2 * DAY), active=True), account("alpha", 20, 6 * DAY)]
+        result = cli_policy.evaluate(beta_in_use, SETTINGS, {"early_at": NOW - HOUR}, NOW)
+        self.assertEqual((result["action"], result["hold"]), ("none", None))
+        self.assertEqual(self.moves(account("beta", 40, 2 * DAY), history={"early_at": NOW - HOUR}),
+                         ("none", None, None, "An early switch happened less than 2 hours ago"))
+
+    def test_an_early_switch_that_did_not_finish_is_tried_again_after_two_hours(self):
+        """`cli_auto.tick` writes the time it started an early switch. One that failed leaves nothing else, and
+        without the pause the same switch would be started at every check."""
+        beta_sooner = account("beta", 40, 2 * DAY)
+        self.assertEqual(self.moves(beta_sooner, history={"early_tried": NOW - 5}),
+                         ("none", None, None, "The last early switch did not finish. It is tried again 2 hours after it"))
+        self.assertEqual(self.moves(beta_sooner, history={"early_tried": NOW - 2 * HOUR + 60})[0], "none")
+        self.assertEqual(self.moves(beta_sooner, history={"early_tried": NOW - 2 * HOUR}), ("switch", "beta", "early", None))
+        # One that worked says so, and neither is said once nothing would move.
+        self.assertEqual(self.moves(beta_sooner, history={"early_tried": NOW - 5, "early_at": NOW - 3})[3],
+                         "An early switch happened less than 2 hours ago")
+        self.assertEqual(self.moves(account("beta", 40, 7 * DAY), history={"early_tried": NOW - 5}), ("none", None, None, None))
+        # A switch the account in use needs does not wait for it.
+        self.assertEqual(self.moves(beta_sooner, alpha=(96, 6 * DAY), history={"early_tried": NOW - 5})[:3], ("switch", "beta", "threshold"))
+
+    def test_two_hours_after_an_undo_the_move_is_made_again(self):
+        """An Undo is the user's choice and is held like any other, for 2 hours. After that the week that ends
+        soonest is used first again: to keep an account, the user leaves the other out or turns this setting off."""
+        undone = {"left": "beta", "left_at": NOW - 2 * HOUR, "manual_at": NOW - 2 * HOUR, "manual_for": "alpha", "early_at": NOW - 2 * HOUR - 300,
+                  "last": {"from": "alpha", "to": "beta", "at": NOW - 2 * HOUR - 300, "kind": "early", "reason": "", "undo_until": NOW - 2 * HOUR}}
+        beta_sooner = account("beta", 40, 2 * DAY)
+        self.assertEqual(self.moves(beta_sooner, history=dict(undone, manual_at=NOW - 2 * HOUR + 60)),
+                         ("none", None, None, "Your manual choice is held for 2 hours"))
+        self.assertEqual(self.moves(beta_sooner, history=undone), ("switch", "beta", "early", None))
 
     def test_after_the_move_it_stays(self):
         """The reverse: Beta is in use now, its week ends first, and nothing moves the terminals back."""
@@ -327,7 +480,6 @@ class SoonestWeekFirstTest(unittest.TestCase):
                  "left out": account("beta", 40, 2 * DAY, excluded=True),
                  "less than 20% of its week left": account("beta", 81, 2 * DAY),
                  "its Fable limit nearly used up": account("beta", 40, 2 * DAY, model=90),
-                 "a reading 20 minutes old": account("beta", 40, 2 * DAY, age=1200),
                  "never read": account("beta", 40, 2 * DAY, age=None),
                  "its week already ended": account("beta", 40, -60)}
         for name, other in cases.items():
@@ -393,7 +545,7 @@ class AutoSwitchWordsTest(unittest.TestCase):
             "checking": self.result("Beta's reading is 20 min old", weekly=96)["hold"],
             "using up": self.result("Beta's weekly is at 90%", weekly=96)["hold"],
             "login expired": self.result("Alpha's login expired while idle")["hold"],
-            "early too recent": self.result("Early switch 1 h ago")["hold"],
+            "early too recent": self.result("Beta's week ends in 12 h, early switch 1 h ago")["hold"],
             "manual choice": self.result("Undo pressed 5 s ago")["hold"],
         }
         self.assertEqual(said, {
@@ -455,10 +607,16 @@ class AutoSwitchWordsTest(unittest.TestCase):
             ("gamma", None, 45), ("alpha", "in use by your terminals", 65), ("beta", None, 65),
             ("epsilon", "reading 20 min old", 65), ("eta", "left out", 65), ("theta", "reading unavailable", 65),
             ("zeta", "needs sign-in", 65), ("delta", "weekly at 90%", 5), ("iota", "weekly reading unknown", None)])
-        self.assertEqual([key for key, _skip, _room in order(cli_order="most_room")],
-                         ["alpha", "beta", "epsilon", "eta", "theta", "zeta", "gamma", "delta", "iota"])
+        # Gamma's week ends a day before the others'. With the early switch on the terminals go there next under
+        # every order, so it is first in each. With it off the order alone decides.
+        most_room = ["alpha", "beta", "epsilon", "eta", "theta", "zeta", "gamma", "delta", "iota"]
+        self.assertEqual([key for key, _skip, _room in order(cli_order="most_room")], ["gamma"] + [key for key in most_room if key != "gamma"])
+        self.assertEqual([key for key, _skip, _room in order(cli_order="most_room", cli_early_switch=False)], most_room)
         self.assertEqual([key for key, _skip, _room in order(cli_order="manual", cli_manual_order=["iota", "beta"])][:3],
-                         ["iota", "beta", "gamma"])
+                         ["gamma", "iota", "beta"])
+        self.assertEqual([key for key, _skip, _room in order(cli_order="manual", cli_manual_order=["iota", "beta"],
+                                                             cli_early_switch=False)][:3], ["iota", "beta", "gamma"])
+        self.assertEqual(order(cli_early_switch=False), order())
         self.assertEqual(set(cli_policy.evaluate([active], SETTINGS, {}, NOW)["next_up"][0]),
                          {"id", "label", "skip", "room", "weekly_reset"})
 

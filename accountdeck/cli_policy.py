@@ -25,7 +25,10 @@
   whose week ran out or that needs sign-in, and once auto-switch has moved the terminals off the chosen
   account for that, nothing is held;
 - the optional early switch keeps the terminals on the usable account whose week ends soonest, so allowance
-  is spent before it expires, however far off that end is. It moves at most every 2 hours.
+  is spent before it expires, however far off that end is. Weeks that end within the hour of each other end
+  together. It moves at most every 2 hours, counted from a switch that did not finish too, and it reads an
+  account whose week ends sooner again before it moves anywhere else. With it on, a switch at the threshold
+  goes to that same account, whatever the order.
 """
 from functools import cmp_to_key
 import math
@@ -110,6 +113,8 @@ def duration(seconds):
 # there: the active account stays until it reaches it, and a target needs this much room below it.
 DRAIN_CEILING, DRAIN_ROOM = 99, 2
 MANUAL_HOLD = "Your manual choice is held for 2 hours"
+EARLY_DONE = "An early switch happened less than 2 hours ago"
+EARLY_TRIED = "The last early switch did not finish. It is tried again 2 hours after it"
 
 
 def evaluate(accounts, settings, history, now):
@@ -118,6 +123,8 @@ def evaluate(accounts, settings, history, now):
     order with why it is skipped, "exhausted": every account is low}."""
     threshold = settings.get("cli_threshold", 95)
     rows = _ordered([_row(account, settings, threshold, now) for account in accounts], settings)
+    early = settings.get("cli_early_switch", True)
+    rows, ahead = _soonest_first(rows, now) if early else (rows, [])
     result = {"action": "none", "target": None, "kind": None, "reason": "", "hold": None, "refresh": [],
               "next_up": [{key: row[key] for key in ("id", "label", "skip", "room", "weekly_reset")} for row in rows],
               "exhausted": False}
@@ -129,11 +136,11 @@ def evaluate(accounts, settings, history, now):
         return result
     need = _need(active, threshold, now)
     if need["trigger"]:
-        result.update(_leave(need, rows, active, history, settings, now))
+        result.update(_leave(need, rows, active, history, settings, now, ahead))
     elif need["refilled"]:
         result.update(hold=f"{active['label']}'s {need['refilled'][0]} limit has refilled. Waiting for its new reading.",
                       refresh=[active["id"]])
-    elif settings.get("cli_early_switch", True):
+    elif early:
         result.update(_early(rows, active, history, now))
     return result
 
@@ -245,9 +252,9 @@ def _checking(rows):
             "refresh": [row["id"] for row in rows]}
 
 
-def _leave(need, rows, active, history, settings, now):
+def _leave(need, rows, active, history, settings, now, ahead=()):
     """What to do once the account in use asks to be left: wait, read the others again, switch, or say that every
-    account is low. Returns the fields of the result that change."""
+    account is low. `ahead` is what `_soonest_first` wants read again. Returns the fields of the result that change."""
     label, threshold = active["label"], settings.get("cli_threshold", 95)
     kind = "refilled" if history.get("exhausted") else need["trigger"]
     # The user's own choice outranks the threshold and a model's limit that ran out. It does not outrank an
@@ -256,8 +263,13 @@ def _leave(need, rows, active, history, settings, now):
         return {"hold": MANUAL_HOLD}
     eligible = [row for row in rows if row["skip"] is None]
     if eligible:
-        return {"action": "switch", "target": eligible[0]["id"], "kind": kind,
-                "reason": f"{label} {need['why']}; {eligible[0]['label']} is first in your eligible order."}
+        # A week that ends sooner than the first account's is read again first, while the account in use still
+        # works. Otherwise the terminals would go to the first account and on to that one once its reading came.
+        if ahead and need["yields"]:
+            return _checking(list(ahead))
+        first = eligible[0]
+        why = f"{first['label']}'s week resets soonest" if first.get("soonest") else f"{first['label']} is first in your eligible order"
+        return {"action": "switch", "target": first["id"], "kind": kind, "reason": f"{label} {need['why']}; {why}."}
     # An account with room and an old reading is read again. While the account in use still works, that is
     # waited for. Once it works for no model, an account that is ready now is used first (further down).
     stale = [row for row in rows if row["stale"]]
@@ -308,24 +320,60 @@ def _refills_first(rows, threshold, now):
     return f" {label} refills first, {clock_text(at, now)}."
 
 
+def _sooner(rows, than, now, left=None):
+    """The early switch's pick from the row `than`, and the accounts to read again before it. The pick is the
+    usable account whose week ends soonest, when that is more than an hour before `than`'s week ends. Weeks
+    within the hour end together, as in `_ordered`: a reset time differs by a second from reading to reading
+    (`SAME_RESET`), and an hour of allowance is not worth a switch. Its week has started and not ended, at least
+    a fifth of it is unused, and it is not `left`, the account just left. An account that would be the pick
+    but for the age of its reading is read again first: a move to a later week would be followed by a move to
+    it. Returns (the pick or None, those accounts)."""
+    mine = than["weekly_reset"]
+    if mine is None:
+        return None, []
+    able = sorted((row for row in rows if (row["skip"] is None or row["stale"]) and row["id"] not in (than["id"], left)
+                   and row["weekly_reset"] is not None and now < row["weekly_reset"] < mine - HOUR
+                   and row["values"][0][1] <= 80),
+                  key=lambda row: (row["weekly_reset"], row["label"].casefold()))
+    read = next((place for place, row in enumerate(able) if not row["stale"]), len(able))
+    return (able[read] if read < len(able) else None), able[:read]
+
+
+def _soonest_first(rows, now):
+    """The switching order with the early switch on: the account it would move to from the first eligible one
+    goes first. A switch at the threshold then lands where the early switch would take the terminals next,
+    which is one switch and not two, and the order the page shows names the account that is used next.
+    Returns (the rows, the accounts to read again before a switch at the threshold)."""
+    first = next((row for row in rows if row["skip"] is None), None)
+    if first is None:
+        return rows, []
+    pick, ahead = _sooner(rows, first, now)
+    if pick is None:
+        return rows, ahead
+    return [dict(pick, soonest=True)] + [row for row in rows if row is not pick], ahead
+
+
 def _early(rows, active, history, now):
     """The optional early switch: move to the usable account whose week ends soonest, when it ends before the
-    week of the account in use. Allowance left at the end of a week is lost, so the week nearest its end is spent
-    first, however far off that end is. A week that has not started has no end and is not moved to. Returns the
-    fields of the result that change."""
+    week of the account in use (`_sooner`). Allowance left at the end of a week is lost, so the week nearest
+    its end is spent first, however far off that end is. A week that has not started has no end and is not
+    moved to. Returns the fields of the result that change."""
     last = history.get("last") or {}
     early_at = history.get("early_at", last.get("at", -1e20) if last.get("kind") == "early" else -1e20)
-    if now - early_at < 2 * HOUR:
-        return {"hold": "An early switch happened less than 2 hours ago"}
+    just_left = history.get("left") if now - history.get("left_at", -1e20) < 1800 else None
+    target, ahead = _sooner(rows, active, now, just_left)
+    # The pause between early switches is said only while it holds a move back. It counts from a switch that
+    # was started too (`early_tried`, written by `cli_auto.tick`): one that failed is not started again 5
+    # seconds later, with a call to renew the login and an alert each time.
+    if (target or ahead) and now - early_at < 2 * HOUR:
+        return {"hold": EARLY_DONE}
+    if (target or ahead) and now - history.get("early_tried", -1e20) < 2 * HOUR:
+        return {"hold": EARLY_TRIED}
     if _held(history, active, now):
         return {"hold": MANUAL_HOLD}
-    mine = active["weekly_reset"]
-    just_left = history.get("left") if now - history.get("left_at", -1e20) < 1800 else None
-    early = [row for row in rows if row["skip"] is None and row["weekly_reset"] is not None and mine is not None
-             and now < row["weekly_reset"] < mine
-             and row["values"][0][1] <= 80 and row["id"] != just_left]
-    if not early:
+    if ahead:
+        return _checking(ahead)
+    if target is None:
         return {}
-    target = min(early, key=lambda row: (row["weekly_reset"], row["label"].casefold()))
     return {"action": "switch", "target": target["id"], "kind": "early",
             "reason": f"Using {target['label']}'s weekly allowance before it resets in {duration(target['weekly_reset'] - now)} ({100 - target['values'][0][1]:g}% left)."}

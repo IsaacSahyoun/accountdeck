@@ -64,13 +64,20 @@ switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 when a week resets is lost, so with this on AccountDeck keeps Claude Code on the account whose week
 resets soonest. It can move long before 95%, for example when the account in use is only 20% used,
 and however far off the other account's reset is. It moves when the other account's weekly limit
-resets sooner than the weekly limit of the account in use and at least 20% of that week is still
-unused. The other account also needs room in its Fable limit, and a week that has not started is
-never moved to. This happens at most once every 2 hours. Turn it off in **Settings → Auto-Switch** if you want
-switches only at your own percentage.
+resets more than an hour before the weekly limit of the account in use. The other account has to be
+one auto-switch could move to at your percentage anyway (room in its weekly and its Fable limit, a
+reading at most 15 minutes old), with at least 20% of its week still unused. A week that has not
+started is never moved to. When the account whose week resets soonest has an older reading,
+AccountDeck reads it again before it moves anywhere. With this on, a switch at your percentage goes
+to that same account, whatever order you chose under **Next account**, so the terminals change once
+and not twice. An early switch happens at most once every 2 hours, and one that failed is tried
+again 2 hours later. Turn it off in **Settings → Auto-Switch** if you want switches only at your own
+percentage, in your own order.
 
 **Your own choice:** When you switch Claude Code accounts yourself, or choose **Undo**, auto-switch
-leaves that choice alone for 2 hours. It still switches if that account's week runs out or it
+leaves that choice alone for 2 hours. After that the early switch moves the terminals again if
+another account's week resets sooner: to keep an account for longer, leave the other one out or
+turn the early switch off. It still switches if that account's week runs out or it
 needs sign-in, and from then on it switches as usual. A Fable limit that ran out does not undo
 your choice, because the account still works for the other models.
 

@@ -120,3 +120,9 @@ def tick(engine):
         diagnostics.log("cli.decision", kind=result["kind"], acct=diagnostics.account_ref(target["id"]))
     except DeckError as exc:
         diagnostics.log("cli.deferred", code=exc.code)
+        return
+    if result["kind"] == "early":
+        # A switch that fails before it writes leaves no trace, and the next tick would start it again. The
+        # rule waits 2 hours after a try of the early switch, whether it worked or not (`cli_policy._early`).
+        with history(engine) as past:
+            past["early_tried"] = engine.clock()

@@ -52,6 +52,11 @@ class ScenarioTest(unittest.TestCase):
         early switch moved the terminals to the account whose week ends first. Three more did about 10 seconds
         after their start, once the early switch had no 24-hour limit: the first check only asks for a new
         reading of the account it wants, so the check here is what the rule decides, not only what it starts.
+        Two more did minutes later, when their own script changed the readings: `resetting` after its refill
+        at 150 seconds, `outage` once its incident ended at 600. So the demo clock is moved on here, 25 minutes
+        in steps of 30 seconds, and the early switch has to decide nothing the whole way. A demo's script may
+        still take the account in use to the threshold (`typical` does, about 10 minutes in): that is the
+        threshold rule's move, not the early switch's, and it is left alone here.
         A job a scenario's picture shows is started when the demo is built, before this check."""
         for scenario in demo.SCENARIOS:
             with self.subTest(scenario=scenario):
@@ -65,6 +70,11 @@ class ScenarioTest(unittest.TestCase):
                     self.assertEqual(submitted, [])
                     wants = cli_auto.decision(engine)
                     self.assertEqual((wants["action"], wants["target"], wants["reason"]), ("none", None, ""))
+                    for later in range(30, 25 * 60 + 1, 30):
+                        engine.clock.advance(30)
+                        engine.tick()
+                        wants = cli_auto.decision(engine)
+                        self.assertNotEqual(wants["kind"], "early", f"{later} seconds in: {wants['reason']}")
                 finally:
                     if engine is not None:
                         engine.stop()

@@ -297,8 +297,9 @@ def _scene_typical(spec, now):
 
 
 # A demo holds still: its picture is the state it starts in. In the scenarios that use this, the week of the
-# account in use is not the one that ends first, so with the early switch on the demo would move its terminals
-# moments after it starts (`cli_policy._early`).
+# account in use is not the one that ends first, or stops being it once the demo's script refills a week or
+# ends an incident. With the early switch on, the demo would move its terminals by itself, moments after it
+# starts or minutes later (`cli_policy._early`).
 _HOLDS_STILL = {"cli_early_switch": False}
 
 
@@ -409,6 +410,7 @@ def _scene_fable_binding(spec, now):
 
 
 def _scene_resetting(spec, now):
+    spec["settings"] = dict(_HOLDS_STILL)
     spec["accounts"] = [
         _terminal("cli_alpha", "Alpha", [_w("seven_day", 100, -120)], active=True, checked=-200,
                   credential={"state": "live", "expires_in": 5000}),
@@ -431,6 +433,7 @@ def _scene_rate_limited(spec, now):
 
 def _scene_outage(spec, now):
     paused = {"code": "outage", "message": "Reading paused · provider incident", "since": -1500, "outage": True}
+    spec["settings"] = dict(_HOLDS_STILL)
     spec["status"] = {"claude_cli": _status("claude_cli", now, "outage", since=-1800, checked=-60, incident={
         "title": "Elevated errors on claude.ai", "impact": "major", "status": "investigating", "started": now - 1800})}
     spec["accounts"] = [
