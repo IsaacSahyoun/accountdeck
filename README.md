@@ -50,10 +50,10 @@ terminals are using cannot be removed; switch to another one first.
 
 **Auto-switch:** This applies to Claude Code only. It starts on and needs at least two saved
 accounts. It moves your terminals when the account in use reaches 95% of its weekly limit or of
-its Fable 5.1 weekly limit, and it judges the account it moves to by both limits too. One case is
+its Fable weekly limit, and it judges the account it moves to by both limits too. One case is
 different: when the account in use has stopped working (its week ran out, or it needs sign-in) and
 no account has room in both limits, it first moves to an account that still has a little left in
-both. If there is none, it moves to an account that has only its Fable 5.1 limit used up, because
+both. If there is none, it moves to an account that has only its Fable limit used up, because
 that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a reading at most
 15 minutes old. Right after a weekly limit refills, it waits for a new reading of the
@@ -64,13 +64,13 @@ switch has a 10-minute **Undo**. Codex and Muse only switch when you ask.
 can move Claude Code to another account long before 95%, for example when the account in use is
 only 20% used. It does this when the other account's weekly limit resets within 24 hours, sooner
 than the weekly limit of the account in use, and at least 20% of that week is still unused. The
-other account also needs room in its Fable 5.1 limit.
+other account also needs room in its Fable limit.
 This happens at most once every 2 hours. Turn it off in **Settings → Auto-Switch** if you want
 switches only at your own percentage.
 
 **Your own choice:** When you switch Claude Code accounts yourself, or choose **Undo**, auto-switch
 leaves that choice alone for 2 hours. It still switches if that account's week runs out or it
-needs sign-in, and from then on it switches as usual. A Fable 5.1 limit that ran out does not undo
+needs sign-in, and from then on it switches as usual. A Fable limit that ran out does not undo
 your choice, because the account still works for the other models.
 
 **Start at login:** Turn it on in **Settings → Menu Bar & Login**. Closing the dashboard leaves

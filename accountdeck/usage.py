@@ -69,10 +69,16 @@ def classify_key(key, value):
     return kind, label, short, model, kind in PRIMARY_KINDS
 
 
+def _fable_name(model):
+    """True for a model name of the Fable family: "Fable" in Claude's named key, and its list can add a version
+    ("Fable 5.1"). Letter case does not count."""
+    return str(model or "").strip().casefold().startswith("fable")
+
+
 def is_fable(window):
-    """True for the Fable 5.1 weekly limit: a model's limit whose model starts with "Fable", the test the page
-    uses. Claude's named key calls the model "Fable" and its list can call it "Fable 5.1"."""
-    return window.get("kind") == "model" and str(window.get("model") or "").casefold().startswith("fable")
+    """True for the Fable weekly limit: a model's limit whose model starts with "Fable", the test the page
+    uses."""
+    return window.get("kind") == "model" and _fable_name(window.get("model"))
 
 
 def saved_reading(provider, reading):
@@ -82,26 +88,37 @@ def saved_reading(provider, reading):
     - The 2.0.0 build saved a Claude account's 5-hour limit as a window. It is no limit any more
       (`claude_usage`) and is left out.
     - An older build saved a model's limit from Claude's list beside the same limit from its named key. The
-      named key's is left out, as `claude_usage` leaves it out now (`_one_per_model`)."""
+      named key's is left out, as `claude_usage` leaves it out now (`_one_per_model`).
+    - Older builds saved the Fable limit under the name "Fable 5.1". It gets the name this build gives it
+      (`model_label`)."""
     if provider != "claude_cli" or not isinstance(reading, dict) or not isinstance(reading.get("windows"), list):
         return reading
     kept = [w for w in reading["windows"] if not (isinstance(w, dict) and w.get("kind") == "session")]
-    kept = _one_per_model(kept, _from_keys(reading.get("raw_windows")))
-    return reading if len(kept) == len(reading["windows"]) else dict(reading, windows=kept)
+    kept = [_named_now(w) for w in _one_per_model(kept, _from_keys(reading.get("raw_windows")))]
+    same = len(kept) == len(reading["windows"]) and all(a is b for a, b in zip(kept, reading["windows"]))
+    return reading if same else dict(reading, windows=kept)
+
+
+def _named_now(window):
+    """A saved Fable limit under this build's name for it, and any other window as it is."""
+    if not (isinstance(window, dict) and is_fable(window)):
+        return window
+    short = model_label(window.get("model"))
+    names = {"label": f"{short} weekly", "short": short}
+    return window if all(window.get(key) == value for key, value in names.items()) else dict(window, **names)
 
 
 def same_model(one, other):
-    """True when two names are one model's. Claude's named key says "Fable" where its list says "Fable 5.1"
-    (`model_label`). Letter case does not count."""
+    """True when two names are one model's. Every name of the Fable family is one model here: Claude's named
+    key says "Fable" where its list can say "Fable 5.1" (`model_label`). Letter case does not count."""
     def key(name):
-        name = str(name or "").strip()
-        return model_label("Fable" if name.casefold() == "fable" else name).casefold()
+        return model_label(str(name or "").strip()).casefold()
     return bool(key(one)) and key(one) == key(other)
 
 
 def _one_per_model(windows, from_keys):
     """The windows without a named key's model limit that Claude's list gives too. `from_keys` holds the ids
-    of the windows that came from a named key (`_from_keys`). "Fable 5.1" in the list and the key
+    of the windows that came from a named key (`_from_keys`). A Fable entry in the list and the key
     `seven_day_fable` are one limit (`same_model`), and the list's entry is the one that counts, as the
     list's weekly entry replaces `seven_day`. Each keeps its own id. The app stores a limit's samples under
     its id, and the forecast reads them as one series: samples of the key's number followed by samples of
@@ -311,8 +328,10 @@ def _shown(windows):
 
 
 def model_label(model):
-    """How a per-model limit is named: the bare "Fable" limit is Fable 5.1's."""
-    return "Fable 5.1" if model == "Fable" else model
+    """How a per-model limit is named. Claude has one Fable limit, and it is named "Fable" whatever version
+    Claude's answer puts in the model's name. `is_fable` uses the same test, so the limit the app acts on and
+    the limit it calls Fable are the same one. The window keeps Claude's own name for the model in `model`."""
+    return "Fable" if _fable_name(model) else model
 
 
 def _describe(key):

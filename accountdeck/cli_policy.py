@@ -1,7 +1,7 @@
 """The terminal auto-switch policy the owner approved. Pure: no I/O or clock reads.
 
 `evaluate` decides, for the active terminal account, whether to switch now and to which account:
-- threshold: any considered limit (weekly, Fable 5.1 weekly, the pinned model's weekly) at or past
+- threshold: any considered limit (weekly, Fable weekly, the pinned model's weekly) at or past
   `cli_threshold`, or projected to pass it before the next read can land (the burn-rate forecast);
 - out / login: a limit reached or a sign-in that needs renewing switches whatever the threshold;
 - eligible targets have a reading at most 15 minutes old and at least 10 points of room below the
@@ -42,7 +42,7 @@ def number(value):
 
 def considered(account, settings):
     """The limits the rule acts on, the weekly one first: (name, % used or None, window). They are the weekly
-    limit, the Fable 5.1 weekly limit (`usage.is_fable`) and the pinned model's, each only when the account's
+    limit, the Fable weekly limit (`usage.is_fable`) and the pinned model's, each only when the account's
     reading has it: a model's limit is in Claude's answer after the first message to that model. Another
     model's limit is not acted on. Claude has no 5-hour limit (`usage.claude_usage`). `engine.targets` (how
     often an account is read), `switch_cli.plan` (the sheet's warning) and the page's notch

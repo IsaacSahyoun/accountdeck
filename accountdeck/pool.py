@@ -4,7 +4,7 @@ Only Claude Code (terminal) accounts count. An account
 that needs sign-in, that the owner left out, or whose weekly reading is unknown is not
 counted, only named. Each counted window's share left at `now` (which may be after the snapshot):
 not started → 100; a reset that passed since the reading → 100, assumed (approximate); blocked or
-out → 0; else 100 − used. An account whose weekly limit is out has no usable Fable 5.1 room
+out → 0; else 100 − used. An account whose weekly limit is out has no usable Fable room
 either. The totals are those shares summed over 100: 4.2 means four accounts and a fifth of one.
 Claude has no 5-hour limit, so the weekly limit is the room an account has.
 """
@@ -192,7 +192,7 @@ def _share(value, approx) -> str:
 def _account_line(row: Row) -> str:
     parts = [f"weekly {_share(row.weekly, row.weekly_approx)}"]
     if row.fable is not None:
-        parts.append(f"Fable 5.1 {_share(row.fable, row.fable_approx)}")
+        parts.append(f"Fable {_share(row.fable, row.fable_approx)}")
     return f"{row.label}{' (in use)' if row.active else ''}: " + " · ".join(parts) + " left"
 
 
@@ -206,7 +206,7 @@ def tooltip_lines(pool: Pool, now) -> list[str]:
     if pool.capacity:
         lines.append(_total_line("Weekly", pool.weekly, pool.capacity, pool.weekly_approx))
         if pool.fable_capacity:
-            lines.append(_total_line("Fable 5.1", pool.fable, pool.fable_capacity, pool.fable_approx))
+            lines.append(_total_line("Fable", pool.fable, pool.fable_capacity, pool.fable_approx))
         if pool.refill is not None:
             refill = pool.refill
             lines.append(f"Next refill: {refill.label} +{amount(refill.gain)} ({refill.window}) in "

@@ -40,22 +40,23 @@ def demo_engine(case, scenario):
     return engine
 
 
-def fable_window(used, reset):
-    """A Fable 5.1 weekly limit as `usage.claude_usage` saves it, in the 2.0.0 build and now."""
-    return {"id": "seven_day_fable", "kind": "model", "label": "Fable 5.1 weekly", "short": "Fable 5.1", "model": "Fable",
+def fable_window(used, reset, *, name="Fable"):
+    """A Fable weekly limit as `usage.claude_usage` saves it. Older builds saved it under the `name`
+    "Fable 5.1"."""
+    return {"id": "seven_day_fable", "kind": "model", "label": f"{name} weekly", "short": name, "model": "Fable",
             "used": used, "known": True, "reset": reset, "minutes": 10080, "started": True, "blocked": None, "group": None,
             "scope": "Fable", "primary": True, "severity_hint": None, "is_active": None}
 
 
 def shipped_reading(now, five, weekly, fable=None):
-    """A Claude account's reading as the 2.0.0 build saved it, with a 5-hour limit in it, and with a Fable 5.1
-    weekly limit when `fable` gives its percent used. It is what that build's own `usage.claude_usage` made of
+    """A Claude account's reading as the 2.0.0 build saved it, with a 5-hour limit in it, and with a Fable
+    weekly limit, which that build named "Fable 5.1", when `fable` gives its percent used. It is what that build's own `usage.claude_usage` made of
     an answer, written out here so the new parser has no part in it."""
     def window(wid, kind, label, short, minutes, used, reset):
         return {"id": wid, "kind": kind, "label": label, "short": short, "model": None, "used": used, "known": True,
                 "reset": reset, "minutes": minutes, "started": True, "blocked": None, "group": None, "scope": None,
                 "primary": True, "severity_hint": None, "is_active": None}
-    model = [] if fable is None else [fable_window(fable, now + 4 * 86400)]
+    model = [] if fable is None else [fable_window(fable, now + 4 * 86400, name="Fable 5.1")]
     return {"checked": now, "credits": [], "reset_credits": [], "tokens": None,
             "raw_windows": [{"key": "five_hour", "used": five, "reset": now + 7200},
                             {"key": "seven_day", "used": weekly, "reset": now + 4 * 86400}]
@@ -65,10 +66,10 @@ def shipped_reading(now, five, weekly, fable=None):
 
 
 def shipped_both_names(now, weekly, named, listed, *, reset=None):
-    """A Claude account's reading as the 2.0.0 build saved it from one answer that had the Fable 5.1 limit under
+    """A Claude account's reading as the 2.0.0 build saved it from one answer that had the Fable limit under
     its named key (`named` percent used) and in its list (`listed` percent used). That build kept both as
     limits, and its `raw_windows` says where each number came from. Written out from a run of that build
-    (`21-what-2.0.0-saved-for-both-names.txt` in the proof folder of the Fable 5.1 rule)."""
+    (`21-what-2.0.0-saved-for-both-names.txt` in the proof folder of the Fable rule)."""
     reset = now + 4 * 86400 if reset is None else reset
     reading = shipped_reading(now, 10.0, weekly, named)
     five, week, key = reading["windows"]
@@ -155,7 +156,7 @@ def once_the_login_is(engine, refresh_token, then):
 
 def with_reading(engine, key, *, weekly, fable=None):
     """Give a Claude account a reading taken this second, with this percent of its week used. `fable` is the
-    percent used of its Fable 5.1 weekly limit. Without it the reading has no such limit."""
+    percent used of its Fable weekly limit. Without it the reading has no such limit."""
     now = engine.clock()
     usage = copy.deepcopy(engine.store.account(key)["last_good_usage"])
     usage["checked"] = now

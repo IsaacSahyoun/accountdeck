@@ -1,6 +1,6 @@
 /* AccountDeck 2 — what the page knows about accounts, without any DOM. For every client: which ones
  * are blocked, need sign-in or belong to another computer. For Claude Code (terminal) accounts also
- * which are listed and in use, sort orders, the limits a row shows, the limit that binds, the Fable 5.1
+ * which are listed and in use, sort orders, the limits a row shows, the limit that binds, the Fable
  * board and auto-switch's next pick. */
 (function () {
   'use strict';
@@ -56,9 +56,9 @@
     return frozen(account) || needsSignin(account) || account.state === 'limited' || kind === 'out';
   }
 
-  // ---- Fable 5.1 ----------------------------------------------------------------------------------
+  // ---- Fable ----------------------------------------------------------------------------------
 
-  /** The Fable 5.1 weekly limit: a model window whose model starts with "Fable" (never matched by label). */
+  /** The Fable weekly limit: a model window whose model starts with "Fable" (never matched by label). */
   function isFable(win) {
     return !!win && win.kind === 'model' && FABLE.test(String(win.model || ''));
   }
@@ -67,7 +67,7 @@
     return ((account && account.windows) || []).find(isFable) || null;
   }
 
-  /** The Fable 5.1 room of every usable terminal account at nowMs: [{id, label, account, win, d}],
+  /** The Fable room of every usable terminal account at nowMs: [{id, label, account, win, d}],
    * most room first (unknown readings last, saved order on ties). */
   function fableBoard(accounts, nowMs) {
     const rows = [];
@@ -92,7 +92,7 @@
 
   // ---- Limits -------------------------------------------------------------------------------------
 
-  /** The limits a row shows: weekly, Fable 5.1 weekly (a placeholder when the account has no Fable
+  /** The limits a row shows: weekly, Fable weekly (a placeholder when the account has no Fable
    * reading, so the columns line up), then any other model limit that binds (marked extra). Claude has
    * no 5-hour limit. */
   function limits(account) {
@@ -137,7 +137,7 @@
   const SORTS = ['room', 'fable', 'weekly', 'reset', 'manual'];
 
   /** Terminal rows in `mode` (one of SORTS): usable accounts first, unknown readings after known
-   * ones, saved order on ties. "Most room left" ranks by the tighter of weekly and Fable 5.1. */
+   * ones, saved order on ties. "Most room left" ranks by the tighter of weekly and Fable. */
   function sorted(list, mode, nowMs) {
     const win = (a, kind) => (a.windows || []).find((w) => w.kind === kind);
     const key = {
@@ -180,7 +180,7 @@
   }
 
   /** True for a limit auto-switch acts on, which gets its notch (cli_policy.considered): the weekly limit,
-   * the Fable 5.1 weekly limit, and the weekly limit of the pinned model. */
+   * the Fable weekly limit, and the weekly limit of the pinned model. */
   function watched(win, pinnedModel) {
     const pin = String(pinnedModel || '').toLowerCase();
     return win.kind === 'weekly' || isFable(win)

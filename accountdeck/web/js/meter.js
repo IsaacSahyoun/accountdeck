@@ -86,7 +86,7 @@
   /** One limit of an account: label, value, meter and note. ctx: {nowMs, display, threshold, pinned, compact, bare}.
    * Compact (the overview) puts the note beside the label: one line of text, then the bar. Bare is the
    * bar alone, for the limit the card's big number already names.
-   * A placeholder window (an account without a Fable 5.1 reading) keeps its slot and says so quietly. */
+   * A placeholder window (an account without a Fable reading) keeps its slot and says so quietly. */
   function limit(win, account, ctx) {
     const fable = win.placeholder || AD.accounts.isFable(win);
     const label = AD.dom.el('span', { class: 'limit-label' },

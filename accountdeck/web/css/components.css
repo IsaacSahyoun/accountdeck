@@ -1,5 +1,5 @@
 /* AccountDeck 2 — dashboard components: grouped cards, the overview column (in use, auto-switch,
- * next reset, Fable 5.1 room), meters, badges, avatars and the accounts table.
+ * next reset, Fable room), meters, badges, avatars and the accounts table.
  * Severity always has words and an icon too; colour only reinforces it. */
 
 /* ---- Cards (macOS grouped boxes) --------------------------------------------------------------- */
@@ -105,7 +105,7 @@
 }
 .ov-hold .icon { width: 14px; height: 14px; margin-top: 1px; }
 
-/* Fable 5.1 room: a small leaderboard; the leader is crowned in Fable's hue. */
+/* Fable room: a small leaderboard; the leader is crowned in Fable's hue. */
 .board { display: grid; }
 .board-row {
   display: grid;

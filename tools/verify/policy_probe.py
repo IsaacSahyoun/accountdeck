@@ -40,18 +40,18 @@ show("   an answer with a weekly number only, Alpha at 97%",
 show("   an answer that still carries a 5-hour number of 99%, weekly at 20%",
      [answered("alpha", "Alpha", {"five_hour": dict(week, utilization=99), "seven_day": dict(week, utilization=20)}, active=True),
       answered("beta", "Beta", {"five_hour": dict(week, utilization=99), "seven_day": dict(week, utilization=20)})])
-print("D. The Fable 5.1 weekly limit. What the app makes of Claude's own answers, with settings as a new install has them:")
+print("D. The Fable weekly limit. What the app makes of Claude's own answers, with settings as a new install has them:")
 def fable(key, label, weekly, model, *, active=False):
     return answered(key, label, {"seven_day": dict(week, utilization=weekly), "seven_day_fable": dict(week, utilization=model)}, active=active)
-show("   Alpha: weekly 40%, Fable 5.1 weekly 96%. Beta has room in both",
+show("   Alpha: weekly 40%, Fable weekly 96%. Beta has room in both",
      [fable("alpha", "Alpha", 40, 96, active=True), fable("beta", "Beta", 30, 30)])
-show("   Alpha: weekly 96%. Beta's Fable 5.1 limit is out, Gamma has room in both",
+show("   Alpha: weekly 96%. Beta's Fable limit is out, Gamma has room in both",
      [fable("alpha", "Alpha", 96, 10, active=True), fable("beta", "Beta", 20, 100), fable("gamma", "Gamma", 60, 30)])
-show("   Alpha's Fable 5.1 limit is out and the user chose Alpha 5 seconds ago",
+show("   Alpha's Fable limit is out and the user chose Alpha 5 seconds ago",
      [fable("alpha", "Alpha", 40, 100, active=True), fable("beta", "Beta", 30, 30)], {"manual_at": NOW - 5})
-show("   Alpha's week is out. Beta's Fable 5.1 limit is out and its week is not: Beta still works for the other models",
+show("   Alpha's week is out. Beta's Fable limit is out and its week is not: Beta still works for the other models",
      [fable("alpha", "Alpha", 100, 10, active=True), fable("beta", "Beta", 20, 100)])
-show("   Alpha's week is at 99%, so it still works. Beta's Fable 5.1 limit is out",
+show("   Alpha's week is at 99%, so it still works. Beta's Fable limit is out",
      [fable("alpha", "Alpha", 99, 10, active=True), fable("beta", "Beta", 20, 100)])
 show("   Alpha's Sonnet limit is out: another model's limit is not acted on",
      [answered("alpha", "Alpha", {"seven_day": dict(week, utilization=40), "seven_day_sonnet": dict(week, utilization=100)}, active=True),

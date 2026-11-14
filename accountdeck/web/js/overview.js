@@ -4,7 +4,7 @@
  *   Auto-switch — on or off (a switch right there), who takes over next and when, and why the
  *                 others wait;
  *   Next reset  — the soonest refill across the accounts;
- *   Fable 5.1   — which account has the most Fable 5.1 weekly room.
+ *   Fable   — which account has the most Fable weekly room.
  * render() runs on every state and clock tick; a card is rebuilt only when its signature changed.
  * Countdowns are [data-reset] text the shell's clock patches in place. */
 (function () {
@@ -15,7 +15,7 @@
   const O = STRINGS.overview;
 
   const QUEUE_SHOWN = 4;
-  const BOARD_SHOWN = 3;                      // the full ranking is the table's "Most Fable 5.1 room" order
+  const BOARD_SHOWN = 3;                      // the full ranking is the table's "Most Fable room" order
   const HEADLINE_TONES = { ready: 'good', watch: 'accent', low: 'warning', critical: 'critical', out: 'critical', signin: 'warning' };
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
   const el = (...args) => AD.dom.el(...args);
@@ -219,7 +219,7 @@
     return JSON.stringify([pick.kind, row && [row.account, row.label, row.window, row.reset, row.left], ctx.display, ctx.hide]);
   }
 
-  // ---- Fable 5.1 room ----------------------------------------------------------------------------------
+  // ---- Fable room ----------------------------------------------------------------------------------
 
   function fableLabel(state, board) {
     if (board.length) return board[0].win.label;

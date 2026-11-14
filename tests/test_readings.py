@@ -24,11 +24,11 @@ SETTINGS = {"cli_autoswitch": True, "cli_threshold": 95, "cli_order": "soonest_r
 
 def account(key, weekly, weekly_reset=3 * DAY, *, active=False, age=60, model=None, **fields):
     """One terminal account as `cli_auto.inputs` hands it to the rule. The reset is seconds from NOW; `age` is how
-    old the reading is (None: never read); `model` is the % used of its Fable 5.1 weekly limit, named as
+    old the reading is (None: never read); `model` is the % used of its Fable weekly limit, named as
     `usage.claude_usage` names it. An account with no `model` has no such limit in its reading."""
     windows = [{"id": "seven_day", "kind": "weekly", "used": weekly, "reset": NOW + weekly_reset}]
     if model is not None:
-        windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable 5.1 weekly",
+        windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable weekly",
                         "used": model, "reset": NOW + weekly_reset})
     return {"id": key, "label": key.capitalize(), "active": active, "forecast": {}, "owner": "v2", "excluded": False,
             "health": "ok", "live_expired": False, "last_good_at": None if age is None else NOW - age,
@@ -213,14 +213,14 @@ EXPECTED = {
     "Alpha belongs to the PC":                         ".. .. .. .. .. .. .. .. .. .. .. ..",
     "Alpha's weekly is forecast at 97%":               "Tb Tb .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Alpha's pinned Fable limit is at 96%":            "Tb Tb hW Tb Tb hW Tb Tb hW Ob Ob hW",
-    # The Fable 5.1 weekly limit with settings as a new install has them. A manual choice holds against it
+    # The Fable weekly limit with settings as a new install has them. A manual choice holds against it
     # even when it is out, because the account still works for the other models.
     "Alpha's Fable limit is at 96%":                   "Tb Tb hW Tb Tb hW Tb Tb hW Ob Ob hW",
     "Alpha's Fable limit is at 100%":                  "Ob Ob hW Ob Ob hW Ob Ob hW Ob Ob hW",
     "Alpha's Fable limit is forecast at 97%":          "Tb Tb .. Tb Tb hW Tb Tb hW Ob Ob hW",
     "Undo pressed 5 s ago, Alpha's Fable limit is at 100%": "hm hm hW hm hm hW hm hm hW Ob Ob hW",
     "Beta's Fable limit is at 90%":                    ".. .. .. hd hd hW Tb Tb hW Ob Ob hW",
-    # An account whose Fable 5.1 limit is out is refused while the account in use still works. Once the account
+    # An account whose Fable limit is out is refused while the account in use still works. Once the account
     # in use works for no model (its week ran out, or it needs sign-in), an account whose week can still be
     # used is better than staying, and it is picked after every account that has room in both limits.
     "Beta's Fable limit is at 100%":                   ".. .. .. hd hd hW XX XX hW Ob Ob hW",
@@ -297,15 +297,15 @@ class AutoSwitchWordsTest(unittest.TestCase):
             "threshold": "Alpha reached 95% of its weekly limit; Beta is first in your eligible order.",
             "out": "Alpha reached its weekly limit; Beta is first in your eligible order.",
             "marked out": "Alpha reached a limit; Beta is first in your eligible order.",
-            "Fable threshold": "Alpha reached 95% of its Fable 5.1 weekly limit; Beta is first in your eligible order.",
-            "Fable out": "Alpha reached its Fable 5.1 weekly limit; Beta is first in your eligible order.",
-            "Fable forecast": "Alpha will pass 95% of its Fable 5.1 weekly limit before the next check; Beta is first in your eligible order.",
-            "Fable has refilled": "Alpha's Fable 5.1 weekly limit has refilled. Waiting for its new reading.",
+            "Fable threshold": "Alpha reached 95% of its Fable weekly limit; Beta is first in your eligible order.",
+            "Fable out": "Alpha reached its Fable weekly limit; Beta is first in your eligible order.",
+            "Fable forecast": "Alpha will pass 95% of its Fable weekly limit before the next check; Beta is first in your eligible order.",
+            "Fable has refilled": "Alpha's Fable weekly limit has refilled. Waiting for its new reading.",
             "login": "Alpha needs sign-in; Beta is first in your eligible order.",
             "forecast": "Alpha will pass 95% of its weekly limit before the next check; Beta is first in your eligible order.",
             "drain": "Alpha reached 99%; every account is past 95%, so Beta is used up to 99%.",
-            "its week alone": "Alpha reached its weekly limit; Beta's week can still be used, though its Fable 5.1 weekly limit is at 100%.",
-            "its week alone, sign-in": "Alpha needs sign-in; Beta's week can still be used, though its Fable 5.1 weekly limit is at 100%.",
+            "its week alone": "Alpha reached its weekly limit; Beta's week can still be used, though its Fable weekly limit is at 100%.",
+            "its week alone, sign-in": "Alpha needs sign-in; Beta's week can still be used, though its Fable weekly limit is at 100%.",
             "drain beside an old reading": "Alpha reached its weekly limit; Beta needs a new reading first, so Gamma is used up to 99%.",
             "drain beside two old readings": "Alpha reached its weekly limit; Beta and Delta need a new reading first, so Gamma is used up to 99%.",
             # every account that waits is counted (found by the fourth review: the fourth name was dropped unsaid)
@@ -361,7 +361,7 @@ class AutoSwitchWordsTest(unittest.TestCase):
 
 
 class FableLimitTest(unittest.TestCase):
-    """Auto-switch acts on the Fable 5.1 weekly limit with settings as a new install has them (Isaac's
+    """Auto-switch acts on the Fable weekly limit with settings as a new install has them (Isaac's
     decision, 2026-11-13). Settings and the notch on the bar had said so all along, and the rule had acted on
     it only for a `pinned_model` no control sets."""
     WEEK = "2027-01-20T00:00:00Z"
@@ -384,10 +384,10 @@ class FableLimitTest(unittest.TestCase):
             with self.subTest(shape=shape):
                 alpha, beta = self.terminal("alpha", over, active=True), self.terminal("beta", roomy)
                 self.assertEqual([name for name, _used, _window in cli_policy.considered(alpha, SETTINGS)],
-                                 ["weekly", "Fable 5.1 weekly"])
+                                 ["weekly", "Fable weekly"])
                 result = cli_policy.evaluate([alpha, beta], SETTINGS, {}, NOW)
                 self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "beta", "threshold"))
-                self.assertEqual(result["reason"], "Alpha reached 95% of its Fable 5.1 weekly limit; Beta is first in your eligible order.")
+                self.assertEqual(result["reason"], "Alpha reached 95% of its Fable weekly limit; Beta is first in your eligible order.")
 
     def test_it_never_moves_to_an_account_whose_fable_limit_is_out(self):
         for (shape, low), (_, out), (_, roomy) in zip(self.answers(96, 10), self.answers(20, 100), self.answers(60, 30)):
@@ -397,10 +397,10 @@ class FableLimitTest(unittest.TestCase):
                 self.assertEqual((result["action"], result["target"]), ("switch", "gamma"))
                 self.assertEqual([(row["id"], row["skip"], row["room"]) for row in result["next_up"]],
                                  [("gamma", None, 35), ("alpha", "in use by your terminals", -1),
-                                  ("beta", "Fable 5.1 weekly at 100%", -5)])
+                                  ("beta", "Fable weekly at 100%", -5)])
 
     def test_an_account_that_works_for_no_model_is_left_for_one_whose_week_still_can_be_used(self):
-        """Found by the review of this change. The rule refused every account whose Fable 5.1 limit was out, so
+        """Found by the review of this change. The rule refused every account whose Fable limit was out, so
         an account in use whose week ran out, or that needed sign-in, kept the terminals while another account
         had most of its week left. The rule that looked at the week alone moved them."""
         for (shape, dead), (_, fable_out), (_, fine) in zip(self.answers(100, 10), self.answers(20, 100), self.answers(30, 10)):
@@ -419,7 +419,7 @@ class FableLimitTest(unittest.TestCase):
 
     def test_an_account_is_used_for_its_week_alone_only_when_its_reading_says_so(self):
         """ "I cannot tell" is never "it is fine". The account in use works for no model, and still the rule
-        does not move to an account whose Fable 5.1 number is missing, whose week is past using up, that is
+        does not move to an account whose Fable number is missing, whose week is past using up, that is
         left out, that needs sign-in or that was never read."""
         dead = account("alpha", 100, active=True)
 
@@ -512,7 +512,7 @@ class FableLimitTest(unittest.TestCase):
 
     def test_a_setting_that_pins_fable_marks_the_limit_on_the_page_under_both_of_its_names(self):
         """The same, the way a user sees it: `intel.build_account` marks the limit a row is judged on (`binding`),
-        and `rules.headroom` is what the recommender ranks by. A Fable 5.1 limit under 50% used counts for both
+        and `rules.headroom` is what the recommender ranks by. A Fable limit under 50% used counts for both
         only when Fable is the pinned model: with no pinned model nothing here is past 50%, and no limit is marked.
         Asked for by the third review of this change."""
         from accountdeck import intel, rules
@@ -538,14 +538,63 @@ class FableLimitTest(unittest.TestCase):
 
     def test_an_account_that_still_works_is_not_left_for_one_whose_fable_limit_is_out(self):
         """The other side of the same rule. At 99% of its week the account in use still answers, for every
-        model. Moving to an account that has lost Fable 5.1 would take that model away early."""
+        model. Moving to an account that has lost Fable would take that model away early."""
         for weekly, fable in ((99, 10), (30, 100), (30, 99)):
             with self.subTest(weekly=weekly, fable=fable):
                 result = cli_policy.evaluate([account("alpha", weekly, active=True, model=fable), beta(model=100)], SETTINGS, {}, NOW)
                 self.assertEqual((result["action"], result["exhausted"]), ("none", True))
 
+    def test_the_limit_is_named_fable_whatever_claudes_answer_calls_the_model(self):
+        """Isaac, 2026-11-14: it is a Fable limit, not Fable 5.1's. Older builds gave the named key's
+        limit the name "Fable 5.1" and kept the version a list entry put in the model's name. Claude's own
+        name for the model, and the id the limit's samples are saved under, stay as they were."""
+        for shape, answer in self.answers(40, 20):
+            with self.subTest(shape=shape):
+                fable = claude_usage(answer, now=NOW)["windows"][1]
+                self.assertEqual((fable["label"], fable["short"]), ("Fable weekly", "Fable"))
+                self.assertEqual((fable["id"], fable["model"], fable["scope"]),
+                                 ("seven_day_fable", "Fable", "Fable") if shape == "named keys"
+                                 else ("seven_day_fable_5_1", "Fable 5.1", "Fable 5.1"))
+        sonnet = claude_usage({"seven_day_sonnet": {"utilization": 20, "resets_at": self.WEEK}}, now=NOW)["windows"][0]
+        self.assertEqual((sonnet["label"], sonnet["short"]), ("Sonnet weekly", "Sonnet"), "another model keeps its name")
+        # A later version in the list's name is the same limit, so the named key's number is not a second one.
+        named, listed = self.answers(40, 100)[0][1], self.answers(40, 20)[1][1]
+        listed["limits"][1]["scope"]["model"]["display_name"] = "Fable 5.2"
+        self.assertEqual([(w["id"], w["label"], w["used"]) for w in claude_usage({**named, **listed}, now=NOW)["windows"]],
+                         [("seven_day", "Weekly", 40), ("seven_day_fable_5_2", "Fable weekly", 20)])
+
+    def test_a_reading_an_older_build_saved_shows_the_limit_under_its_name_now(self):
+        """Until an account is read again, the saved reading is all the app shows of it, and an account that
+        needs sign-in is not read again. The saved data stays as it is."""
+        from accountdeck.usage import saved_reading
+        for name, saved, ids in (("the named key", support.shipped_reading(NOW, 10.0, 40.0, 96.0), ["seven_day", "seven_day_fable"]),
+                                 ("both names", support.shipped_both_names(NOW, 40.0, 100.0, 20.0), ["seven_day", "seven_day_fable_5_1"])):
+            with self.subTest(name):
+                before = copy.deepcopy(saved)
+                self.assertIn("Fable 5.1 weekly", [w["label"] for w in saved["windows"]], "the older build's name")
+                shown = saved_reading("claude_cli", saved)
+                self.assertEqual([(w["id"], w["label"], w["short"]) for w in shown["windows"]],
+                                 list(zip(ids, ("Weekly", "Fable weekly"), ("7d", "Fable"))))
+                self.assertEqual(saved, before, "the saved reading itself is not changed")
+                self.assertIs(saved_reading("claude_cli", shown), shown, "a reading under the name now is returned as it is")
+                account = {"id": "alpha", "label": "Alpha", "provider": "claude_cli", "active": True, "health": "ok",
+                           "last_good_at": NOW - 60, "windows": shown["windows"]}
+                self.assertEqual([name for name, _used, _window in cli_policy.considered(account, SETTINGS)],
+                                 ["weekly", "Fable weekly"])
+        codex = support.shipped_reading(NOW, 10.0, 40.0, 96.0)
+        self.assertIs(saved_reading("codex", codex), codex, "only Claude's readings")
+
+    def test_the_menu_bar_calls_the_room_fable(self):
+        from accountdeck import pool
+        totals = pool.summarize({"accounts": [self.terminal(key, answer, active=key == "named keys")
+                                              for key, answer in self.answers(40, 50)]}, NOW)
+        lines = pool.tooltip_lines(totals, NOW)
+        self.assertEqual(lines[2], "Fable 1.0 of 2 accounts (50%)")
+        self.assertEqual([line for line in lines if line.startswith("Named keys")],
+                         ["Named keys (in use): weekly 60% · Fable 50% left"])
+
     def both_names(self, weekly, old_number, current):
-        """One answer that carries the Fable 5.1 limit under its named key and in its list, with numbers that differ."""
+        """One answer that carries the Fable limit under its named key and in its list, with numbers that differ."""
         return {**self.answers(weekly, old_number)[0][1], **self.answers(weekly, current)[1][1]}
 
     def test_an_answer_that_names_the_fable_limit_twice_gives_one_limit(self):
@@ -555,7 +604,7 @@ class FableLimitTest(unittest.TestCase):
         entry keeps the id it always had, so its saved samples stay one series."""
         reading = claude_usage(self.both_names(40, 100, 20), now=NOW)
         self.assertEqual([(w["id"], w["kind"], w["label"], w["used"]) for w in reading["windows"]],
-                         [("seven_day", "weekly", "Weekly", 40), ("seven_day_fable_5_1", "model", "Fable 5.1 weekly", 20)])
+                         [("seven_day", "weekly", "Weekly", 40), ("seven_day_fable_5_1", "model", "Fable weekly", 20)])
         for shape, answer in self.answers(40, 20):
             with self.subTest(shape=shape, said="once"):
                 self.assertEqual([w["id"] for w in claude_usage(answer, now=NOW)["windows"]],
@@ -601,8 +650,9 @@ class FableLimitTest(unittest.TestCase):
         from accountdeck.usage import saved_reading
         saved = support.shipped_both_names(NOW, 40.0, 100.0, 20.0)
         before = copy.deepcopy(saved)
-        self.assertEqual([(w["id"], w["used"]) for w in saved_reading("claude_cli", saved)["windows"]],
-                         [("seven_day", 40.0), ("seven_day_fable_5_1", 20.0)])
+        def kept(reading):
+            return [(w["id"], w["used"]) for w in saved_reading("claude_cli", reading)["windows"]]
+        self.assertEqual(kept(saved), [("seven_day", 40.0), ("seven_day_fable_5_1", 20.0)])
         self.assertEqual(saved, before, "the saved reading itself is not changed")
         week, fable, listed = saved["windows"][1:]
         raw = {entry["key"]: entry for entry in saved["raw_windows"]}
@@ -610,13 +660,14 @@ class FableLimitTest(unittest.TestCase):
                                     ("the named key alone", [week, fable], ("seven_day", "seven_day_fable"))):
             with self.subTest(name):
                 alone = {"checked": NOW, "windows": windows, "raw_windows": [raw[key] for key in keys]}
-                self.assertIs(saved_reading("claude_cli", alone), alone)
+                self.assertEqual(kept(alone), [(w["id"], w["used"]) for w in windows])
         sonnet = dict(fable, id="seven_day_sonnet", model="Sonnet", scope="Sonnet", label="Sonnet weekly")
         other = {"checked": NOW, "windows": [week, sonnet, listed],
                  "raw_windows": [raw["seven_day"], dict(raw["seven_day_fable"], key="seven_day_sonnet"), raw["limits[1].weekly_scoped.fable_5_1"]]}
-        self.assertIs(saved_reading("claude_cli", other), other, "another model's named key is another limit")
+        self.assertEqual(kept(other), [(w["id"], w["used"]) for w in other["windows"]], "another model's named key is another limit")
         unsaid = {"checked": NOW, "windows": [week, fable, listed]}
-        self.assertIs(saved_reading("claude_cli", unsaid), unsaid, "a reading that does not say where a number came from keeps it")
+        self.assertEqual(kept(unsaid), [(w["id"], w["used"]) for w in unsaid["windows"]],
+                         "a reading that does not say where a number came from keeps it")
         self.assertIs(saved_reading("codex", saved), saved, "only Claude's readings")
 
     def test_the_menu_bar_counts_the_fable_limit_in_both_shapes(self):
@@ -626,7 +677,7 @@ class FableLimitTest(unittest.TestCase):
         self.assertEqual((totals.capacity, totals.fable_capacity, pool.amount(totals.fable)), (2, 2, "1.0"))
 
     def test_an_account_with_no_fable_reading_is_judged_on_its_week(self):
-        """The limit appears in Claude's answer after the first Fable 5.1 message. Until then there is nothing to act on."""
+        """The limit appears in Claude's answer after the first Fable message. Until then there is nothing to act on."""
         week_only = {"seven_day": {"utilization": 30, "resets_at": self.WEEK}}
         _, over = self.answers(96, 10)[0]
         result = cli_policy.evaluate([self.terminal("alpha", over, active=True), self.terminal("beta", week_only)], SETTINGS, {}, NOW)
@@ -672,10 +723,10 @@ class FableLimitTest(unittest.TestCase):
         for pinned in ("Fable", "fable"):
             with self.subTest(pinned_model=pinned):
                 self.assertEqual([name for name, _used, _window in cli_policy.considered(alpha, {**SETTINGS, "pinned_model": pinned})],
-                                 ["weekly", "Fable 5.1 weekly"])
+                                 ["weekly", "Fable weekly"])
 
     def test_a_manual_choice_holds_against_a_fable_limit_that_is_out_but_not_against_the_week(self):
-        """With its Fable 5.1 limit out an account still works for the other models, so the user's own choice
+        """With its Fable limit out an account still works for the other models, so the user's own choice
         of it stands for the 2 hours. An account whose week is out works for nothing."""
         chosen = {"manual_at": NOW - 5}
         _, roomy = self.answers(30, 30)[0]

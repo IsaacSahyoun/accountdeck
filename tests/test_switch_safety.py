@@ -357,7 +357,7 @@ class TerminalInterruptedSwitchTest(DeckCase):
 
 
 class TerminalFableLimitTest(DeckCase):
-    """Auto-switch and the Fable 5.1 weekly limit, through the real engine: who is signed in afterwards. The
+    """Auto-switch and the Fable weekly limit, through the real engine: who is signed in afterwards. The
     rule's own answers are in `tests.test_readings` (the decision table and `FableLimitTest`)."""
 
     def setUp(self):
@@ -387,8 +387,25 @@ class TerminalFableLimitTest(DeckCase):
         self.read(self.roomy, weekly=40, fable=20)
         last = self.switched()
         self.assertEqual(last["kind"], "threshold")
-        self.assertIn("reached 95% of its Fable 5.1 weekly limit", last["reason"])
+        self.assertIn("reached 95% of its Fable weekly limit", last["reason"])
         self.assert_consistent("claude_cli", self.identity(self.full["id"]))
+
+    def test_a_reading_an_older_build_saved_goes_by_the_name_fable(self):
+        """Older builds saved the limit as "Fable 5.1 weekly". The store hands every reader the saved
+        reading under the name now (`usage.saved_reading`): the page's rows, the menu bar's line and the
+        reason auto-switch gives."""
+        from accountdeck.platform import menubar
+        now = self.engine.clock()
+        self.engine.store.observe(self.first["id"], support.shipped_reading(now, 10.0, 30.0, 96.0), at=now)
+        self.read(self.full, weekly=20, fable=20)
+        self.read(self.roomy, weekly=40, fable=20)
+        self.engine.bump()
+        state = self.engine.snapshot()
+        row = next(row for row in state["accounts"] if row["id"] == self.first["id"])
+        self.assertEqual([(w["label"], w["short"]) for w in row["windows"]], [("Weekly", "7d"), ("Fable weekly", "Fable")])
+        self.assertIn(f"{row['label']} Fable 96% used", menubar.tooltip(state, now))
+        self.assertNotIn("5.1", menubar.tooltip(state, now))
+        self.assertIn("reached 95% of its Fable weekly limit", self.switched()["reason"])
 
     def test_it_never_moves_to_an_account_whose_fable_limit_is_out(self):
         # `full` has the most room in its week, so the rule that looks at the week alone picks it
@@ -399,7 +416,7 @@ class TerminalFableLimitTest(DeckCase):
         self.assert_consistent("claude_cli", self.identity(self.roomy["id"]))
 
     def test_an_account_whose_week_ran_out_is_left_for_one_whose_fable_limit_alone_is_out(self):
-        """Found by the review of this change: the rule refused every account whose Fable 5.1 limit was out and
+        """Found by the review of this change: the rule refused every account whose Fable limit was out and
         kept the terminals on an account that answered for no model. Then the reverse: the account it moved to
         is not left again for the one whose week ran out."""
         others = [row for row in self.rows("claude_cli") if not row["active"]]
@@ -416,7 +433,7 @@ class TerminalFableLimitTest(DeckCase):
         last = self.switched()
         self.assertEqual(last["kind"], "out", "no limit refilled")
         self.assertIn(last["to"], [row["id"] for row in (self.full, self.roomy)])
-        self.assertRegex(last["reason"], r"reached its weekly limit; .+'s week can still be used, though its Fable 5\.1 weekly limit is at 100%\.$")
+        self.assertRegex(last["reason"], r"reached its weekly limit; .+'s week can still be used, though its Fable weekly limit is at 100%\.$")
         self.assert_consistent("claude_cli", self.identity(last["to"]))
         decision = cli_auto.decision(self.engine)
         self.assertEqual((decision["action"], decision["exhausted"]), ("none", True))
@@ -435,7 +452,7 @@ class TerminalFableLimitTest(DeckCase):
 
     def test_an_account_in_use_whose_fable_limit_is_out_is_still_read_often(self):
         """Its week can still run out, and only a new reading tells the rule so. Found by the review of this
-        change: the read schedule took a Fable 5.1 limit at 100% for an account with nothing left to learn."""
+        change: the read schedule took a Fable limit at 100% for an account with nothing left to learn."""
         from accountdeck import scheduler
 
         def schedule(**reading):
@@ -513,7 +530,7 @@ class TerminalFableLimitTest(DeckCase):
         """Found by the third review of this change. The 2 hours ran from the moment of the choice, whichever
         account was in use afterwards. Here the chosen account's week runs out, auto-switch moves the terminals
         to the one account that is ready, and the hold then kept them on it (an account the user never chose,
-        with no Fable 5.1 left) after the better account had been read again. Then the reverse: an Undo is a
+        with no Fable left) after the better account had been read again. Then the reverse: an Undo is a
         new choice, and it is held."""
         hold = "Your manual choice is held for 2 hours"
         self.act("claude_cli", "switch", self.full["id"])

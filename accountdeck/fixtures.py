@@ -36,7 +36,7 @@ SCENARIOS = {
     "needs-signin": "Claude Code: one account reauth_required, one expired (last known 3 h); Codex: one reauth_required",
     "blocked-cloudflare": "error.code=blocked on two inactive accounts, state unchanged, last-known readings",
     "stale": "Readings 42 min / 3 h old, age_tier aging/stale, best state unknown",
-    "fable-binding": "Fable 5.1 weekly binding at 92 % used with the account-wide weekly at 40 %",
+    "fable-binding": "Fable weekly binding at 92 % used with the account-wide weekly at 40 %",
     "resetting": "A reset passed 2 min ago (percent hidden) and expected_refill on a stale account",
     "rate-limited": "paused_until set, checks paused copy",
     "outage": "Claude outage with incident text, recommendation kept",
@@ -71,7 +71,7 @@ DEFAULT_SETTINGS = {
 _SHAPES = {
     "five_hour": ("session", "5-hour", "5h", None, 300),
     "seven_day": ("weekly", "Weekly", "7d", None, 10080),
-    "seven_day_fable": ("model", "Fable 5.1 weekly", "Fable 5.1", "Fable", 10080),
+    "seven_day_fable": ("model", "Fable weekly", "Fable", "Fable", 10080),
     "seven_day_oauth_apps": ("other", "Connected apps weekly", "Apps", None, 10080),
     "seven_day_cowork": ("other", "Cowork weekly", "Cowork", None, 10080),
     "codex:primary": ("session", "5-hour", "5h", None, 300),

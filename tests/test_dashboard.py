@@ -713,7 +713,7 @@ class OtherClientsRowsTest(DashboardTestCase):
 
 class SwitchNotchTest(DashboardTestCase):
     """The notch on a bar marks where auto-switch moves the terminals on. It is drawn on the limits the rule
-    acts on (`cli_policy.considered`), the weekly one and the Fable 5.1 weekly one, and on no other model's."""
+    acts on (`cli_policy.considered`), the weekly one and the Fable weekly one, and on no other model's."""
 
     def test_the_notch_is_on_the_weekly_and_the_fable_limit_only(self):
         state = fixtures.example_state("typical", now=time.time())
@@ -725,7 +725,7 @@ class SwitchNotchTest(DashboardTestCase):
             def model(wid, name, label, binding=False):
                 return dict(copy.deepcopy(weekly), id=wid, kind="model", model=name, label=label, short=name, binding=binding)
             # a row shows another model's limit only while it is the one that binds
-            account["windows"] = [weekly, model("seven_day_fable", "Fable", "Fable 5.1 weekly"),
+            account["windows"] = [weekly, model("seven_day_fable", "Fable", "Fable weekly"),
                                   model("seven_day_sonnet", "Sonnet", "Sonnet weekly", binding=True)]
         # the row in the terminal table, and the card "In use by your terminals", whose bars carry their names
         # for a screen reader ("Weekly: 70% used")
@@ -735,8 +735,8 @@ class SwitchNotchTest(DashboardTestCase):
                  "[part.querySelector('.meter').getAttribute('aria-valuetext').split(':')[0], !!part.querySelector('.meter-mark')]).sort()]")
 
         def want(sonnet):
-            return [[["Weekly", True], ["Fable 5.1 weekly", True], ["Sonnet weekly", sonnet]],
-                    [["Fable 5.1 weekly", True], ["Sonnet weekly", sonnet], ["Weekly", True]]]
+            return [[["Weekly", True], ["Fable weekly", True], ["Sonnet weekly", sonnet]],
+                    [["Fable weekly", True], ["Sonnet weekly", sonnet], ["Weekly", True]]]
         server = self.show(state)
         self.assertEqual(self.browser.js(marks), want(False))
         # A settings bundle from an older build can carry a pinned model, and the rule then acts on its limit
@@ -787,9 +787,9 @@ class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
     def test_the_claude_code_table_has_a_weekly_and_a_fable_column(self):
         self.show(fixtures.example_state("typical", now=time.time()))
         self.assertEqual(self.browser.js("[...document.querySelectorAll('#accounts .table-head-limits > span')].map((s) => s.textContent)"),
-                         ["Weekly", "Fable 5.1 weekly"])
+                         ["Weekly", "Fable weekly"])
         self.assertEqual(self.browser.js("[...document.querySelectorAll('#accounts-sort option')].map((o) => o.textContent)"),
-                         ["Most room left", "Most Fable 5.1 room", "Most weekly room", "Soonest weekly reset", "My order"])
+                         ["Most room left", "Most Fable room", "Most weekly room", "Soonest weekly reset", "My order"])
         cells = self.browser.js(self.CELLS)
         self.assertEqual(sorted(set(cells)), [2], cells)
 
@@ -800,7 +800,7 @@ class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
         self.browser.click("[...document.querySelectorAll('#settings-tabs [role=tab]')].find((t) => t.textContent.trim() === 'Auto-Switch')")
         self.browser.wait("document.getElementById('settings-pane-title').textContent === 'Auto-Switch'", "the Auto-Switch tab")
         words = self.browser.js("document.getElementById('settings-body').textContent")
-        self.assertIn("Of its weekly or Fable 5.1 weekly limit.", words)
+        self.assertIn("Of its weekly or Fable weekly limit.", words)
         self.assertNotIn("5-hour", words)
 
 
@@ -831,18 +831,18 @@ class InUseCardTest(DashboardTestCase):
         card = self.card()
         self.assertEqual((card["number"], card["caption"].split(" · ")[0]), ("70%used", "Weekly limit"))
         self.assertEqual(card["limits"], [[None, None, None, "Weekly: 70% used"],
-                                          ["Fable 5.1 weekly", "Not reported", None, None]])
+                                          ["Fable weekly", "Not reported", None, None]])
         self.assertEqual((card["words"].count("70%"), card["words"].count("Weekly")), (1, 1), card["words"])
 
     def test_the_named_limit_comes_first_when_it_is_not_the_weekly_one(self):
         def fable_is_closest_to_full(weekly, windows, now):
-            windows.append(dict(weekly, id="seven_day_fable", kind="model", label="Fable 5.1 weekly", short="Fable 5.1",
+            windows.append(dict(weekly, id="seven_day_fable", kind="model", label="Fable weekly", short="Fable",
                                 model="Fable", used=96.0, left=4.0, binding=True))
             weekly.update(used=40.0, left=60.0, binding=False)
         card = self.card(fable_is_closest_to_full)
-        self.assertEqual((card["number"], card["caption"].split(" · ")[0]), ("96%used", "Fable 5.1 weekly limit"))
+        self.assertEqual((card["number"], card["caption"].split(" · ")[0]), ("96%used", "Fable weekly limit"))
         self.assertEqual([limit[0::2] + limit[3:] for limit in card["limits"]],
-                         [[None, None, "Fable 5.1 weekly: 96% used"], ["Weekly", "40% used", "Weekly: 40% used"]])
+                         [[None, None, "Fable weekly: 96% used"], ["Weekly", "40% used", "Weekly: 40% used"]])
 
     def test_a_limit_that_just_refilled_keeps_its_line(self):
         """The caption beside the number gives a countdown. "Refilled at" is only in the limit's own line."""

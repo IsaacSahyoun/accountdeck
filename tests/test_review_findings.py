@@ -135,7 +135,7 @@ def reading(key, label, weekly_used, weekly_reset=NOW + 3 * 86400, *, fable=None
     """One terminal account as the rule gets it. Claude has no 5-hour limit: a weekly limit, and Fable's with `fable`."""
     windows = [{"id": "seven_day", "kind": "weekly", "used": weekly_used, "reset": weekly_reset}]
     if fable is not None:
-        windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable 5.1 weekly",
+        windows.append({"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable weekly",
                         "used": fable, "reset": NOW + 3 * 86400})
     return {"id": key, "label": label, "active": active, "forecast": {}, "owner": "v2", "excluded": False,
             "health": "ok", "live_expired": False, "last_good_at": NOW - 60, "out": out, "windows": windows}
