@@ -803,6 +803,17 @@ class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
         self.assertIn("Of its weekly or Fable weekly limit.", words)
         self.assertNotIn("5-hour", words)
 
+    def test_no_words_of_the_page_call_the_fable_limit_fable_5_1(self):
+        """Isaac, 2026-11-14: it is a Fable limit, not Fable 5.1's. Every sentence the page can write is in
+        `AD.format.STRINGS`, and the names of the limits come with the accounts."""
+        self.show(fixtures.example_state("typical", now=time.time()))
+        sentences = self.browser.js("JSON.stringify(AD.format.STRINGS)")
+        self.assertIn("Fable weekly", sentences)
+        self.assertNotIn("Fable 5", sentences)
+        shown = self.browser.js("document.body.textContent")
+        self.assertIn("Fable weekly", shown)
+        self.assertNotIn("Fable 5", shown)
+
 
 class InUseCardTest(DashboardTestCase):
     """The card "In use by your terminals" says a limit once. Its big number names the limit closest to full, and
