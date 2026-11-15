@@ -69,20 +69,21 @@ def _forecast(engine, row, now):
     Time the app did not run since the last reading is not counted (`Engine.idle_since`). The Mac slept,
     so the account was not used from here, and a rate carried across the sleep moved the terminals at the
     wake. With the app running and no reading coming, the time counts: that is what the forecast is for.
-    "Since" goes by the order the readings were stored in, not by their dates. With the Mac's clock set back,
-    a reading from before the terminals came is dated after they came, and the engine starts the forecast
-    over (`Engine._awake`). A reading dated after now, by a change too small for the engine to see, counts
-    as taken now."""
+    "Since" goes by the order this run of the app stored the readings in (`Store.taken`), not by their dates.
+    With the Mac's clock set back, a reading from before the terminals came is dated after they came, and the
+    engine starts the forecast over (`Engine._awake`). A reading dated after now, by a change too small for
+    the engine to see, counts as taken now. The file's own order does not say it either: removing an account
+    takes rows out of it, and history brought over from another computer puts old readings in."""
     came = engine.forecast_from.get("claude_cli")
     if came is None:
         return {}
     planned = engine.scheduler.planned(row["id"])
     wait = engine.scheduler.governor.delay(("claude_cli", row["identity"]), now, urgent=True)
     horizon = min(max((planned or now) - now, wait, 0.0) + FORECAST_MARGIN, FORECAST_CAP)
-    result = {}
+    since, result = now - cli_policy.FORECAST_SPAN - 600, {}
     for window in (row["last_good_usage"] or {}).get("windows", []):
         if isinstance(window, dict) and isinstance(window.get("id"), str):
-            readings = engine.store.readings(row["id"], window["id"], since=now - cli_policy.FORECAST_SPAN - 600, after=came)
+            readings = [reading for reading in engine.store.taken(row["id"], window["id"], came) if reading["at"] >= since]
             idle = engine.idle_since(readings[-1]["at"]) if readings else 0.0
             value = cli_policy.forecast(readings, now, horizon, idle)
             if value is not None:
@@ -93,8 +94,8 @@ def _forecast(engine, row, now):
 def inputs(engine):
     rows = []
     now = engine.clock()
-    waits = engine.cli.renewal_waits()
-    for row in engine.store.accounts():
+    accounts, waits = engine.cli.rows_and_waits()
+    for row in accounts:
         if row["provider"] != "claude_cli":
             continue
         active = row["identity"] == engine.active_identity.get("claude_cli")

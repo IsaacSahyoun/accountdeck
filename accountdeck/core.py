@@ -3,6 +3,7 @@ the SQLite store (schema v2), write-ahead file transactions and the per-user own
 from __future__ import annotations
 
 import base64
+import collections
 import fcntl
 import hashlib
 import json
@@ -322,6 +323,7 @@ class FrozenAccountError(DeckError):
 EVENT_LIMIT = 500
 HISTORY_LIMIT = 700
 SNAPSHOT_EVERY = 900                     # one v1-style snapshot per account per quarter hour
+TAKEN_KEPT = 64                          # readings of one window kept in memory for the forecast: over 3 hours of reads
 GENERATION_ROWS = 10                     # metadata rows kept per account (the vault ring holds 3)
 _DAY = 86400
 _SNAPSHOT_DAYS, _READING_DAYS, _REFILL_DAYS, _ALERT_DAYS = 90, 7, 30, 7
@@ -406,6 +408,9 @@ class Store:
         self.clock = clock
         self.clients = None if clients is None else tuple(clients)
         self.lock = threading.RLock()
+        # The readings this run of the app has stored, by account and window, in the order they came, and how
+        # many readings so far (`observe`, `taken`). In memory only: a new run starts with none.
+        self._taken, self._takes = {}, 0
         self.db = sqlite3.connect(self.root / "accounts.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         try:
@@ -550,12 +555,16 @@ class Store:
             for table in ("snapshots", "readings", "refills", "generations", "alerts"):
                 self.db.execute(f"DELETE FROM {table} WHERE account=?", (key,))
             self.db.commit()
+            for kept in [kept for kept in self._taken if kept[0] == key]:
+                del self._taken[kept]
 
     # ---- readings ----
     def observe(self, key, usage, *, at=None):
         """Persist a successful reading: the account's last good reading, one `readings` row per
         window with a known percentage (kept 7 days for pace, trend and history) and at most one
-        v1-style snapshot per quarter hour (kept 90 days). Clears the account's error."""
+        v1-style snapshot per quarter hour (kept 90 days). Clears the account's error. This is the one way a
+        reading counts as taken by this run of the app (`taken`). History brought over from another computer
+        is written to the file without it (`move_import._copy_history`)."""
         now = self.clock()
         at = now if at is None else at
         payload = _encode(usage)
@@ -574,21 +583,32 @@ class Store:
             self.db.execute("DELETE FROM snapshots WHERE at < ?", (now - _SNAPSHOT_DAYS * _DAY,))
             self.db.execute("DELETE FROM readings WHERE at < ?", (now - _READING_DAYS * _DAY,))
             self.db.commit()
+            self._takes += 1
+            for _, window, _, used, reset in rows:
+                kept = self._taken.setdefault((key, window), collections.deque(maxlen=TAKEN_KEPT))
+                kept.append((self._takes, at, used, reset))
 
-    def readings(self, key, window, since=None, after=0):
-        """[{"at", "used", "reset"}] of one window, oldest first. With `after`, a `reading_mark`, only the ones
-        stored since that mark was taken."""
+    def readings(self, key, window, since=None):
+        """[{"at", "used", "reset"}] of one window, oldest first."""
         with self.lock:
             rows = self.db.execute("SELECT at, used, reset FROM readings WHERE account=? AND window_id=? AND at>=? "
-                                   "AND id>? ORDER BY at, id", (key, window, since or 0, after)).fetchall()
+                                   "ORDER BY at, id", (key, window, since or 0)).fetchall()
         return [dict(row) for row in rows]
 
     def reading_mark(self):
-        """A mark for `readings(after=...)`: the newest reading stored so far, of any account. It goes by the
-        order readings were stored in, which the Mac's clock being set back does not change. A reading's date
-        does: one from before the change is dated after the ones that follow it."""
+        """A mark for `taken`: how many readings this run of the app has stored so far, of any account. The
+        count only goes up. A reading's date does not say what came first once the Mac's clock was set back,
+        and neither does its place in the file: removing an account takes the newest rows out, and the rows
+        stored next get their ids."""
         with self.lock:
-            return self.db.execute("SELECT COALESCE(MAX(id), 0) FROM readings").fetchone()[0]
+            return self._takes
+
+    def taken(self, key, window, after):
+        """[{"at", "used", "reset"}] of one window, in the order they were stored: the readings this run of the
+        app has stored since the mark `after` was taken (`reading_mark`), the newest `TAKEN_KEPT` of them."""
+        with self.lock:
+            return [{"at": at, "used": used, "reset": reset}
+                    for count, at, used, reset in self._taken.get((key, window), ()) if count > after]
 
     def history(self, key, since=None, limit=HISTORY_LIMIT):
         """/api/history payload, oldest first, each list capped at limit (at most 700):

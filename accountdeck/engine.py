@@ -139,8 +139,8 @@ class Engine:
         self.plans, self.login = {}, None
         self.active_identity = {name: None for name in self.providers}
         self.identity_known = {name: False for name in self.providers}
-        # The newest reading in the store when each client came to its account in use, as far as this run of
-        # the app saw it (`Store.reading_mark`. None: nobody signed in so far), and each stretch of `IDLE_GAP`
+        # How many readings this run of the app had stored when each client came to its account in use, as far
+        # as it saw that (`Store.reading_mark`. None: nobody signed in so far), and each stretch of `IDLE_GAP`
         # or more in which the app did not run: (when it ran again, how long it had not). The forecast of an
         # account's usage reads both (`cli_auto._forecast`). Kept in memory: a new run starts the count again.
         # `_awake` notes the gaps, from one look at the clock to the next (`_looked`).
@@ -284,16 +284,16 @@ class Engine:
         """Notes the account a client is signed in to (None: signed out). The one place that writes it, so the
         mark of when the client came to that account follows every change of it: one `sense_active` reads,
         and a switch of Claude Code that just ended (`switch_cli.perform`), which notes it before the next
-        look. The mark is the newest reading stored by then, not a time: the forecast is made from the
-        readings stored after it, and the dates of readings do not say that once the clock was set back."""
+        look. The mark counts the readings this run had stored by then, and is not a time: the forecast is made
+        from the readings stored after it, and the dates of readings do not say that once the clock was set back."""
         if identity != self.active_identity[name]:
             self.forecast_from[name] = self._mark()
         self.active_identity[name], self.identity_known[name] = identity, True
 
     def _mark(self):
-        """The newest reading stored so far (`Store.reading_mark`), or None when the store cannot say: then no
-        forecast is made until the next change of account. A switch that just ended notes its account through
-        this, and does not fail for it."""
+        """How many readings this run has stored so far (`Store.reading_mark`), or None when the store cannot
+        say: then no forecast is made until the next change of account. A switch that just ended notes its
+        account through this, and does not fail for it."""
         try:
             return self.store.reading_mark()
         except Exception as exc:

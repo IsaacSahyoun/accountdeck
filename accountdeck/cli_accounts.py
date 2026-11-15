@@ -474,6 +474,17 @@ class CLIAccounts:
         waits = self.store.setting(RENEWAL_WAITS, {})
         return waits if isinstance(waits, dict) else {}
 
+    def rows_and_waits(self):
+        """(every saved account's row, `renewal_waits`) as they are at one moment, for the auto-switch rule
+        (`cli_auto.inputs`). A read that ends at a refused renewal writes the wait and then the pause on the
+        row (`_read`), so at every moment such a pause has its wait. Two looks at two moments do not show
+        that: the waits from before that read and the row from after it are a pause with no wait, and the rule
+        took the account for one whose usage checks Claude paused. The store's lock keeps every write out
+        between the two looks."""
+        with self.store.lock:
+            waits = self.renewal_waits()
+            return self.store.accounts(), waits
+
     def _blocked(self, key, until):
         """Notes until when no read of the account can be taken (None: a read of it worked), for the auto-switch
         rule (`cli_auto.inputs`). It has a setting of its own, which a read alone writes, under one lock. A
@@ -556,14 +567,17 @@ class CLIAccounts:
                 paused = current["paused_until"] if current else row["paused_until"]
                 if exc.code == "rate_limited":
                     paused = now + (exc.retry_after or 900)
-                self._settle_read(key, {"checked": now}, error="Terminal usage is unavailable. Your last reading is kept.",
-                                  error_code=exc.code, paused_until=paused)
                 # A read that ended at the renewal of the login says until when no read of the account can be
                 # taken (`_waits`). The auto-switch rule passes the account over until then (`cli_policy._row`).
-                # Claude can answer a renewal with HTTP 429 and say to wait longer than that. The pause above
+                # Claude can answer a renewal with HTTP 429 and say to wait longer than that. The pause below
                 # keeps every read off until then, so the login is not renewed before it ends either.
+                # The wait is written before the pause. A check that looks between the two writes, or the app
+                # dying there, finds a wait with no pause, and the rule passes that account over all the same.
+                # The other way round it found a pause with no wait, and took the account for a paused one.
                 if getattr(exc, "renewal_wait", None):
                     self._blocked(key, max(exc.renewal_wait, paused or 0))
+                self._settle_read(key, {"checked": now}, error="Terminal usage is unavailable. Your last reading is kept.",
+                                  error_code=exc.code, paused_until=paused)
                 if cls is not None:
                     self.engine.observed["claude_cli"].record(key, cls, at=now)
                 return exc.code
