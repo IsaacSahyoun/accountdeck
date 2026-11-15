@@ -890,10 +890,12 @@ class TerminalFailedSwitchTest(DeckCase):
 
     def test_a_try_within_the_hour_of_the_last_one_counts_on_from_it(self):
         key = self.wanted["id"]
-        # A second try comes within 15 minutes of the first, and a later one within the hour of the last. The
-        # last three steps set the Mac's clock back, so the note is dated after now.
+        # A second try comes within 15 minutes of the first, and a later one within the hour of the last. From
+        # the step of -60 on, the Mac's clock was set back and the note is dated after now. A first try dated
+        # after now is never counted on from: the rule stops waiting for it once it is over 90 seconds off, so
+        # the next try comes at once, and counting it as the second passed the account over with no wait.
         for wait, count in ((0, 1), (100, 2), (3500, 3), (3500, 4), (3700, 1), (1000, 1), (600, 2),
-                            (-60, 3), (-3700, 1), (-1000, 1)):
+                            (-60, 3), (-3700, 1), (-1000, 1), (-200, 1), (-30, 1), (300, 2)):
             with self.subTest(clock_moved_by=wait):
                 self.engine.clock.advance(wait)
                 cli_auto.note_try(self.engine, key)
@@ -1038,23 +1040,87 @@ class TerminalFailedSwitchTest(DeckCase):
         self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]], 1))
         self.assertEqual(self.hold(), ("none", False, self.ONCE.format(self.wanted["label"])))
 
-    def test_the_page_is_not_told_a_switch_was_tried_while_that_switch_runs(self):
-        """Found by the second review of this change. The note is written when the switch starts, so a page that
-        asked while the switch ran was told it "was tried a moment ago and is tried once more"."""
+    def said(self):
+        """What the page is told about `wanted`: the hold, and why its row is skipped."""
+        auto = self.engine.snapshot()["providers"]["claude_cli"]["autoswitch"]
+        return auto["hold"], next(row["skip"] for row in auto["next_up"] if row["id"] == self.wanted["id"])
+
+    def watch_the_page(self):
+        """Has every switch from here on note what the page is told while it runs: (which try, hold, skip)."""
         real, seen = switch_cli.perform, []
 
-        def said():
-            return self.engine.snapshot()["providers"]["claude_cli"]["autoswitch"]["hold"]
-
         def perform(*args, **how):
-            seen.append((self.tries(self.wanted), said()))
+            seen.append((self.tries(self.wanted), *self.said()))
             return real(*args, **how)
+        patch = mock.patch.object(switch_cli, "perform", perform)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return seen
+
+    def test_the_page_is_not_told_a_switch_was_tried_while_that_switch_runs(self):
+        """Found by the second and third reviews of this change. The note is written when the switch starts, so
+        a page that asked while the switch ran was told it "was tried a moment ago and is tried once more",
+        and during a second try that its account is skipped and the next one is next."""
+        seen = self.watch_the_page()
         self.refuse(self.wanted)
-        with mock.patch.object(switch_cli, "perform", perform):
-            self.check(1)
-        self.assertEqual(seen, [(1, None)])
+        self.check(1)
+        self.assertEqual(seen, [(1, None, None)])
         # The reverse: once that switch has failed, the page says so.
-        self.assertEqual(said(), self.ONCE.format(self.wanted["label"]))
+        self.assertEqual(self.said(), (self.ONCE.format(self.wanted["label"]), None))
+        self.later(100)
+        self.check(1)
+        self.assertEqual(seen[1:], [(2, None, None)])
+        self.assertEqual(self.said(), (None, "switch tried 1 min ago"))
+
+    def test_the_page_is_not_told_so_while_the_switch_runs_beside_another_clients_wait(self):
+        """Found by the third review of this change, by two reviewers apart. A terminal switch that runs beside
+        another client's wait is not the operation the page shows as pending, so the page was still told it
+        "was tried a moment ago"."""
+        waiting = support.WaitingOperation("codex")
+        self.addCleanup(waiting.release.set)
+        Engine.submit(self.engine, waiting)
+        self.wait_for_phase("waiting_idle")
+        seen = self.watch_the_page()
+        self.refuse(self.wanted)
+        cli_auto.tick(self.engine)
+        deadline = time.monotonic() + 10
+        while not (seen and self.engine.runner.free_for("claude_cli", beside_waits=True)) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(self.engine.snapshot()["pending"]["provider"], "codex")
+        self.assertEqual(seen, [(1, None, None)])
+        self.assertEqual(self.said(), (self.ONCE.format(self.wanted["label"]), None))
+        waiting.release.set()
+        self.assertTrue(self.engine.runner.wait(30))
+
+    def then_the_account_they_moved_to_runs_out(self, wait):
+        """The terminals are on `second`. `wait` seconds later it has run out, and one failure stops the switch
+        to `wanted`. That failure is the first of a new need, so it is waited out and tried once more."""
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+        self.started.clear()
+        self.later(wait, second=100)
+        self.check(2)
+        self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]], 1))
+        self.assertEqual(self.hold(), ("none", False, self.ONCE.format(self.wanted["label"])))
+
+    def test_a_try_after_the_user_moved_the_terminals_is_a_first_try_again(self):
+        """Found by the third review of this change. The count went on by the clock alone: 5 minutes after a
+        first try, with the terminals moved by hand to another account since, one passing failure was counted
+        as the second in a row and the wanted account was passed over for 15 minutes."""
+        self.refuse(self.wanted)
+        self.check(1)
+        self.assertEqual(self.act("claude_cli", "switch", self.second["id"])["outcome"], "success")
+        self.assertEqual(self.tries(self.wanted), 1)
+        self.then_the_account_they_moved_to_runs_out(300)
+
+    def test_a_try_after_the_next_account_was_used_is_a_first_try_again(self):
+        """Found by the third review of this change. Two tries failed and the next account was used. When that
+        one ran out 40 minutes later, one passing failure was counted as the third in a row."""
+        self.refuse(self.wanted)
+        self.check(1)
+        self.later(100)
+        self.check(3)
+        self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]] * 2 + [self.second["id"]], 2))
+        self.then_the_account_they_moved_to_runs_out(2500)
 
     def test_a_check_with_nobody_signed_in_leaves_the_notes_alone(self):
         """A check takes out the note of the account in use. With Claude Code signed out there is none."""

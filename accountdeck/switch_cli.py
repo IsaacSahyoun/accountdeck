@@ -261,7 +261,7 @@ class CLISwitch(Operation):
         if self.auto_kind != "manual":
             # Before anything else, so the note is there whatever stops this switch. Only the end of a switch
             # that worked takes it out (below). A switch by hand is not noted: the user sees it fail.
-            cli_auto.note_try(self.engine, self.account)
+            cli_auto.note_try(self.engine, self.account, self.leaving)
             # This switch asks the provider itself whose login is live. A lookup that failed is not repeated for
             # a minute (`CLIAccounts.owner`), and each check asks again once that minute is over. So the second
             # try could meet a failure under a minute old and fail on it without asking, with the provider

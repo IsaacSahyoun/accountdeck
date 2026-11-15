@@ -46,7 +46,8 @@ class CLIAccounts:
 
     def owner(self, credentials, *, ask_again=False):
         """The accountUuid this token belongs to, or None when the provider cannot say right now. A failed
-        lookup is not repeated for a minute, unless `ask_again`."""
+        lookup is not repeated for a minute, unless `ask_again`. An automatic switch empties `owner_retry`
+        when it starts, so its own lookups ask (`CLISwitch.run`)."""
         fp = fingerprint(credentials)
         if fp in self.owners:
             return self.owners[fp]

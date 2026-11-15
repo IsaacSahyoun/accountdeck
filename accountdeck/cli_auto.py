@@ -24,25 +24,33 @@ def history(engine):
             engine.store.set_setting("cli_history", value)
 
 
-def note_try(engine, key):
-    """Notes that an automatic switch to `key` starts now, under `tried` in the history: the time, and which try
-    in a row it is. `CLISwitch` calls this before it does anything else and takes the note out once the switch
-    worked, and `tick` takes out the note of the account in use. The rule waits `cli_policy.AGAIN` after a
-    first try and passes the account over for `cli_policy.RETRY` after a second in a row
-    (`cli_policy.evaluate`, `_row`). An older note says nothing.
+def note_try(engine, key, leaving=None):
+    """Notes that an automatic switch to `key` starts now, under `tried` in the history: the time, which try in
+    a row it is, and the account it is leaving (`leaving` is that account's identity, as `CLISwitch` has it).
+    `CLISwitch` calls this before it does anything else and takes the note out once the switch worked, and
+    `tick` takes out the note of the account in use. The rule waits `cli_policy.AGAIN` after a first try and
+    passes the account over for `cli_policy.RETRY` after a second in a row (`cli_policy.evaluate`, `_row`). An
+    older note says nothing.
 
-    A try counts on from the last one while that one is recent. After a first try the second is due 90
-    seconds later, so one that comes more than `RETRY` after it is a first try again: the second was never
-    made (the user moved the terminals, or the need went away), and counting on made one passing failure
-    pass the account over. After a second try the next is due `RETRY` later, or 30 minutes later after a
-    refused renewal, so those count on within the hour."""
+    A try counts on from the last one while both are the same need: the terminals are still on the account
+    the last try was leaving, and the last try is recent. Once the terminals have moved to another account,
+    a failure of the switch that account needs is a first failure, and counting on made one passing failure
+    pass the wanted account over. After a first try the second is due 90 seconds later, so one that comes
+    more than `RETRY` after it is a first try again: the need went away meanwhile. After a second try the
+    next is due `RETRY` later, or 30 minutes later after a refused renewal, so those count on within the
+    hour. A first try dated after now (the Mac's clock was set back) is not counted on from: the rule stops
+    waiting for it once it is over `AGAIN` off (`cli_policy._row`), so the next try can come at once, and it
+    is a first try again."""
     now = engine.clock()
+    row = engine.store.find("claude_cli", leaving) if leaving is not None else None
+    origin = row["id"] if row is not None else None
     with history(engine) as past:
         notes = past.get("tried") if isinstance(past.get("tried"), dict) else {}
         last = cli_policy.tried(notes.get(key))
         recent = last is not None and abs(now - last[0]) < (cli_policy.RETRY if last[1] == 1 else cli_policy.HOUR)
-        count = last[1] + 1 if recent else 1
-        past["tried"] = {**notes, key: {"at": now, "count": count}}
+        ahead = last is not None and last[1] == 1 and now < last[0]
+        count = last[1] + 1 if recent and not ahead and notes[key].get("from") == origin else 1
+        past["tried"] = {**notes, key: {"at": now, "count": count, "from": origin}}
 
 
 FORECAST_MARGIN, FORECAST_CAP = 60.0, 1800.0
@@ -90,18 +98,21 @@ def decision(engine, settings=None):
                                engine.store.setting("cli_history", {}), engine.clock())
 
 
-def state(engine, switching=False):
+def state(engine, running=()):
     """The state's `providers.claude_cli.autoswitch` block: the decision and the order under each mode
-    (one pass over the store, evaluated four times). While an operation of Claude Code runs (`switching`) the
-    rule decides nothing and no hold is given: the note of an automatic switch is written when it starts, so
-    the hold said that switch "was tried a moment ago and is tried once more" while it ran."""
+    (one pass over the store, evaluated four times). `running` holds the accounts of the operations of Claude
+    Code that have not ended. The note of an automatic switch is written when it starts, so while it runs its
+    note is no failed try yet, and the state is worked out without it. With the note, the page was told that
+    the running switch "was tried a moment ago", and during a second try that its account is skipped."""
     settings, rows = engine.prefs.public(), inputs(engine)
     history, now = engine.store.setting("cli_history", {}), engine.clock()
+    if isinstance(history.get("tried"), dict):
+        history = {**history, "tried": {key: note for key, note in history["tried"].items() if key not in running}}
     result = cli_policy.evaluate(rows, settings, history, now)
     return {"enabled": settings["cli_autoswitch"], "threshold": settings["cli_threshold"],
             "order_mode": settings["cli_order"], "early_switch": settings["cli_early_switch"],
             "next_up": result["next_up"], "last": history.get("last"),
-            "hold": engine.cli.adapter.readonly_reason or (None if switching else result["hold"]),
+            "hold": engine.cli.adapter.readonly_reason or result["hold"],
             "previews": {mode: cli_policy.evaluate(rows, {**settings, "cli_order": mode}, history, now)["next_up"]
                          for mode in ("soonest_reset", "most_room", "manual")}}
 

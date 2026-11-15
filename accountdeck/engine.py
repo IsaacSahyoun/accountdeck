@@ -633,7 +633,9 @@ class Engine:
                 "running": self._running(name, machine, now),
                 "switching": bool(pending and pending["provider"] == name and pending["phase"] not in TERMINAL_PHASES),
                 "paused": bool(self.prefs.get("refresh_paused")) or self.scheduler.provider_pause.get(name, False)}
-        providers["claude_cli"].update(autoswitch=cli_auto.state(self, providers["claude_cli"]["switching"]),
+        # The accounts of Claude Code's operations that are running now, in the main slot or beside a wait.
+        running = {op.account for op in self.runner.unfinished("claude_cli")}
+        providers["claude_cli"].update(autoswitch=cli_auto.state(self, running),
                                         enrollment=copy.deepcopy(self.cli.phase),
                                         readonly_reason=self.cli.adapter.readonly_reason)
         raw = {"app": "accountdeck2", "version": __version__, "rev": rev, "mode": self.mode, "safe_mode": safe_mode(),

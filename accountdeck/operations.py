@@ -287,6 +287,13 @@ class OperationRunner:
         with self.lock:
             return self._lane(provider, beside_waits) is not None
 
+    def unfinished(self, provider):
+        """The operations of `provider` that have not ended: the one in the main slot and the one beside it.
+        `pending` shows the main slot only, so a terminal switch beside another client's wait is not in it."""
+        with self.lock:
+            return [op for op in (self._current, self._beside)
+                    if op is not None and op.provider == provider and not op.done_event.is_set()]
+
     def submit(self, op):
         """Start op and return its id; `busy` while another operation runs, unless op may run beside that
         one's wait (the class docstring). An operation left in `needs_reconfirm` is replaced, and the
