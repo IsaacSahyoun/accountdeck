@@ -60,9 +60,9 @@ that account still works for the other models. Change it in
 skipped while the pause lasts and its reading is over 3 minutes old, so a switch never waits on it while
 another account is ready. That holds at 99% too: an account that can still be used up is used then, where
 older builds waited for the pause to end. The 99% is the last reading of the account in use. When that
-account cannot be read either (its reading is over 3 minutes old and its own checks are paused, or its
-reading is over 15 minutes old), it is not used on unseen: once it is past your threshold, an account that
-can still be used up is used. When the account in use has stopped working and every account it
+account cannot be read either (its own checks are paused and its reading is over 3 minutes old), it is
+not used on unseen: once it is past your threshold, an account that can still be used up is used. When
+the account in use has stopped working and every account it
 could move to is paused, it moves to the first of them on that account's last reading, however old, and
 the reason it shows says how old. Staying would leave Claude Code with nothing that works. A weekly or
 Fable limit that was used up at an account's last reading, taken before that limit's reset time, counts

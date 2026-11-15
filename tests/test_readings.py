@@ -844,20 +844,22 @@ class PausedAccountTest(unittest.TestCase):
 
     def test_an_account_in_use_that_cannot_be_read_is_not_used_on_unseen(self):
         """Found by the second and the third review of this change. The wait for a paused account ends at 99% by
-        the reading of the account in use. Claude pauses the reads of that account too, and a read can fail for
-        15 minutes. Its reading stays where it was then, whatever is used, and the terminals waited on it with
-        Gamma ready until it had run out. The installed build (2.2.0, commit dadbf00) does the same. An account
-        in use that is past the threshold and cannot be read counts as at the ceiling: with a forecast (the
-        second review), and without one (the third: readings that did not rise before the pause give none)."""
+        the reading of the account in use. Claude pauses the reads of that account too. Its reading stays where
+        it was then, whatever is used, and the terminals waited on it with Gamma ready until it had run out.
+        The installed build (2.2.0, commit dadbf00) does the same. An account in use that is past the threshold
+        and whose reads are paused counts as at the ceiling: with a forecast (the second review), and without
+        one (the third: readings that did not rise before the pause give none)."""
         gamma, until = account("gamma", 92, 4 * DAY), NOW + 1500
         moves = ("switch", "gamma", "threshold", None)
         waits = ("none", None, None, self.PAUSED.format("Beta"))
         cases = (("its reads are paused and its reading is 5 minutes old", dict(age=300, paused_until=until), moves),
                  ("its reads are paused and its reading is 20 minutes old", dict(age=1200, paused_until=until), moves),
-                 ("its reads fail and its reading is 20 minutes old", dict(age=1200), moves),
                  # Past 30 minutes the engine has no forecast to hand over (`cli_auto._forecast`), and a pause lasts 60.
                  ("its reads are paused and its reading is 40 minutes old", dict(age=2400, paused_until=NOW + 1200), moves),
                  # The reverse: a reading that is new enough is one to go back to, so the reading decides.
+                 # So does one that is old with no pause: after a start or a wake it is read within seconds.
+                 ("its reads are not paused and its reading is 20 minutes old", dict(age=1200), waits),
+                 ("its pause is over and its reading is 20 minutes old", dict(age=1200, paused_until=NOW - 1), waits),
                  ("its reads are paused and its reading is 1 minute old", dict(age=60, paused_until=until), waits),
                  ("it can be read and its reading is 1 minute old", dict(age=60), waits),
                  ("it can be read and its reading is 5 minutes old", dict(age=300), waits),
@@ -897,6 +899,11 @@ class PausedAccountTest(unittest.TestCase):
         using = ("none", None, None, "Every account is past 95% — using Alpha up to 99%")
         self.assertEqual(self.answer(gamma, alpha=96), using)
         self.assertEqual(self.answer(gamma, alpha=96, age=60, paused_until=NOW + 1500), using)
+        # After a start or a wake every reading is old for some seconds. Nothing says the account in use
+        # cannot be read, so it is used on, and no reading of another account is asked for on its account.
+        woke = self.decide(account("gamma", 92, 4 * DAY, age=1200), alpha=96, age=1200)
+        self.assertEqual((woke["action"], woke["hold"], woke["refresh"]), ("none", using[3], []))
+        self.assertEqual(self.answer(gamma, alpha=96, age=1200), using)
         result = self.decide(gamma, alpha=96, **cannot)
         self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", "threshold"))
         self.assertEqual(result["reason"], "Alpha reached 95% of its weekly limit and cannot be read; every account is past 95%, "

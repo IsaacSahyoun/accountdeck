@@ -15,10 +15,11 @@
   ceiling, or has no account that is ready to go to. At the ceiling an account that is ready is used up.
   The ceiling is reached by a reading, not by the forecast: an account left on its forecast can still be
   used up by its reading, and the terminals would come straight back to it. An account in use whose own
-  reading is too old to act on (over 3 minutes old with its reads paused, or over 15 minutes old) counts
-  as at the ceiling, with or without a forecast: no reading can say 99% then, and it would be used until
-  it ran out with nothing to see it. The same mark passes it over as a target, so the terminals do not
-  come straight back. Once its pause is over it can be named again, and the executor reads it first;
+  reads Claude has paused, with a reading over 3 minutes old, counts as at the ceiling, with or without
+  a forecast: no reading can say 99% before the pause ends, and it would be used until it ran out with
+  nothing to see it. Its `old` row passes it over as a target, so the terminals do not come straight
+  back. Once its pause is over it can be named again, and the executor reads it first. A reading that
+  is old with no pause does not count: after a start or a wake every reading is old for some seconds;
   And when the account in use works for no model and every account left is paused, the first of them is
   switched to on the reading it has, however old (`last_reading`, which tells the executor to take no new
   one): staying is known to stop the work, and the switch renews and confirms the login it moves to;
@@ -362,13 +363,15 @@ def _need(active, threshold, now):
     is the highest of the readings and their forecasts.
 
     `ceiling` says the account is no longer one to be used on: it works for no model or needs sign-in, a
-    reading says 99%, or its row is `old`. A forecast alone does not say so. An account left on its forecast
+    reading says 99%, or it cannot be read. A forecast alone does not say so. An account left on its forecast
     is still one to be used up by its reading, and with two such accounts whose forecasts both said 99% the
-    terminals went from one to the other at every check. An account with an `old` row cannot be read (its
-    reads are paused and its reading is over 3 minutes old, or its reading is over 15 minutes old). Its
-    reading cannot reach 99%, so waiting for that used it until it ran out, with nothing to see it. The same
-    mark passes it over as a target (`_leave`), so the terminals do not come straight back to it. `drain` is
-    `why` for the reason of a switch to an account that is used up."""
+    terminals went from one to the other at every check. An account cannot be read while Claude has paused
+    its reads: once its reading is over 3 minutes old (`old` and `paused`), that reading cannot reach 99%
+    before the pause ends, and waiting for it used the account until it ran out, with nothing to see it. Its
+    `old` row passes it over as a target (`_leave`), so the terminals do not come straight back to it. A
+    reading that is over 15 minutes old with no pause does not count. Every reading is that old for some
+    seconds after a start or a wake, and the terminals would move for no cause whenever another account
+    was read first. `drain` is `why` for the reason of a switch to an account that is used up."""
     account = active["account"]
     values = [value for value in active["values"] if not ended(value[2], now)]
     # A limit filling fast can pass the threshold, or run out, before the next read is allowed: act on the
@@ -396,7 +399,7 @@ def _need(active, threshold, now):
     return {"trigger": trigger, "why": why, "drain": drain, "peak": peak,
             "yields": trigger == "threshold" or (trigger == "out" and not account.get("out")
                                                  and all(w.get("kind") == "model" for _, w in out)),
-            "ceiling": trigger != "threshold" or reached >= DRAIN_CEILING or active["old"],
+            "ceiling": trigger != "threshold" or reached >= DRAIN_CEILING or (active["old"] and active["paused"]),
             "refilled": [label for label, used, w in active["values"]
                          if ended(w, now) and (w.get("blocked") or (used is not None and used >= threshold))]}
 

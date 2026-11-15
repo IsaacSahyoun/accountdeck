@@ -982,6 +982,24 @@ class TerminalPausedAccountTest(DeckCase):
             self.engine.clock.advance(5)
         self.assertEqual(self.started, [self.second["id"]])
 
+    def test_after_a_wake_an_old_reading_of_the_account_in_use_moves_nothing(self):
+        """The reverse. After a start or a wake every reading is over 15 minutes old for some seconds. Nothing
+        says the account in use cannot be read, so a reading of `second` that lands first moves nothing, and
+        the rule asks for none. The first build of the third review's fix went by the age alone and moved."""
+        self.read(first=96, second=92, wanted=100)
+        self.engine.clock.advance(1200)
+        asked, request = [], self.engine.scheduler.request
+        self.engine.scheduler.request = lambda key, now: asked.append(key) or request(key, now)
+        try:
+            self.check()
+            support.with_reading(self.engine, self.second["id"], weekly=92, ends=4 * self.DAY - 1200)
+            self.check(2)
+        finally:
+            del self.engine.scheduler.request
+        self.assertEqual((self.started, asked), ([], []))
+        self.assertEqual(self.hold(), ("none", False, f"Every account is past 95% — using {self.first['label']} up to 99%"))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
     def test_after_its_reset_a_used_up_account_is_read_at_the_schedulers_own_times(self):
         """Found by the second review, and by the third that no test ran the rule and the scheduler together.
         `wanted` was used up when it was last read, and its week ends 300 seconds later. The scheduler reads an
