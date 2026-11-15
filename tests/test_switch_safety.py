@@ -1092,6 +1092,59 @@ class TerminalFailedSwitchTest(DeckCase):
         waiting.release.set()
         self.assertTrue(self.engine.runner.wait(30))
 
+    def test_the_page_is_not_told_the_early_switch_waits_while_an_early_switch_runs(self):
+        """Found by the fourth review of this change, by two reviewers apart, and already in the build that was
+        installed. `tick` writes the early switch's own mark as soon as it has handed the switch over, so while
+        that switch ran the page said "The early switch waits 2 hours after an automatic switch"."""
+        support.with_reading(self.engine, self.first["id"], weekly=20, ends=6 * self.DAY)
+        real, seen = switch_cli.perform, []
+
+        def mark():
+            return self.engine.store.setting("cli_history", {}).get("early_tried")
+        before = mark()
+
+        def perform(*args, **how):
+            deadline = time.monotonic() + 10
+            while mark() == before and time.monotonic() < deadline:     # `tick` writes it on the test's thread
+                time.sleep(0.02)
+            seen.append((mark() != before, *self.said()))
+            return real(*args, **how)
+        self.refuse(self.wanted)
+        with mock.patch.object(switch_cli, "perform", perform):
+            self.check(1)
+        self.assertEqual((self.started, seen), ([self.wanted["id"]], [(True, None, None)]))
+        # The reverse: once that switch has failed, the page says that the early switch waits.
+        self.assertEqual(self.said(), (cli_policy.EARLY_PAUSE, None))
+
+    def test_the_page_is_not_told_so_by_a_state_that_was_being_built_when_the_switch_started(self):
+        """Found by the fourth review of this change, by two reviewers apart. The state read which operations
+        ran, then the accounts, then the notes. A second try that started in between had written its note by
+        then, and that one answer told the page its account is skipped, until the page asked again."""
+        self.refuse(self.wanted)
+        self.check(1)
+        self.later(100)
+        real_perform, real_inputs = switch_cli.perform, cli_auto.inputs
+        held, go, gap = threading.Event(), threading.Event(), []
+
+        def perform(*args, **how):
+            held.set()
+            go.wait(30)
+            return real_perform(*args, **how)
+
+        def inputs(engine):
+            if not gap:
+                gap.append(True)
+                cli_auto.tick(engine)                   # the next check, while the state is being built
+                self.assertTrue(held.wait(30))          # the second try has written its note and is held
+            return real_inputs(engine)
+        with mock.patch.object(switch_cli, "perform", perform), mock.patch.object(cli_auto, "inputs", inputs):
+            try:
+                self.assertEqual((self.said(), self.tries(self.wanted), gap), ((None, None), 2, [True]))
+            finally:
+                go.set()
+            self.assertTrue(self.engine.runner.wait(30))
+        self.assertEqual(self.said(), (None, "switch tried 1 min ago"))
+
     def then_the_account_they_moved_to_runs_out(self, wait):
         """The terminals are on `second`. `wait` seconds later it has run out, and one failure stops the switch
         to `wanted`. That failure is the first of a new need, so it is waited out and tried once more."""
@@ -1121,6 +1174,55 @@ class TerminalFailedSwitchTest(DeckCase):
         self.check(3)
         self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]] * 2 + [self.second["id"]], 2))
         self.then_the_account_they_moved_to_runs_out(2500)
+
+    def test_a_try_after_a_sign_in_inside_claude_code_is_a_first_try_again(self):
+        """The terminals can move without the app: the user signs in to another account inside Claude Code. The
+        note names the account its try was leaving, so the count starts again here too."""
+        self.refuse(self.wanted)
+        self.check(1)
+        self.claude_code_signs_in_as(self.second)
+        self.engine.sense_active()
+        self.then_the_account_they_moved_to_runs_out(300)
+
+    def test_a_try_after_the_terminals_went_away_and_came_back_counts_on(self):
+        """A decision, held here. The note names the account its try was leaving and says nothing of where the
+        terminals have been since: away and back within the 15 minutes, and the next try is the second."""
+        self.refuse(self.wanted)
+        self.check(1)
+        for row in (self.second, self.first):
+            self.claude_code_signs_in_as(row)
+            self.engine.sense_active()
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+        self.later(100)
+        self.check(1)
+        self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]] * 2, 2))
+
+    def test_a_first_failure_then_the_clock_set_back_costs_one_wait_and_not_the_account(self):
+        """Found by the third review of this change. With the Mac's clock set back by more than 90 seconds the
+        rule no longer waits for the first try, whose note is now dated after now. The next check tries again
+        at once. That try is a first try: the terminals stay, and the switch is tried once more."""
+        self.refuse(self.wanted)
+        self.check(1)
+        self.engine.clock.advance(-200)
+        self.read_all()
+        self.check(2)
+        self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]] * 2, 1))
+        self.assertEqual(self.hold(), ("none", False, self.ONCE.format(self.wanted["label"])))
+
+    def test_a_try_counts_on_only_from_a_note_that_names_the_account_it_leaves(self):
+        """The note of a try names the account it was leaving. A note without one, as this change wrote before
+        it stored that, counts on only from a try that leaves no saved account."""
+        key, first = self.wanted["id"], self.engine.active_identity["claude_cli"]
+        self.assertEqual(self.engine.store.find("claude_cli", first)["id"], self.first["id"])
+        for note, leaving, count in (({}, first, 1), ({}, None, 2), ({"from": self.first["id"]}, first, 2),
+                                     ({"from": self.second["id"]}, first, 1), ({"from": self.first["id"]}, None, 1),
+                                     ({"from": None}, "an account that is not saved", 2)):
+            with self.subTest(note=note, leaving=leaving):
+                with cli_auto.history(self.engine) as history:
+                    history["tried"] = {key: {"at": self.engine.clock(), "count": 1, **note}}
+                cli_auto.note_try(self.engine, key, leaving)
+                origin = self.first["id"] if leaving == first else None
+                self.assertEqual((self.tries(self.wanted), self.notes()[key]["from"]), (count, origin))
 
     def test_a_check_with_nobody_signed_in_leaves_the_notes_alone(self):
         """A check takes out the note of the account in use. With Claude Code signed out there is none."""

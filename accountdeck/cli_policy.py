@@ -316,8 +316,7 @@ def _checking(rows):
 def _retry(rows):
     """The hold while the accounts to move to are ones a switch was tried to twice in a row. "At the earliest":
     a switch also needs a new reading of the account, and after a refused renewal of its login the app does
-    not read the account for 30 minutes (`CLIAccounts._refresh`). The words are also true in the second a
-    switch runs, when its note is already there."""
+    not read the account for 30 minutes (`CLIAccounts._refresh`)."""
     wait = duration(min(row["wait"] for row in rows))
     if len(rows) == 1:
         return {"hold": f"A switch to {rows[0]['label']} was tried and is tried again in {wait} at the earliest"}

@@ -32,10 +32,11 @@ def note_try(engine, key, leaving=None):
     passes the account over for `cli_policy.RETRY` after a second in a row (`cli_policy.evaluate`, `_row`). An
     older note says nothing.
 
-    A try counts on from the last one while both are the same need: the terminals are still on the account
-    the last try was leaving, and the last try is recent. Once the terminals have moved to another account,
-    a failure of the switch that account needs is a first failure, and counting on made one passing failure
-    pass the wanted account over. After a first try the second is due 90 seconds later, so one that comes
+    A try counts on from the last one while both are the same need: this try leaves the account the last one
+    was leaving, and the last one is recent. With the terminals on another account, a failure of the switch
+    that account needs is a first failure, and counting on made one passing failure pass the wanted account
+    over. The note says nothing of where the terminals have been in between: away and back within the
+    window, and the next try counts on. After a first try the second is due 90 seconds later, so one that comes
     more than `RETRY` after it is a first try again: the need went away meanwhile. After a second try the
     next is due `RETRY` later, or 30 minutes later after a refused renewal, so those count on within the
     hour. A first try dated after now (the Mac's clock was set back) is not counted on from: the rule stops
@@ -98,21 +99,28 @@ def decision(engine, settings=None):
                                engine.store.setting("cli_history", {}), engine.clock())
 
 
-def state(engine, running=()):
+def state(engine):
     """The state's `providers.claude_cli.autoswitch` block: the decision and the order under each mode
-    (one pass over the store, evaluated four times). `running` holds the accounts of the operations of Claude
-    Code that have not ended. The note of an automatic switch is written when it starts, so while it runs its
-    note is no failed try yet, and the state is worked out without it. With the note, the page was told that
-    the running switch "was tried a moment ago", and during a second try that its account is skipped."""
+    (one pass over the store, evaluated four times).
+
+    While an operation of Claude Code runs, the rule decides nothing (`tick`), and what a running switch has
+    written is no past try yet: its note when it starts, and the early switch's own mark right after. So the
+    block carries no hold then, and it is worked out without the notes of the running operations' accounts.
+    With them the page was told that the running switch "was tried a moment ago", during a second try that
+    its account is skipped, and during an early switch that the early switch waits 2 hours.
+
+    The running operations are read after the history, never before it. A switch that started while this
+    state was being built has written its note by then, and it is in the list."""
     settings, rows = engine.prefs.public(), inputs(engine)
     history, now = engine.store.setting("cli_history", {}), engine.clock()
+    running = {op.account for op in engine.runner.unfinished("claude_cli")}
     if isinstance(history.get("tried"), dict):
         history = {**history, "tried": {key: note for key, note in history["tried"].items() if key not in running}}
     result = cli_policy.evaluate(rows, settings, history, now)
     return {"enabled": settings["cli_autoswitch"], "threshold": settings["cli_threshold"],
             "order_mode": settings["cli_order"], "early_switch": settings["cli_early_switch"],
             "next_up": result["next_up"], "last": history.get("last"),
-            "hold": engine.cli.adapter.readonly_reason or result["hold"],
+            "hold": engine.cli.adapter.readonly_reason or (None if running else result["hold"]),
             "previews": {mode: cli_policy.evaluate(rows, {**settings, "cli_order": mode}, history, now)["next_up"]
                          for mode in ("soonest_reset", "most_room", "manual")}}
 
