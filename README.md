@@ -63,8 +63,8 @@ older builds waited for the pause to end. The 99% is the last reading of the acc
 account cannot be read either (its own checks are paused and its reading is over 3 minutes old), it is
 not used on unseen: once it is past your threshold, an account that can still be used up is used. An
 account your terminals were moved to in the last 15 minutes is the exception. It is used for those 15
-minutes first, so moves that come from Claude refusing checks are at least 15 minutes apart. A reading or a
-forecast of 99%, a limit that ran out and a sign-in problem still move your terminals within them. When
+minutes first, so moves that come from Claude refusing checks are at least 15 minutes apart. A reading of 99%, a
+limit that ran out and a sign-in problem still move your terminals within them. When
 the account in use has stopped working and every account it
 could move to is paused, it moves to the first of them on that account's last reading, however old, and
 the reason it shows says how old. Staying would leave Claude Code with nothing that works. A weekly or

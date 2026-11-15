@@ -1037,13 +1037,27 @@ class TerminalPausedAccountTest(DeckCase):
         (`Engine._finished`), and here Claude refuses it. That account then had a reading over 3 minutes old
         with its reads paused, so it counted as one that cannot be read, and the terminals went on to the other
         account. It is used for 15 minutes first. Claude answers every other read with the numbers the
-        account had."""
+        account had.
+        The scheduler's own next read of both accounts is put 2 hours off first. The sixth review found that it
+        was overdue here, so the refused read went out with or without the engine asking for it."""
         engine, reading = self.engine, []
         self.read(first=99, second=96, wanted=96)
+        for row in (self.second, self.wanted):
+            engine.scheduler.defer(row["id"], engine.clock() + 7200)
         self.check()
         moved = next((row for row in (self.second, self.wanted) if row["id"] == self.last().get("to")), None)
         self.assertIsNotNone(moved, "the terminals did not move to an account that can be used up")
         other, read = self.wanted if moved is self.second else self.second, engine.cli.read
+        self.assertLessEqual(engine.scheduler.planned(moved["id"]), engine.clock(), "no reading was asked for after the switch")
+        self.assertGreater(engine.scheduler.planned(other["id"]), engine.clock() + 7000)
+
+        def step():
+            """A check, the reads it asked for, and the check after them. The scheduler starts the reads of two
+            idle accounts at a time, so three turns of it reach every account, whatever their order."""
+            self.check()
+            for _ in range(3):
+                engine._schedule(engine.clock())
+            self.check()
 
         def read_one(account):
             reading.append(account)
@@ -1063,12 +1077,11 @@ class TerminalPausedAccountTest(DeckCase):
             engine.clock.advance(cli_policy.READY + 60)
             engine._schedule(engine.clock())        # the read the engine asked for goes out, and Claude refuses it
             self.assertGreater(engine.store.account(moved["id"])["paused_until"] or 0, engine.clock() + 3000)
-            self.check(2)
+            step()
             self.assertEqual(self.started, [moved["id"]], "the terminals left the account they had just come to")
             self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(moved["label"])))
             engine.clock.advance(cli_policy.STAY - cli_policy.READY)       # 16 minutes after the switch
-            engine._schedule(engine.clock())
-            self.check()
+            step()
         finally:
             del engine.cli.read, engine.cli.adapter.usage
         self.assertEqual(self.started, [moved["id"], other["id"]])
@@ -1522,6 +1535,18 @@ class TerminalFailedSwitchTest(DeckCase):
         self.check(1)
         self.assertEqual(self.started, [self.second["id"]])
         self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+
+    def test_a_note_of_a_try_that_cannot_be_read_keeps_no_time(self):
+        """Found by the sixth review: no test held it. The check that finds the terminals on an account takes
+        out the note of a try to it and keeps that note's time, for the 15 minutes the account is then used
+        (`cli_policy._came`). A note with no time it can read is taken out too, and keeps none: no switch is
+        known to have brought the terminals there, so no stay starts. Usage checks are paused here, so the
+        check does nothing else."""
+        self.engine.update_settings({"refresh_paused": True})
+        with cli_auto.history(self.engine) as past:
+            past["tried"] = {self.first["id"]: {"at": "soon", "count": 2}}
+        self.check(1)
+        self.assertEqual((self.started, self.notes(), self.engine.store.setting("cli_history", {}).get("came")), ([], {}, None))
 
     def test_an_account_used_while_usage_checks_were_paused_is_not_passed_over_afterwards(self):
         """Found by the second review of this change. With usage checks paused auto-switch does nothing, and it
