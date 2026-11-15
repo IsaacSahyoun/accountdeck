@@ -97,6 +97,11 @@ show("   Alpha is at 99%: Gamma is used up, and Beta's pause is not waited for",
      [ends_in("alpha", "Alpha", 99, 6, active=True), unread, nearly])
 show("   Alpha is at 96% and its forecast says 99%: the pause is waited for, since Alpha could be gone back to",
      [dict(full, forecast={"seven_day": 99.5}), unread, ends_in("gamma", "Gamma", 96, 4)])
+gone = account("beta", "Beta", 100, NOW - 600, age=1200)
+show("   Alpha's week ran out. Beta was at 100% when it was last read and its week ended since: Beta is read again first", [out, gone])
+show("   the same with Beta's reads paused: Beta is used on the reading it has", [out, dict(gone, paused_until=NOW + 600)])
+show("   Beta's 100% was read after its week ended: the number stands, and every account is low",
+     [out, account("beta", "Beta", 100, NOW - 600, age=300)])
 print("H. A switch to Beta, the first in the order, was started and the terminals did not get there. Gamma is ready:")
 ready = ends_in("beta", "Beta", 30, 2)
 def tried(seconds, count):

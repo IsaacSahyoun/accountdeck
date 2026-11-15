@@ -61,7 +61,10 @@ skipped while the pause lasts and its reading is over 3 minutes old, so a switch
 another account is ready. That holds at 99% too: an account that can still be used up is used then, where
 older builds waited for the pause to end. When the account in use has stopped working and every account it
 could move to is paused, it moves to the first of them on that account's last reading, however old, and
-the reason it shows says how old. Staying would leave Claude Code with nothing that works. An automatic switch that fails is not started again at once. It is tried once more
+the reason it shows says how old. Staying would leave Claude Code with nothing that works. An account
+whose week was used up at its last reading counts as refilled once that week's reset time has passed. It
+is read again before it is used. When its checks are paused too, and the account in use has stopped
+working, your terminals move to it without that reading. An automatic switch that fails is not started again at once. It is tried once more
 90 seconds later, and your terminals stay where they are until then, unless a new usage reading puts
 another account first. If that fails too, the account is
 skipped for at least 15 minutes, its row says "switch tried 3 min ago", and the next account is used

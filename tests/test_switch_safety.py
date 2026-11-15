@@ -755,6 +755,57 @@ class TerminalPausedAccountTest(DeckCase):
     def test_the_same_with_a_reading_over_15_minutes_old(self):
         self.moved_to_the_paused_account(1230, "21 min")
 
+    def used_up_and_refilled_since(self):
+        """`wanted` was used up when it was last read, 2 minutes before its week ended. That was 270 seconds ago.
+        The account in use has run out since, and so has every other account."""
+        self.read(first=30, second=100)
+        support.with_reading(self.engine, self.wanted["id"], weekly=100, ends=120)
+        self.engine.clock.advance(270)
+
+    def test_a_paused_account_whose_week_refilled_since_its_last_reading_is_moved_to(self):
+        """Found by the first review of this change, and the installed build (2.2.0, dadbf00) does the same. By
+        the number of its last reading `wanted` was used up, so the rule said every account was low and the
+        terminals stayed on an account that had run out until the pause ended. Its week has ended since."""
+        self.used_up_and_refilled_since()
+        paused = self.pause()
+        self.read(first=100, second=100)
+        self.check()
+        last = self.last()
+        self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("out", self.first["id"], self.wanted["id"]),
+                         "the terminals did not move to the account whose week has refilled")
+        self.assertEqual(last["reason"], f"{self.first['label']} reached its weekly limit; {self.wanted['label']}'s week has refilled "
+                         f"since its last reading. Claude has paused {self.wanted['label']}'s usage checks, so its reading from 5 min ago is used.")
+        self.assert_consistent("claude_cli", self.identity(self.wanted["id"]))
+        row = self.engine.store.account(self.wanted["id"])
+        self.assertEqual((row["last_good_at"], row["paused_until"]), (paused["last_good_at"], paused["paused_until"]))
+        # In use, its week is known to have ended, so its old number moves nothing and its new reading is waited for.
+        self.check(2)
+        self.assertEqual(self.started, [self.wanted["id"]])
+        self.assertEqual(self.hold(), ("none", False, f"{self.wanted['label']}'s weekly limit has refilled. Waiting for its new reading."))
+
+    def test_one_that_can_be_read_is_read_again_and_judged_on_what_claude_says_then(self):
+        """Without a pause the reading is seconds away. The check asks for it and starts no switch. Here Claude
+        then says the new week is used up too, and nothing moves. With room in it, the terminals move."""
+        self.used_up_and_refilled_since()
+        self.read(first=100, second=100)
+        asked, request = [], self.engine.scheduler.request
+        self.engine.scheduler.request = lambda key, now: asked.append(key) or request(key, now)
+        try:
+            self.check()
+        finally:
+            del self.engine.scheduler.request
+        self.assertEqual((self.started, asked), ([], [self.wanted["id"]]))
+        self.assertEqual(self.hold(), ("none", False, f"Checking {self.wanted['label']} before switching"))
+        support.with_reading(self.engine, self.wanted["id"], weekly=100, ends=7 * self.DAY)
+        self.check(2)
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.hold()[:2], ("none", True))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+        support.with_reading(self.engine, self.wanted["id"], weekly=5, ends=7 * self.DAY)
+        self.check()
+        self.assertEqual(self.started, [self.wanted["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.wanted["id"]))
+
     def test_a_switch_on_a_last_reading_that_fails_is_tried_once_more_and_then_waits_15_minutes(self):
         """The rule for a switch that does not happen holds here too (`TerminalFailedSwitchTest`). Without it this
         switch was started again at every check, 5 seconds apart, for as long as the pause lasted."""
