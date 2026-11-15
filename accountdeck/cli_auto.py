@@ -166,7 +166,11 @@ def tick(engine):
         target = engine.cli.row(result["target"])
     except DeckError:          # removed since the decision was made; the next tick decides again
         return
-    if target["last_good_at"] is None or engine.clock() - target["last_good_at"] > cli_policy.READY:
+    # A switch is made on a reading at most `READY` old, and an older one is read again first. The rule says
+    # when a switch goes by the reading the account has (`last_reading`, `cli_policy._leave`): Claude has paused
+    # the account's reads, so the scheduler starts none before the pause ends, and the account in use works
+    # for no model.
+    if not result["last_reading"] and (target["last_good_at"] is None or engine.clock() - target["last_good_at"] > cli_policy.READY):
         engine.scheduler.request(target["id"], engine.clock())
         return     # re-evaluate after the governed read, including every changed window
     from .switch_cli import CLISwitch

@@ -11,6 +11,11 @@
   first. So an account whose reading is older than that, and whose reads are paused (Claude refused one), is
   not eligible while the pause lasts: nothing reads it until then, and waiting for it kept the terminals on
   an account that had run out;
+- a paused account with room is waited for only while the account in use still works and is below the
+  ceiling, or has no account that is ready to go to. At the ceiling an account that is ready is used up.
+  And when the account in use works for no model and every account left is paused, the first of them is
+  switched to on the reading it has, however old (`last_reading`, which tells the executor to take no new
+  one): staying is known to stop the work, and the switch renews and confirms the login it moves to;
 - an automatic switch that did not get the terminals to its account is not started again at the next check.
   It is started once more 90 seconds after it was started (`AGAIN`), and the terminals stay where they are
   until then: most failures are over by then (Claude Code was renewing its own login, a lookup failed). The
@@ -140,13 +145,14 @@ EARLY_PAUSE = "The early switch waits 2 hours after an automatic switch"
 def evaluate(accounts, settings, history, now):
     """The decision for the terminal account in use: {"action": "switch" or "none", "target", "kind", "reason",
     "hold": why it is waiting, "refresh": accounts to read again first, "next_up": every account in switching
-    order with why it is skipped, "exhausted": every account is low}."""
+    order with why it is skipped, "exhausted": every account is low, "last_reading": the switch is made on
+    the reading the target has, however old, because no new one can be taken (`_leave`)}."""
     threshold = settings.get("cli_threshold", 95)
     notes = history.get("tried") if isinstance(history.get("tried"), dict) else {}
     rows = _ordered([_row(account, settings, threshold, now, tried(notes.get(account["id"]))) for account in accounts], settings)
     result = {"action": "none", "target": None, "kind": None, "reason": "", "hold": None, "refresh": [],
               "next_up": [{key: row[key] for key in ("id", "label", "skip", "room", "weekly_reset")} for row in rows],
-              "exhausted": False}
+              "exhausted": False, "last_reading": False}
     active = next((row for row in rows if row["account"].get("active")), None)
     if not settings.get("cli_autoswitch", True) or active is None or is_frozen(active["account"]):
         return result
@@ -169,7 +175,7 @@ def evaluate(accounts, settings, history, now):
     # belongs to the account: when a new reading puts another account first, that one is moved to.
     chosen = next((row for row in rows if row["id"] == result["target"]), None)
     if chosen is not None and chosen["again"]:
-        result.update(action="none", target=None, kind=None, reason="",
+        result.update(action="none", target=None, kind=None, reason="", last_reading=False,
                       hold=f"A switch to {chosen['label']} was tried a moment ago and is tried once more shortly")
     return result
 
@@ -235,8 +241,8 @@ def _row(account, settings, threshold, now, note=None):
         skip, drainable, week_only = f"switch tried {max(1, math.ceil((now - note[0]) / 60))} min ago", False, None
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
             "weekly_reset": reset(values[0][2]), "account": account, "values": values,
-            "drainable": drainable, "week_only": week_only, "stale": stale, "old": old, "paused": paused,
-            "again": wait > 0 and note[1] == 1, "failed": failed, "wait": wait}
+            "drainable": drainable, "week_only": week_only, "stale": stale, "old": old, "paused": paused, "age": age,
+            "again": wait > 0 and note[1] == 1, "twice": wait > 0 and note[1] > 1, "failed": failed, "wait": wait}
 
 
 def _grouped(rows, value, width, then, rest):
@@ -341,8 +347,8 @@ def _checking(rows):
 
 def _retry(rows):
     """The hold while the accounts to move to are ones a switch was tried to twice in a row. "At the earliest":
-    a switch also needs a new reading of the account, and after a refused renewal of its login the app does
-    not read the account for 30 minutes (`CLIAccounts._refresh`)."""
+    a switch also needs a new reading of the account unless its reads are paused, and after a refused renewal
+    of its login the app does not read the account for 30 minutes (`CLIAccounts._refresh`)."""
     wait = duration(min(row["wait"] for row in rows))
     if len(rows) == 1:
         return {"hold": f"A switch to {rows[0]['label']} was tried and is tried again in {wait} at the earliest"}
@@ -365,8 +371,11 @@ def _leave(need, rows, active, history, settings, now):
                 "reason": f"{label} {need['why']}; {eligible[0]['label']} is first in your eligible order."}
     # An account with room and an old reading is read again. While the account in use still works, that is
     # waited for. Once it works for no model, an account that is ready now is used first (further down).
+    # The same once the account in use is at the ceiling and every one of them is paused. A new reading is
+    # seconds away, and the end of a pause 15 to 60 minutes. Waiting for that kept the terminals on the
+    # account in use until it had run out, with an account ready to be used up.
     stale = [row for row in rows if row["stale"]]
-    if stale and need["yields"]:
+    if stale and need["yields"] and (need["peak"] < DRAIN_CEILING or not all(row["paused"] for row in stale)):
         return _checking(stale)
     # An account a switch was tried to twice is tried again `RETRY` after that. One with room is waited for
     # while the account in use still works, as a new reading is. One past the threshold is not: it was a last
@@ -399,8 +408,22 @@ def _leave(need, rows, active, history, settings, now):
     for row, how, words in last:
         if not row["old"]:
             return {"action": "switch", "target": row["id"], "kind": how, "reason": f"{label} {why}; {words}."}
-    if stale or last:
-        return _checking(stale + [row for row, _, _ in last])
+    # Every account left has an old reading: the ones with room first, then the last resorts.
+    unread = [(row, kind, f"{row['label']} had room at its last reading") for row in stale] + last
+    # None of them is read before its pause ends, and the account in use works for no model. Waiting kept the
+    # terminals on it for the whole pause. So the first of them is used on the reading it has, however old:
+    # staying is known to stop the work, and the switch renews and confirms the login it moves to itself
+    # (`switch_cli.perform`). While one of them can be read, that reading is waited for. A second try in a row
+    # passes the account over as for any switch (`_row`: a note counts only for an account that is a target).
+    if unread and not need["yields"] and all(row["paused"] for row, _, _ in unread):
+        for row, how, words in unread:
+            if not row["twice"]:
+                return {"action": "switch", "target": row["id"], "kind": how, "last_reading": True,
+                        "reason": f"{label} {why}; {words}. Claude has paused {row['label']}'s usage checks, "
+                                  f"so its reading from {duration(row['age'])} ago is used."}
+        return _retry([row for row, _, _ in unread] + failed)
+    if unread:
+        return _checking([row for row, _, _ in unread])
     if failed:
         return _retry(failed)       # not "all low", which starts an alert: each of these is a target but for its note
     return {"exhausted": True, "reason": "All terminal accounts are low." + _refills_first(rows, threshold, now)}

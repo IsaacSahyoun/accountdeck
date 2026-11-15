@@ -469,15 +469,15 @@ class SoonestWeekFirstTest(unittest.TestCase):
                 result = self.decide(account("beta", 30, 2 * DAY, age=age, paused_until=NOW + 600), gamma, **out)
                 self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], [skip])
                 self.assertEqual(result["target"], "beta" if skip is None else "gamma")
-        # With no other account ready the rule waits for it, and the hold says what it waits for: no read comes
-        # before the pause ends, so "Checking Beta" would be false. A read is asked for all the same, and the
-        # scheduler starts it when the pause is over.
-        for alpha in ((100, 6 * DAY), (96, 6 * DAY)):
-            for age in (240, 1200):
-                with self.subTest(alpha=alpha[0], age=age):
-                    result = self.decide(account("beta", 30, 2 * DAY, age=age, paused_until=NOW + 600), alpha=alpha)
-                    self.assertEqual((result["action"], result["hold"], result["refresh"]),
-                                     ("none", "Claude paused the usage checks of Beta", ["beta"]))
+        # With no other account ready, and Alpha still working, the rule waits for it, and the hold says what
+        # it waits for: no read comes before the pause ends, so "Checking Beta" would be false. A read is asked
+        # for all the same, and the scheduler starts it when the pause is over. What happens once Alpha works
+        # for no model is in `PausedAccountTest`.
+        for age in (240, 1200):
+            with self.subTest(age=age):
+                result = self.decide(account("beta", 30, 2 * DAY, age=age, paused_until=NOW + 600), alpha=(96, 6 * DAY))
+                self.assertEqual((result["action"], result["hold"], result["refresh"]),
+                                 ("none", "Claude paused the usage checks of Beta", ["beta"]))
         # An old reading without a pause is being checked, and so is a paused account beside one that is not.
         old_gamma = account("gamma", 10, 4 * DAY, age=1200)
         self.assertEqual(self.decide(account("beta", 30, 2 * DAY, age=1200), **out)["hold"], "Checking Beta before switching")
@@ -494,10 +494,7 @@ class SoonestWeekFirstTest(unittest.TestCase):
         result = self.decide(paused_beta, account("gamma", 92, 4 * DAY), **out)
         self.assertEqual((result["action"], result["target"], result["reason"]),
                          ("switch", "gamma", "Alpha reached its weekly limit; Beta needs a new reading first, so Gamma is used up to 99%."))
-        # While Alpha still works, at 99%, the rule waits for Beta's pause to end before it uses Gamma up, as it
-        # waits for any account with room. The 2.1.0 build waits there too. Whether it should is the owner's call.
-        result = self.decide(paused_beta, account("gamma", 92, 4 * DAY), alpha=(99, 6 * DAY))
-        self.assertEqual((result["action"], result["hold"]), ("none", "Claude paused the usage checks of Beta"))
+        # What the rule does while Alpha still works, at 99%, is in `PausedAccountTest`.
 
     def test_of_weeks_that_end_together_the_early_switch_moves_to_the_one_the_order_puts_first(self):
         """Beta's week ends half an hour before Gamma's, and Gamma has more room. The order calls that a tie and
@@ -593,6 +590,181 @@ class SoonestWeekFirstTest(unittest.TestCase):
             "2 days": "Using Beta's weekly allowance before it resets in 2d 0h (60% left).",
             "3 days 5 hours": "Using Beta's weekly allowance before it resets in 3d 5h (60% left).",
         })
+
+
+def paused(key, weekly=30, weekly_reset=2 * DAY, *, age=240, **fields):
+    """An account whose reads Claude has paused for 10 more minutes, as after an HTTP 429. Its last reading is
+    4 minutes old: older than a switch is made on (`cli_policy.READY`), and nothing reads it before the pause ends."""
+    return account(key, weekly, weekly_reset, age=age, paused_until=NOW + 600, **fields)
+
+
+class PausedAccountTest(unittest.TestCase):
+    """Claude refusing a usage read pauses the reads of that account for 15 to 60 minutes. Two things held the
+    terminals for that long, in the installed build too (2.2.0, commit dadbf00). An account that had run out
+    stayed in use while the only account with room was paused. And at 99% the rule waited for the paused
+    account with another account ready to be used up. Alpha is in use here. Beta has 70 points of room."""
+    PAUSED = "Claude paused the usage checks of {}"
+    USED = " Claude has paused {}'s usage checks, so its reading from {} ago is used."
+
+    def decide(self, *others, alpha=100, fable=None, tried=None, history=None, **settings):
+        fields = {key: settings.pop(key) for key in ("health",) if key in settings}
+        active = account("alpha", alpha, 6 * DAY, active=True, model=fable, **fields)
+        past = dict(history or {}, tried={key: {"at": NOW - ago, "count": count} for key, (ago, count) in (tried or {}).items()})
+        return cli_policy.evaluate([active, *copy.deepcopy(list(others))], {**SETTINGS, **settings}, past, NOW)
+
+    def answer(self, *others, **more):
+        result = self.decide(*others, **more)
+        return (result["action"], result["target"], result["kind"], result["hold"])
+
+    def test_an_account_that_works_for_no_model_is_left_for_a_paused_one_on_its_last_reading(self):
+        """Staying means Claude Code works for nothing. Beta had room when it was last read, and no newer
+        reading can be taken. The switch itself renews Beta's login and confirms whose it is, as every switch
+        does (`switch_cli.perform`), so the reading only decides where the terminals go."""
+        for age, old in ((240, "4 min"), (900, "15 min"), (1200, "20 min"), (4000, "1h 7m")):
+            with self.subTest(age=age):
+                result = self.decide(paused("beta", age=age))
+                self.assertEqual((result["action"], result["target"], result["kind"], result["hold"]), ("switch", "beta", "out", None))
+                self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta had room at its last reading."
+                                 + self.USED.format("Beta", old))
+                self.assertEqual((result["refresh"], result["exhausted"], result["last_reading"]), ([], False, True))
+        # The same when Alpha needs sign-in, and after "All terminal accounts are low" was said.
+        result = self.decide(paused("beta"), alpha=30, health="needs_signin")
+        self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "beta", "login"))
+        self.assertIs(result["last_reading"], True)
+        result = self.decide(paused("beta"), history={"exhausted": True})
+        self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "beta", "refilled"))
+        self.assertIs(result["last_reading"], True)
+
+    def test_a_switch_on_a_reading_that_is_new_enough_does_not_say_it_goes_by_the_last_one(self):
+        """`cli_auto.tick` reads `last_reading` to switch without a new reading. Every other answer says False."""
+        cases = (("an account with room", [account("beta", 30, 2 * DAY)], {}),
+                 ("a paused account whose reading is new enough", [paused("beta", age=120)], {}),
+                 ("an account that is used up", [account("delta", 96, 3 * DAY)], {}),
+                 ("an account kept for its week", [account("gamma", 30, 4 * DAY, model=100)], {}),
+                 ("the early switch", [account("beta", 30, 2 * DAY)], dict(alpha=20)),
+                 ("a hold", [paused("beta")], dict(alpha=96)),
+                 ("all low", [account("beta", 100, 2 * DAY)], {}),
+                 ("nothing to do", [account("beta", 30, 7 * DAY)], dict(alpha=20)))
+        for name, others, more in cases:
+            with self.subTest(case=name):
+                self.assertIs(self.decide(*others, **more)["last_reading"], False)
+
+    def test_a_paused_account_is_not_used_on_its_last_reading_while_the_account_in_use_still_works(self):
+        """An old reading is acted on only when staying stops the work. At the threshold, at 99% and with a
+        Fable limit that ran out, Alpha still works, and the rule waits for the pause to end."""
+        for name, more in (("at the threshold", dict(alpha=96)), ("at 99%", dict(alpha=99)),
+                           ("its Fable limit ran out and its week has room", dict(alpha=50, fable=100))):
+            for age in (240, 1200):
+                with self.subTest(alpha=name, age=age):
+                    result = self.decide(paused("beta", age=age), **more)
+                    self.assertEqual((result["action"], result["target"], result["hold"], result["refresh"]),
+                                     ("none", None, self.PAUSED.format("Beta"), ["beta"]))
+
+    def test_an_account_that_can_be_read_is_waited_for_before_a_paused_one_is_used(self):
+        """Gamma's reading is 20 minutes old and its reads are not paused: a new one is seconds away. So the
+        rule asks for it and waits. With the new reading Gamma is used, or the paused account when Gamma has no
+        room after all."""
+        result = self.decide(paused("beta"), account("gamma", 10, 4 * DAY, age=1200))
+        self.assertEqual((result["action"], result["hold"], result["refresh"]),
+                         ("none", "Checking Beta, Gamma before switching", ["beta", "gamma"]))
+        self.assertEqual(self.answer(paused("beta"), account("gamma", 10, 4 * DAY)), ("switch", "gamma", "out", None))
+        self.assertEqual(self.answer(paused("beta"), account("gamma", 100, 4 * DAY)), ("switch", "beta", "out", None))
+        # The same for an account that would be used up, behind the paused one.
+        self.assertEqual(self.answer(paused("beta"), account("delta", 96, 3 * DAY, age=1200))[3], "Checking Beta, Delta before switching")
+        # A pause that is over holds no read back, so that account is checked too.
+        over = account("beta", 30, 2 * DAY, age=1200, paused_until=NOW - 1)
+        self.assertEqual(self.answer(over), ("none", None, None, "Checking Beta before switching"))
+        self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=1200)), ("none", None, None, "Checking Beta before switching"))
+
+    def test_of_several_paused_accounts_the_first_in_the_users_order_is_used(self):
+        others = [paused("beta", 30, 2 * DAY), paused("gamma", 10, 4 * DAY)]
+        for order, first in (("soonest_reset", "beta"), ("most_room", "gamma"), ("manual", "gamma")):
+            with self.subTest(order=order):
+                self.assertEqual(self.answer(*others, cli_order=order, cli_manual_order=["gamma", "beta"])[:2], ("switch", first))
+
+    def test_a_paused_last_resort_is_used_too_after_a_paused_account_with_room(self):
+        """Delta is past the threshold and can be used up to 99%. Gamma's Fable limit ran out and its week can
+        be used. Both are better than an account that works for no model, and both are paused."""
+        delta, gamma = paused("delta", 96, 3 * DAY), paused("gamma", 30, 4 * DAY, model=100)
+        result = self.decide(delta)
+        self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "delta", "out"))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; every account is past 95%, so Delta is used up to 99%."
+                         + self.USED.format("Delta", "4 min"))
+        self.assertIs(result["last_reading"], True)
+        result = self.decide(gamma)
+        self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", "out"))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Gamma's week can still be used, though its "
+                         "Fable weekly limit is at 100%." + self.USED.format("Gamma", "4 min"))
+        self.assertIs(result["last_reading"], True)
+        # The order of the three: room, then to be used up, then the week alone.
+        self.assertEqual(self.answer(gamma, delta, paused("beta"))[:2], ("switch", "beta"))
+        self.assertEqual(self.answer(gamma, delta)[:2], ("switch", "delta"))
+        # One with a new reading is used before any of them, as it was.
+        self.assertEqual(self.answer(paused("beta"), account("delta", 96, 3 * DAY))[:2], ("switch", "delta"))
+        # While Alpha still works, at 99%, a paused account is not used up on its last reading either.
+        self.assertEqual(self.answer(delta, alpha=99), ("none", None, None, self.PAUSED.format("Delta")))
+
+    def test_a_first_failed_try_is_waited_out_and_a_second_passes_the_account_over(self):
+        """The rule for a switch that did not happen (`FailedSwitchTest`) holds for this one. Without it the
+        switch was started again at every check, 5 seconds apart, for the whole pause."""
+        once = "A switch to Beta was tried a moment ago and is tried once more shortly"
+        result = self.decide(paused("beta"), tried={"beta": (5, 1)})
+        self.assertEqual((result["action"], result["target"], result["kind"], result["hold"], result["last_reading"]),
+                         ("none", None, None, once, False))
+        self.assertEqual(self.answer(paused("beta"), tried={"beta": (90, 1)}), ("switch", "beta", "out", None))
+        for ago, hold in ((5, "A switch to Beta was tried and is tried again in 15 min at the earliest"),
+                          (899, "A switch to Beta was tried and is tried again in 1 min at the earliest")):
+            with self.subTest(second_try_seconds_ago=ago):
+                result = self.decide(paused("beta"), tried={"beta": (ago, 2)})
+                self.assertEqual((result["action"], result["target"], result["hold"], result["exhausted"], result["refresh"]),
+                                 ("none", None, hold, False, []))
+        self.assertEqual(self.answer(paused("beta"), tried={"beta": (900, 2)}), ("switch", "beta", "out", None))
+        # Another paused account behind it is used meanwhile.
+        self.assertEqual(self.answer(paused("beta"), paused("gamma", 10, 4 * DAY), tried={"beta": (5, 2)})[:2], ("switch", "gamma"))
+        # Two that were both tried twice are both named.
+        self.assertEqual(self.answer(paused("beta"), paused("gamma", 10, 4 * DAY), tried={"beta": (5, 2), "gamma": (65, 2)})[3],
+                         "Switches to Beta, Gamma were tried. The next try is in 14 min at the earliest")
+        # While Alpha still works the paused account is no target, so its note holds nothing back and changes no word.
+        result = self.decide(paused("beta"), alpha=96, tried={"beta": (5, 2)})
+        self.assertEqual((result["action"], result["hold"], result["refresh"]), ("none", self.PAUSED.format("Beta"), ["beta"]))
+        self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], ["Claude paused its checks"])
+
+    def test_what_is_never_used_on_its_last_reading(self):
+        cases = (("an account that was never read", paused("beta", age=None)),
+                 ("one that needs sign-in", paused("beta", health="needs_signin")),
+                 ("one the user left out", paused("beta", excluded=True)),
+                 ("one whose week ran out", paused("beta", 100)),
+                 ("one with no number for its week", paused("beta", None)))
+        for name, other in cases:
+            with self.subTest(account=name):
+                self.assertEqual(self.answer(other)[:2], ("none", None))
+
+    def test_at_99_percent_an_account_that_is_ready_is_used_up_and_a_paused_one_is_not_waited_for(self):
+        """Once every account is past the threshold, the one in use is used up to 99% and then left for one that
+        is ready (`cli_policy.DRAIN_CEILING`). A paused account with room stood in the way of that: the rule
+        waited for its pause to end until Alpha reached 100%, and went to Gamma then."""
+        gamma = account("gamma", 92, 4 * DAY)
+        for used in (95, 96, 98):
+            with self.subTest(alpha=used):          # below 99% Alpha is used on, and the hold says what for
+                self.assertEqual(self.answer(paused("beta"), gamma, alpha=used), ("none", None, None, self.PAUSED.format("Beta")))
+        for age in (240, 1200):
+            with self.subTest(age=age):
+                result = self.decide(paused("beta", age=age), gamma, alpha=99)
+                self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", "threshold"))
+                self.assertEqual(result["reason"], "Alpha reached 99%; Beta needs a new reading first, so Gamma is used up to 99%.")
+        # The same when Alpha's Fable limit ran out and its week has room.
+        result = self.decide(paused("beta"), gamma, alpha=50, fable=100)
+        self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", "out"))
+        self.assertEqual(result["reason"], "Alpha reached its Fable weekly limit; Beta needs a new reading first, so Gamma is used up to 99%.")
+        # An account with room that can be read is still waited for: its reading is seconds away.
+        self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=1200), gamma, alpha=99),
+                         ("none", None, None, "Checking Beta before switching"))
+        self.assertEqual(self.answer(paused("beta"), account("delta", 30, 3 * DAY, age=1200), gamma, alpha=99),
+                         ("none", None, None, "Checking Beta, Delta before switching"))
+        # The user's own choice still outranks it, and with no account ready the rule waits.
+        chose = {"manual_at": NOW - 5, "manual_for": "alpha"}
+        self.assertEqual(self.answer(paused("beta"), gamma, alpha=99, history=chose), ("none", None, None, cli_policy.MANUAL_HOLD))
+        self.assertEqual(self.answer(paused("beta"), alpha=99), ("none", None, None, self.PAUSED.format("Beta")))
 
 
 class ChainedOrderTest(unittest.TestCase):

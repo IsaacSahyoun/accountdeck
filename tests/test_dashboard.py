@@ -751,6 +751,50 @@ class SwitchNotchTest(DashboardTestCase):
                 self.browser.wait(f"JSON.stringify({marks}) === {json.dumps(wanted)}", f"the notch for pinned_model={pinned!r}")
 
 
+class AutoSwitchCardTest(DashboardTestCase):
+    """The Auto-switch card when no account can take over. Its line said "Every other account is in use, out of
+    room or left out." beside accounts that were none of the three: one whose usage checks Claude has paused,
+    one with an old reading, one that needs sign-in, one that was never read. The list under the line gives
+    each account its own reason, so the line names none."""
+    CARD = """(() => { const card = document.querySelector('#overview .ov-auto');
+        const text = (node) => (node ? node.textContent.trim() : null);
+        return {title: text(card.querySelector('.figure-block .ov-title')), line: text(card.querySelector('.figure-block .ov-line')),
+                head: text(card.querySelector('.queue-head')),
+                rows: [...card.querySelectorAll('.queue-row')].map((row) => [text(row.firstElementChild), text(row.querySelector('.queue-why'))])}; })()"""
+
+    def card(self, scenario):
+        """(the card, the other accounts as the state lists them with why each is skipped)."""
+        state = fixtures.example_state(scenario, now=time.time())
+        in_use = self.account(state, "claude_cli", active=True)["id"]
+        others = [[row["label"], row["skip"]] for row in state["providers"]["claude_cli"]["autoswitch"]["next_up"] if row["id"] != in_use]
+        self.show(state)
+        # The card is waited for, and a part of the page that failed to draw is a failure of its own. In one run
+        # of the whole suite the card was not there right after the page's first drawing, and the plain read
+        # that stood here could not say why.
+        self.browser.wait("!!document.querySelector('#overview .ov-auto .ov-title')", f"the Auto-switch card of {scenario}")
+        self.assertEqual(self.browser.problems, [], f"the page of {scenario} reported a problem")
+        return self.browser.js(self.CARD), others
+
+    def test_the_line_names_no_reason_and_the_list_gives_each_accounts_own(self):
+        seen = set()
+        for scenario in ("rate-limited", "outage", "terminal", "loading"):
+            with self.subTest(scenario=scenario):
+                card, others = self.card(scenario)
+                self.assertTrue(others and all(skip for _, skip in others), "an account can take over here: this proves nothing")
+                self.assertEqual((card["title"], card["line"]), ("No account can take over", "Each account below says why."))
+                self.assertEqual((card["head"], card["rows"]), ("Waiting", others[:4]))
+                seen.update(skip for _, skip in others)
+        # The reasons the old line did not cover are among them.
+        for reason in ("Claude paused its checks", "reading 25 min old", "needs sign-in", "reading unavailable"):
+            self.assertIn(reason, seen)
+
+    def test_an_account_with_no_other_is_told_to_add_one(self):
+        card, others = self.card("first-run")
+        self.assertEqual(others, [])
+        self.assertEqual((card["title"], card["line"], card["rows"]),
+                         ("No account can take over", "Add another terminal account so auto-switch has somewhere to go.", []))
+
+
 class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):
     """Claude dropped its 5-hour limit. No part of the page names one for a Claude Code account. Codex and Muse
     keep theirs. The page draws the limits it is given, so the first test holds for the demo data and the

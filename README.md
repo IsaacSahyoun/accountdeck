@@ -58,7 +58,10 @@ that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a reading at most
 15 minutes old. An account whose usage checks are paused (Claude refused one, for 15 to 60 minutes) is
 skipped while the pause lasts and its reading is over 3 minutes old, so a switch never waits on it while
-another account is ready. An automatic switch that fails is not started again at once. It is tried once more
+another account is ready. That holds at 99% too: an account that can still be used up is used then, where
+older builds waited for the pause to end. When the account in use has stopped working and every account it
+could move to is paused, it moves to the first of them on that account's last reading, however old, and
+the reason it shows says how old. Staying would leave Claude Code with nothing that works. An automatic switch that fails is not started again at once. It is tried once more
 90 seconds later, and your terminals stay where they are until then, unless a new usage reading puts
 another account first. If that fails too, the account is
 skipped for at least 15 minutes, its row says "switch tried 3 min ago", and the next account is used
