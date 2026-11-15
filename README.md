@@ -60,8 +60,9 @@ that account still works for the other models. Change it in
 skipped while the pause lasts and its reading is over 3 minutes old, so a switch never waits on it while
 another account is ready. That holds at 99% too: an account that can still be used up is used then, where
 older builds waited for the pause to end. An account whose login Claude did not renew is skipped the same
-way for the 30 minutes until AccountDeck asks Claude again, and its row then says "its login could not be
-renewed". The 99% is the last reading of the account in use. When that
+way until AccountDeck asks Claude again, 30 minutes later, or as long as Claude said to wait when that is
+longer. Its row says "its login could not be renewed" while its reading is 3 to 15 minutes old, and
+"reading N min old" after that. The 99% is the last reading of the account in use. When that
 account cannot be read either (its own checks are paused and its reading is over 3 minutes old), it is
 not used on unseen: once it is past your threshold, an account that can still be used up is used. An
 account your terminals were moved to in the last 15 minutes is the exception. It is used for those 15

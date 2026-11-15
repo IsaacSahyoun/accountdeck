@@ -575,12 +575,20 @@ class Store:
             self.db.execute("DELETE FROM readings WHERE at < ?", (now - _READING_DAYS * _DAY,))
             self.db.commit()
 
-    def readings(self, key, window, since=None):
-        """[{"at", "used", "reset"}] of one window, oldest first."""
+    def readings(self, key, window, since=None, after=0):
+        """[{"at", "used", "reset"}] of one window, oldest first. With `after`, a `reading_mark`, only the ones
+        stored since that mark was taken."""
         with self.lock:
             rows = self.db.execute("SELECT at, used, reset FROM readings WHERE account=? AND window_id=? AND at>=? "
-                                   "ORDER BY at, id", (key, window, since or 0)).fetchall()
+                                   "AND id>? ORDER BY at, id", (key, window, since or 0, after)).fetchall()
         return [dict(row) for row in rows]
+
+    def reading_mark(self):
+        """A mark for `readings(after=...)`: the newest reading stored so far, of any account. It goes by the
+        order readings were stored in, which the Mac's clock being set back does not change. A reading's date
+        does: one from before the change is dated after the ones that follow it."""
+        with self.lock:
+            return self.db.execute("SELECT COALESCE(MAX(id), 0) FROM readings").fetchone()[0]
 
     def history(self, key, since=None, limit=HISTORY_LIMIT):
         """/api/history payload, oldest first, each list capped at limit (at most 700):

@@ -15,6 +15,7 @@ from .platform.facts_mac import remove_work_directory
 
 REFRESH_TIMEOUT = 5.0         # the token POST runs while Claude Code's credential locks are held
 RENEWAL_WAIT = 1800           # after a renewal that did not work, a read asks Claude for the next one this much later
+RENEWAL_WAITS = "cli_renewal_wait"       # the setting that holds {account id: until when no read of it can be taken}
 REAUTH = "Sign in again to repair this terminal account."
 UNVERIFIABLE = "Sign in again so AccountDeck can confirm which account this saved login belongs to."
 MISFILED = "This saved login belongs to a different Claude account. Sign in again with the right account."
@@ -468,6 +469,26 @@ class CLIAccounts:
                 return
             self.store.update(key, flags=dict(row["flags"], **flags), **fields)
 
+    def renewal_waits(self):
+        """{account id: until when no read of it can be taken}, as `_blocked` noted them."""
+        waits = self.store.setting(RENEWAL_WAITS, {})
+        return waits if isinstance(waits, dict) else {}
+
+    def _blocked(self, key, until):
+        """Notes until when no read of the account can be taken (None: a read of it worked), for the auto-switch
+        rule (`cli_auto.inputs`). It has a setting of its own, which a read alone writes, under one lock. A
+        row's `flags` are no place for it: every writer of those writes the whole set back, Leave Out under
+        another lock than a read, so a fact kept there can be lost to an older copy. A wait that has ended
+        is dropped with the next one noted."""
+        with self.mutex:
+            waits, now = self.renewal_waits(), self.clock()
+            kept = {account: at for account, at in waits.items()
+                    if account != key and isinstance(at, (int, float)) and at > now}
+            if until is not None:
+                kept[key] = until
+            if kept != waits:
+                self.store.set_setting(RENEWAL_WAITS, kept)
+
     def read(self, key):
         """Reads one terminal account under its lock."""
         with self.engine.scheduler.account_lock(key):
@@ -519,8 +540,9 @@ class CLIAccounts:
                 note["http"] = "2xx"
                 with self.mutex:
                     readings.record(self.store, key, data)
-                    self._settle_read(key, dict(flags, renewal_wait=None), credential_state="live" if active else "fresh",
+                    self._settle_read(key, flags, credential_state="live" if active else "fresh",
                                       last_outcome="2xx", paused_until=None, expires_at=expires(credentials))
+                    self._blocked(key, None)
                 self.engine.observed["claude_cli"].record(key, "2xx", at=now)
                 note["outcome"] = "ok"
                 return "ok"
@@ -532,12 +554,16 @@ class CLIAccounts:
                 note.update(http=cls, outcome=exc.code)
                 current = self.store.account(key)
                 paused = current["paused_until"] if current else row["paused_until"]
+                if exc.code == "rate_limited":
+                    paused = now + (exc.retry_after or 900)
+                self._settle_read(key, {"checked": now}, error="Terminal usage is unavailable. Your last reading is kept.",
+                                  error_code=exc.code, paused_until=paused)
                 # A read that ended at the renewal of the login says until when no read of the account can be
                 # taken (`_waits`). The auto-switch rule passes the account over until then (`cli_policy._row`).
-                wait = getattr(exc, "renewal_wait", None)
-                self._settle_read(key, {"checked": now, **({"renewal_wait": wait} if wait else {})},
-                                  error="Terminal usage is unavailable. Your last reading is kept.",
-                                  error_code=exc.code, paused_until=now + (exc.retry_after or 900) if exc.code == "rate_limited" else paused)
+                # Claude can answer a renewal with HTTP 429 and say to wait longer than that. The pause above
+                # keeps every read off until then, so the login is not renewed before it ends either.
+                if getattr(exc, "renewal_wait", None):
+                    self._blocked(key, max(exc.renewal_wait, paused or 0))
                 if cls is not None:
                     self.engine.observed["claude_cli"].record(key, cls, at=now)
                 return exc.code

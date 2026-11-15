@@ -61,25 +61,28 @@ def _forecast(engine, row, now):
     """Projected % used per window id of the active account when its next read can land (planned time or
     the governor's wait, whichever is later, plus a margin for the read itself).
 
-    The rate comes from the readings since the terminals came to the account (`Engine.in_use_since`). An
-    account they just came to has none, and is judged on its readings until it has two of its own that are
-    2 minutes apart. Its readings from before say how fast it filled when it was last used, and with two
+    The rate comes from the readings stored since the terminals came to the account (`Engine.forecast_from`).
+    An account they just came to has none, and is judged on its readings until it has two of its own that
+    are 2 minutes apart. Its readings from before say how fast it filled when it was last used, and with two
     accounts that both filled fast, and no account with room, the terminals went from one to the other at
     every check: each was left on its forecast and could still be used up by its reading.
     Time the app did not run since the last reading is not counted (`Engine.idle_since`). The Mac slept,
     so the account was not used from here, and a rate carried across the sleep moved the terminals at the
     wake. With the app running and no reading coming, the time counts: that is what the forecast is for.
-    A reading dated after now is from before the Mac's clock was set back, and is left out. It passed for
-    one made since the terminals came, with no time gone by since."""
+    "Since" goes by the order the readings were stored in, not by their dates. With the Mac's clock set back,
+    a reading from before the terminals came is dated after they came, and the engine starts the forecast
+    over (`Engine._awake`). A reading dated after now, by a change too small for the engine to see, counts
+    as taken now."""
+    came = engine.forecast_from.get("claude_cli")
+    if came is None:
+        return {}
     planned = engine.scheduler.planned(row["id"])
     wait = engine.scheduler.governor.delay(("claude_cli", row["identity"]), now, urgent=True)
     horizon = min(max((planned or now) - now, wait, 0.0) + FORECAST_MARGIN, FORECAST_CAP)
-    came = engine.in_use_since.get("claude_cli")
-    since = max(now - cli_policy.FORECAST_SPAN - 600, now if came is None else came)
     result = {}
     for window in (row["last_good_usage"] or {}).get("windows", []):
         if isinstance(window, dict) and isinstance(window.get("id"), str):
-            readings = [reading for reading in engine.store.readings(row["id"], window["id"], since=since) if reading["at"] <= now]
+            readings = engine.store.readings(row["id"], window["id"], since=now - cli_policy.FORECAST_SPAN - 600, after=came)
             idle = engine.idle_since(readings[-1]["at"]) if readings else 0.0
             value = cli_policy.forecast(readings, now, horizon, idle)
             if value is not None:
@@ -90,6 +93,7 @@ def _forecast(engine, row, now):
 def inputs(engine):
     rows = []
     now = engine.clock()
+    waits = engine.cli.renewal_waits()
     for row in engine.store.accounts():
         if row["provider"] != "claude_cli":
             continue
@@ -105,8 +109,8 @@ def inputs(engine):
                      # say so: a save of the login clears it while the pause lasts (`CLIAccounts.save`).
                      "paused_until": row["paused_until"],
                      # Until when no read of it can be taken: Claude did not renew its login, and a read does
-                     # not ask for that again before then (`CLIAccounts._read`).
-                     "renewal_wait": row["flags"].get("renewal_wait"),
+                     # not ask for that again before then (`CLIAccounts._blocked`).
+                     "renewal_wait": waits.get(row["id"]),
                      "windows": (row["last_good_usage"] or {}).get("windows", [])})
     return rows
 

@@ -100,7 +100,7 @@ def perform(service, key, *, leaving=None):
             if live["identity"] != target["identity"] or service.whose(live["credentials"]) != target["identity"]:
                 raise DeckError("The terminal account could not be verified.", "identity")
             tx.commit()
-            service.engine.uses("claude_cli", target["identity"], service.engine.clock())
+            service.engine.uses("claude_cli", target["identity"])
             service.engine.bump()
             return previous
         except BaseException as exc:

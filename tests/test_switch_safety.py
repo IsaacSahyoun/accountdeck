@@ -1355,18 +1355,94 @@ class TerminalForecastTest(DeckCase):
         """Found by the review of the forecast change (Sol 1). The Mac's clock is set back by an hour. The
         readings from before are then dated after now. They passed for readings since the terminals came, the
         time since the last one counted as none, and the forecast said 99% for whichever account was in use:
-        the two accounts traded places again."""
+        the two accounts traded places again. The engine sees the clock go back at its next look, as it
+        makes one every 5 seconds, and starts the forecast over."""
         engine = self.engine
         self.read(first=82, second=82, wanted=100)
         engine.clock.advance(240)
         self.read(first=96, second=96, wanted=100)
+        self.look()
         self.assertGreaterEqual(self.forecast(), 99)
         engine.clock.advance(-3600)
         self.look()
-        self.assertEqual(self.forecast(), 0, "readings dated after now made a forecast")
+        self.assertEqual(self.forecast(), 0, "readings from before the clock was set back made a forecast")
         self.checks()
         self.assertEqual(self.started, [])
         self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+        # Sonnet 1 of the second round of that review. An hour later the clock has passed those readings, and
+        # the next reading of the account is dated 90 seconds after the last of them. It makes no pair with
+        # them: the account's usage rose over that hour and more, not over those 90 seconds.
+        for _ in range(73):
+            engine.clock.advance(50)
+            self.look()
+        support.with_reading(engine, self.first["id"], weekly=97, ends=6 * self.DAY - 330)
+        self.assertEqual(self.forecast(), 0, "a reading from before the clock was set back made a pair with one from after it")
+        self.assertEqual(self.started, [])
+
+    def slowed(self):
+        """The account in use rose from 92% to 96% in 4 minutes and to 96.5% in the 4 minutes after: it slowed
+        down, and its forecast is 97%. `second` was just read at 96%, and no account has room. The engine's
+        last look at the clock was 4 seconds before the last reading."""
+        engine = self.engine
+        self.read(first=92, second=96, wanted=100)
+        engine.clock.advance(240)
+        support.with_reading(engine, self.first["id"], weekly=96, ends=6 * self.DAY - 240)
+        engine.clock.advance(236)
+        self.look()
+        engine.clock.advance(4)
+        support.with_reading(engine, self.first["id"], weekly=96.5, ends=6 * self.DAY - 480)
+        support.with_reading(engine, self.second["id"], weekly=96, ends=4 * self.DAY - 480)
+        self.assertLess(self.forecast(), 98)
+        self.check()
+        self.assertEqual(self.started, [])
+
+    def test_a_clock_set_back_a_little_does_not_bring_back_the_faster_rise_from_before_the_last_reading(self):
+        """Found by the second round of the review of the forecast change (Sol 1). Readings dated after now were
+        left out one by one. With the clock set back 15 seconds, only the last reading went, the one that says
+        the account slowed down. The forecast then went by the rise before it, counted the 4 minutes since
+        that older reading again, said over 99%, and the terminals moved off an account at 96.5%."""
+        self.slowed()
+        self.engine.clock.advance(-15)
+        self.look()
+        self.assertLess(self.forecast(), 98, "the forecast went by the rise from before the last reading")
+        self.checks()
+        self.assertEqual(self.started, [])
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def test_a_clock_set_back_by_less_than_the_time_between_two_checks_does_not_either(self):
+        """The same with the clock set back 3 seconds, which the engine cannot see: its last look at the clock
+        was 4 seconds ago, so the clock still reads later than it did then. The last reading is dated 3 seconds
+        after now. It counts as taken now."""
+        self.slowed()
+        self.engine.clock.advance(-3)
+        self.look()
+        self.assertTrue(96.5 < self.forecast() < 98, self.forecast())
+        self.checks()
+        self.assertEqual(self.started, [])
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def test_readings_from_before_the_terminals_came_do_not_count_once_the_clock_has_passed_them(self):
+        """Found by the lead while proving Sol 1 of the second round. `second` rose from 82% to 96% in 4 minutes
+        while it was not in use. The clock is set back an hour, and then the terminals come to `second`. Its two
+        readings are dated after that, so by their dates they were taken since the terminals came. They were
+        left out only while they were dated after now: an hour later the clock had passed them, and they made
+        a forecast of over 99% for an account that had not been read since."""
+        engine = self.engine
+        self.read(first=82, second=82, wanted=100)
+        engine.clock.advance(240)
+        self.read(first=96, second=96, wanted=100)
+        self.look()
+        engine.clock.advance(-3600)
+        self.look()
+        support.with_reading(engine, self.first["id"], weekly=100, ends=6 * self.DAY + 3360)
+        self.check()
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+        for _ in range(73):                 # an hour and a minute with the app running, a look every 50 seconds
+            engine.clock.advance(50)
+            self.look()
+        self.assertEqual(engine.gaps, ())
+        self.assertEqual(self.forecast(), 0, "readings from before the terminals came made a forecast")
 
     def test_a_sleep_from_before_the_clock_was_set_back_is_not_taken_off_a_later_reading(self):
         """Found by the review of the forecast change (Sol 3). A sleep was noted with the time of its wake. With
@@ -1404,16 +1480,47 @@ class TerminalForecastTest(DeckCase):
         self.assertEqual(len(engine.gaps), 32)
         self.assertAlmostEqual(engine.idle_since(woke), 32 * 70, delta=2)
 
-    def test_the_time_the_terminals_came_is_noted_at_every_change_of_account(self):
+    def test_a_store_that_cannot_say_its_newest_reading_does_not_fail_a_switch(self):
+        """The engine reads the mark from the store right after a switch has ended. When that read fails, the
+        switch is still a switch that worked, and the account it went to has no forecast."""
         engine = self.engine
-        start = engine.in_use_since["claude_cli"]
-        self.assertLess(start, engine.clock() - 7000, "the demo's own switch, made while it was built, did not note the time")
+
+        def broken():
+            raise RuntimeError("the store cannot be read")
+        engine.store.reading_mark = broken
+        self.read(first=100, second=30, wanted=100)
+        self.check()
+        del engine.store.reading_mark
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+        history = engine.store.setting("cli_history", {})
+        self.assertEqual((history["last"]["to"], history.get("tried") or {}), (self.second["id"], {}))
+        self.assertIsNone(engine.forecast_from["claude_cli"])
+        support.with_reading(engine, self.second["id"], weekly=82, ends=4 * self.DAY)
+        engine.clock.advance(240)
+        support.with_reading(engine, self.second["id"], weekly=96, ends=4 * self.DAY - 240)
+        self.assertEqual(self.forecast(), 0)
+
+    def test_the_forecast_starts_over_at_every_change_of_account(self):
+        """The mark the forecast reads from (`Engine.forecast_from`) is the newest reading stored when the
+        terminals came to the account. Every way to a change of account sets it, and a look that finds the
+        same account does not."""
+        engine = self.engine
+
+        def newest():
+            return engine.store.reading_mark()
+        start = engine.forecast_from["claude_cli"]
+        self.assertIsNotNone(start, "the demo's own switch, made while it was built, set no mark")
+        self.read(first=30, second=30, wanted=100)
         engine.sense_active()
-        self.assertEqual(engine.in_use_since["claude_cli"], start, "a look that found the same account started the count again")
+        self.assertEqual(engine.forecast_from["claude_cli"], start, "a look that found the same account started the forecast over")
+        self.assertLess(start, newest())
+        # A switch.
         self.read(first=100, second=30, wanted=100)
         self.check()
         self.assertEqual(self.started, [self.second["id"]])
-        self.assertLess(engine.clock() - engine.in_use_since["claude_cli"], 60)
+        switched = engine.forecast_from["claude_cli"]
+        self.assertGreater(switched, start)
         # A sign-in inside Claude Code, which the engine's next look at who is signed in finds (Sonnet 8 of the
         # review of the forecast change). The account's readings from before do not count.
         support.with_reading(engine, self.first["id"], weekly=82, ends=6 * self.DAY)
@@ -1423,22 +1530,24 @@ class TerminalForecastTest(DeckCase):
         engine.clock.advance(5)
         engine.sense_active()
         self.assertEqual(self.active("claude_cli")["id"], self.first["id"])
-        self.assertLess(engine.clock() - engine.in_use_since["claude_cli"], 60)
+        self.assertEqual(engine.forecast_from["claude_cli"], newest())
         self.assertEqual(self.forecast(), 0)
-        # The Mac's clock is set back: the time the terminals came would be ahead of every new reading.
-        came = engine.in_use_since["claude_cli"]
+        # The Mac's clock is set back: the forecast starts over from the readings stored from then on, and the
+        # gaps noted so far go with the readings they were about.
+        self.asleep(100)
+        support.with_reading(engine, self.first["id"], weekly=96.2, ends=6 * self.DAY - 345)
+        self.assertLess(engine.forecast_from["claude_cli"], newest())
+        self.assertEqual(len(engine.gaps), 1)
         engine.clock.advance(-3600)
-        now = engine.clock()
-        engine._awake(now)
-        self.assertEqual(engine.in_use_since["claude_cli"], now)
-        self.assertLess(now, came)
-        # A start of the app: no switch was made in this run, and its first look at who is signed in notes the
-        # time (Opus 3 of the review of the forecast change).
+        self.look()
+        self.assertEqual((engine.forecast_from["claude_cli"], engine.gaps), (newest(), ()))
+        # A start of the app: no switch was made in this run, and its first look at who is signed in sets the
+        # mark (Opus 3 of the review of the forecast change).
+        support.with_reading(engine, self.first["id"], weekly=96.4, ends=6 * self.DAY + 3255)
         engine.clock.advance(600)
         TerminalFailedSwitchTest.restart(self)
-        self.assertLess(self.engine.clock() - self.engine.in_use_since["claude_cli"], 60)
+        self.assertEqual(self.engine.forecast_from["claude_cli"], self.engine.store.reading_mark())
         self.assertEqual(self.engine.gaps, ())
-
 
 class TerminalFailedSwitchTest(DeckCase):
     """An automatic switch that does not happen is not started again at every check. The account in use here has
@@ -1705,16 +1814,16 @@ class TerminalFailedSwitchTest(DeckCase):
             self.engine._schedule(self.engine.clock())
         self.check(1)
 
-    def refuse_the_renewal(self):
+    def refuse_the_renewal(self, wait=None):
         """The reading of `wanted` is 2 minutes old, its login runs out in 100 seconds, and Claude's token
-        endpoint refuses to renew it."""
+        endpoint refuses to renew it. With `wait`, Claude says to ask again that many seconds later."""
         self.engine.clock.advance(120)
         saved = self.vault.get(self.wanted["id"])
         saved["credentials"]["claudeAiOauth"]["expiresAt"] = (self.engine.clock() + 100) * 1000
         self.vault.put(self.wanted["id"], saved)
 
         def refused(credentials, *, timeout=None):
-            error = DeckError("Too many requests.", "rate_limited")
+            error = DeckError("Too many requests.", "rate_limited", wait)
             error.http, error.http_class = 429, "4xx"
             raise error
         self.engine.cli.adapter.refresh = refused
@@ -1729,6 +1838,7 @@ class TerminalFailedSwitchTest(DeckCase):
         engine, key = self.engine, self.wanted["id"]
         self.through_the_scheduler()
         self.refuse_the_renewal()
+        engine.store.set_setting("cli_renewal_wait", {"an account that is gone": engine.clock() + 60})
         self.read_others()
         self.check(1)
         self.assertEqual((self.started, self.tries(self.wanted)), ([key], 1))
@@ -1741,7 +1851,7 @@ class TerminalFailedSwitchTest(DeckCase):
             engine._schedule(engine.clock())
         self.assertEqual(engine.store.account(key)["error_code"], "busy", "the read that was asked for did not fail")
         # The read says until when no read of the account can be taken: 30 minutes after the switch asked Claude.
-        wait = engine.store.account(key)["flags"]["renewal_wait"] - engine.clock()
+        wait = engine.cli.renewal_waits()[key] - engine.clock()
         self.assertTrue(1800 - 100 - 60 < wait < 1800 - 100, wait)
         self.check(1)
         self.assertEqual(self.started, [key, self.second["id"]], "the terminals stayed on an account that had run out")
@@ -1752,7 +1862,7 @@ class TerminalFailedSwitchTest(DeckCase):
             return next(row["skip"] for row in self.engine.snapshot()["providers"]["claude_cli"]["autoswitch"]["next_up"]
                         if row["id"] == key)
         self.assertEqual(skipped(), "its login could not be renewed")
-        # The app is quit and started again: the wait is on the account's row, so it is still passed over.
+        # The app is quit and started again: the wait is kept with the app's data, so it is still passed over.
         self.restart()
         engine = self.engine
         self.through_the_scheduler()
@@ -1764,14 +1874,14 @@ class TerminalFailedSwitchTest(DeckCase):
         for _ in range(3):
             engine._schedule(engine.clock())
         self.assertLess(engine.clock() - engine.store.account(key)["last_good_at"], 60, "the read did not work")
-        self.assertIsNone(engine.store.account(key)["flags"]["renewal_wait"])
+        self.assertEqual(engine.cli.renewal_waits(), {}, "a wait that has ended, or whose account was read, is still noted")
         engine.clock.advance(cli_policy.READY + 60)
         self.assertIsNone(skipped())
 
     def test_the_only_account_left_is_asked_again_and_used_once_its_reading_comes(self):
-        """The reverse. With no other account to go to, the page says which account is being checked, nothing
-        says that every account is low, and no switch is made on the old reading. Once Claude renews the login,
-        the reading comes and the terminals move."""
+        """The reverse. With no other account to go to, the page says that the login of `wanted` could not be
+        renewed, nothing says that every account is low, and no switch is made on the old reading. Once
+        Claude renews the login, the reading comes and the terminals move."""
         engine, key = self.engine, self.wanted["id"]
         self.through_the_scheduler()
         self.refuse_the_renewal()
@@ -1781,7 +1891,7 @@ class TerminalFailedSwitchTest(DeckCase):
         self.read_others(second=99)
         self.step()
         self.assertEqual(self.started, [key])
-        self.assertEqual(self.hold(), ("none", False, f"Checking {self.wanted['label']} before switching"))
+        self.assertEqual(self.hold(), ("none", False, f"The login of {self.wanted['label']} could not be renewed"))
         self.assertNotIn("limit_reached", [alert["kind"] for alert in engine.store.alerts()])
         # 30 minutes after the refused renewal the app asks Claude again, and this time the login is renewed.
         del engine.cli.adapter.refresh
@@ -1808,7 +1918,7 @@ class TerminalFailedSwitchTest(DeckCase):
         self.read_others(second=96)
         self.step()
         self.assertEqual(engine.store.account(key)["error_code"], "network", "the read of `wanted` did not fail")
-        self.assertIsNone(engine.store.account(key)["flags"].get("renewal_wait"))
+        self.assertNotIn(key, engine.cli.renewal_waits())
         decision = cli_auto.decision(engine)
         self.assertEqual((self.started, decision["action"], decision["target"]), ([], "switch", key),
                          "the terminals did not wait for the next reading of `wanted`")
@@ -1837,10 +1947,60 @@ class TerminalFailedSwitchTest(DeckCase):
         row = engine.store.account(key)
         self.assertEqual(row["error_code"], "rate_limited", "the renewal inside the read was not refused")
         self.assertGreater(row["paused_until"], engine.clock())
-        self.assertTrue(1800 - 60 < row["flags"]["renewal_wait"] - engine.clock() <= 1800)
+        self.assertTrue(1800 - 60 < engine.cli.renewal_waits()[key] - engine.clock() <= 1800)
         self.check(2)
         self.assertEqual(self.started, [], "the terminals were moved to an account whose login Claude had just refused to renew")
-        self.assertEqual(self.hold(), ("none", False, f"Checking {self.wanted['label']} before switching"))
+        self.assertEqual(self.hold(), ("none", False, f"The login of {self.wanted['label']} could not be renewed"))
+
+    def test_a_renewal_claude_refuses_for_an_hour_is_not_asked_for_by_a_switch_within_that_hour(self):
+        """Found by the second round of that review (Sol 2). Claude answers the renewal inside a read with HTTP
+        429 and says to wait an hour. The login counted as not renewed for 30 minutes and as paused for the 30
+        minutes after: with nothing else left, the terminals were then moved to the account on its last
+        reading, and that switch asked Claude for the renewal inside the hour."""
+        engine, key = self.engine, self.wanted["id"]
+        self.through_the_scheduler()
+        self.refuse_the_renewal(wait=3600)
+        engine.clock.advance(100)
+        self.read_others(second=100)
+        engine.scheduler.request(key, engine.clock())
+        for _ in range(3):
+            engine._schedule(engine.clock())
+        row = engine.store.account(key)
+        self.assertEqual(row["error_code"], "rate_limited", "the renewal inside the read was not refused")
+        self.assertGreater(row["paused_until"], engine.clock() + 3500)
+        engine.clock.advance(1900)          # past the 30 minutes, inside the hour
+        self.read_others(second=100)
+        self.check(2)
+        self.assertEqual(self.started, [], "a switch asked Claude for the renewal inside the hour it said to wait")
+        # The reverse: after the hour a read asks Claude again, the login is renewed, and the terminals move.
+        del engine.cli.adapter.refresh
+        engine.clock.advance(1800)
+        self.read_others(second=100)
+        self.step()
+        self.assertEqual(self.started, [key])
+        self.assert_consistent("claude_cli", self.identity(key))
+
+    def test_a_writer_of_flags_cannot_hide_that_a_login_was_not_renewed(self):
+        """Found by the second round of that review (Sol 3). Every writer of a row's `flags` writes the whole set
+        back, and Leave Out does so under another lock than a read (`TerminalSoonestWeekTest` has the same
+        for a pause). The time until when no read can be taken was kept in `flags`. Leave Out could write it
+        away with the copy it had read before, and the rule went back to waiting on that account."""
+        engine, key = self.engine, self.wanted["id"]
+        self.through_the_scheduler()
+        self.refuse_the_renewal()
+        self.read_others()
+        self.check(1)
+        engine.clock.advance(100)
+        self.read_others()
+        self.check(1)
+        before = engine.store.account(key)["flags"]                                 # what Leave Out read
+        for _ in range(3):
+            engine._schedule(engine.clock())
+        self.assertEqual(engine.store.account(key)["error_code"], "busy", "the read that was asked for did not fail")
+        engine.store.update(key, flags=dict(before, excluded=False))                # what it then wrote
+        self.check(1)
+        self.assertEqual(self.started, [key, self.second["id"]], "the rule waits on an account that cannot be read")
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
 
     def test_the_page_is_told_when_a_read_has_ended(self):
         """Found by the review of the change for an account that cannot be read (Sol 2), in the installed build
@@ -2470,11 +2630,10 @@ class TerminalFableLimitTest(DeckCase):
         that went from 1% to 80% within minutes, the forecast passed the threshold and the terminals moved."""
         from datetime import datetime, timezone
         from accountdeck.usage import claude_usage
-        # The terminals have been on the account for 10 minutes, so the forecast reads the two older readings
-        # (Sonnet 2 of the review of the forecast change: without this the test passed whatever the samples).
-        self.engine.clock.advance(600)
+        # The forecast reads the readings stored since the terminals came to the account, so it reads the two
+        # older ones below (Sonnet 2 of the review of the forecast change: for one commit it went by their
+        # dates, left them out, and this test passed whatever the samples).
         now = self.engine.clock()
-        self.assertLess(self.engine.in_use_since["claude_cli"], now - 180)
         ends = float(int(now) + 4 * 86400)
         for row in (self.full, self.roomy):
             self.read(row, weekly=20, fable=20)

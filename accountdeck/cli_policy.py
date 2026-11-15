@@ -259,10 +259,11 @@ def _silent(account, now):
 
     After a renewal of the login that did not work, the app asks Claude again 30 minutes later
     (`CLIAccounts._refresh`), and until then a read of the account ends at once, with no reading
-    (`renewal_wait`, which that read stores). The rule named such an account all the same, the executor asked
-    for the reading a switch needs, and nothing moved until the reading was 15 minutes old. It is not one
-    whose reads are paused, also when Claude answered the renewal inside a read with HTTP 429, which stores a
-    pause too. The account in use is renewed by Claude Code, so a wait left on it says nothing."""
+    (`renewal_wait`, which that read notes: `CLIAccounts._blocked`). The rule named such an account all the
+    same, the executor asked for the reading a switch needs, and nothing moved until the reading was 15
+    minutes old. It is not one whose reads are paused, also when Claude answered the renewal inside a read
+    with HTTP 429, which stores a pause too: the wait then lasts as long as that pause. The account in use
+    is renewed by Claude Code, so a wait left on it says nothing."""
     until, pause = number(account.get("renewal_wait")), number(account.get("paused_until"))
     blocked = until is not None and until > now and not account.get("active")
     return pause is not None and pause > now and not blocked, blocked
@@ -469,12 +470,19 @@ def _held(history, active, now):
 
 
 def _checking(rows):
-    """The hold while accounts whose readings are too old to act on are read again. An account whose reads Claude
-    paused is not read before the pause ends, so when every one of them is paused the hold says that."""
-    names = ", ".join(row["label"] for row in rows[:3])
-    waits = all(row["paused"] for row in rows)
-    return {"hold": f"Claude paused the usage checks of {names}" if waits else f"Checking {names} before switching",
-            "refresh": [row["id"] for row in rows]}
+    """The hold while accounts whose readings are too old to act on are read again. No reading of an account
+    comes while Claude has paused its reads, or while its login is not renewed (`_silent`). When that is so
+    for every one of them, the hold says it: nothing is being checked then."""
+    shown = rows[:3]
+    paused = ", ".join(row["label"] for row in shown if row["paused"])
+    blocked = [row["label"] for row in shown if row["silent"] and not row["paused"]]
+    said = [f"Claude paused the usage checks of {paused}"] if paused else []
+    if blocked:
+        said.append(f"the login{'s' if len(blocked) > 1 else ''} of {', '.join(blocked)} could not be renewed")
+    if not all(row["silent"] for row in rows):
+        said = ["Checking " + ", ".join(row["label"] for row in shown) + " before switching"]
+    hold = ", and ".join(said)
+    return {"hold": hold[0].upper() + hold[1:], "refresh": [row["id"] for row in rows]}
 
 
 def _retry(rows):
@@ -516,13 +524,14 @@ def _behind(row, front, roomy, others):
     of it are not used. Each of `front` was tried twice, or its login was not renewed: one whose reads are
     paused, and that was not tried twice, is used itself. An account whose login was not renewed is not used
     on the reading it has, because a switch asks Claude for the same renewal. It does not keep a paused account
-    behind it waiting: that one is used as it would be without it. An account with room says so of the ones
-    in front of it first, and one that is used up of every account with room."""
+    behind it waiting: that one is used as it would be without it. An account with room, and one kept for
+    its week alone, says so of the ones in front of it first, and one that is used up of every account with
+    room."""
     def passed(tried):
         mute, twice = [other for other in front if not other["twice"]], [other for other in front if other["twice"]] + tried
         return ", and ".join(([f"{_listed(mute)} could not be read"] if mute else []) + ([_tried(twice)] if twice else []))
     said = _said(row, passed(roomy) or others)
-    return f"{passed([])}, and {said}" if row["stale"] and front else said
+    return f"{passed([])}, and {said}" if front and (row["stale"] or not row["drainable"]) else said
 
 
 def _said(row, others):

@@ -1058,7 +1058,7 @@ class ForecastTest(unittest.TestCase):
 
 def refused(key, weekly=30, weekly_reset=2 * DAY, *, age=240, **fields):
     """An account whose login Claude did not renew 5 minutes ago. The app asks again 25 minutes from now, and
-    until then no read of the account can be taken (`renewal_wait`, which `CLIAccounts._read` stores). Its
+    until then no read of the account can be taken (`renewal_wait`, which `CLIAccounts._blocked` notes). Its
     last reading is 4 minutes old, older than a switch is made on."""
     return account(key, weekly, weekly_reset, age=age, renewal_wait=NOW + 1500, **fields)
 
@@ -1069,7 +1069,7 @@ class RefusedRenewalTest(unittest.TestCase):
     rule went on naming the account, nothing started, and the terminals stayed on an account that had run out
     until the reading was 15 minutes old, in the installed build too (2.2.1, commit 41420bb). Alpha is in
     use here. Beta is first in the order, has 70 points of room, and its login was not renewed."""
-    CHECKING = "Checking {} before switching"
+    CHECKING, REFUSED = "Checking {} before switching", "The login of {} could not be renewed"
     decide, answer = PausedAccountTest.decide, PausedAccountTest.answer
 
     def skip(self, result, key="beta"):
@@ -1113,7 +1113,7 @@ class RefusedRenewalTest(unittest.TestCase):
             with self.subTest(others=len(others)):
                 result = self.decide(refused("beta"), *others, alpha=96)
                 self.assertEqual((result["action"], result["target"], result["hold"], result["refresh"], result["exhausted"]),
-                                 ("none", None, self.CHECKING.format("Beta"), ["beta"], False))
+                                 ("none", None, self.REFUSED.format("Beta"), ["beta"], False))
 
     def test_at_99_percent_it_is_not_waited_for(self):
         """No reading of Beta comes before the app asks Claude again, so an account that is ready is used up, as
@@ -1139,19 +1139,23 @@ class RefusedRenewalTest(unittest.TestCase):
     def test_it_is_not_used_on_the_reading_it_has(self):
         """A paused account is, when the account in use works for no model and nothing else is left: Claude
         refused a usage read, and the login is as good as it was. Here Claude did not renew the login, and a
-        switch asks for the same renewal. So the account is asked again, and the page says so."""
+        switch asks for the same renewal. So the account is asked again. No reading of it comes before the
+        app asks Claude again, and the page says why (Opus 5 of the second round of the review: "Checking
+        Beta before switching" said that a check was on its way)."""
         for age in (240, 900, 1200):
             with self.subTest(age=age):
                 result = self.decide(refused("beta", age=age))
-                self.assertEqual((result["action"], result["target"], result["hold"]), ("none", None, self.CHECKING.format("Beta")))
+                self.assertEqual((result["action"], result["target"], result["hold"]), ("none", None, self.REFUSED.format("Beta")))
                 self.assertEqual((result["refresh"], result["last_reading"], result["exhausted"]), (["beta"], False, False))
-        self.assertEqual(self.answer(refused("beta"), refused("delta", 96, 3 * DAY))[3], self.CHECKING.format("Beta, Delta"))
+        self.assertEqual(self.answer(refused("beta"), refused("delta", 96, 3 * DAY))[3], "The logins of Beta, Delta could not be renewed")
+        # Beside an account whose reading is only old, something is being checked.
+        self.assertEqual(self.answer(refused("beta"), account("delta", 96, 3 * DAY, age=1200))[3], self.CHECKING.format("Beta, Delta"))
         # The reverse: the same account with its reads paused is moved to.
         self.assertEqual(self.answer(paused("beta"))[:2], ("switch", "beta"))
         # Found by the review of this change (Opus 1). Claude answering the renewal inside a read with HTTP 429
         # stores a pause as well. The renewal decides: such an account was moved to as a paused one.
         result = self.decide(refused("beta", paused_until=NOW + 600))
-        self.assertEqual((result["action"], result["target"], result["hold"]), ("none", None, self.CHECKING.format("Beta")))
+        self.assertEqual((result["action"], result["target"], result["hold"]), ("none", None, self.REFUSED.format("Beta")))
         self.assertEqual(self.skip(result), "its login could not be renewed")
         gamma = account("gamma", 10, 4 * DAY)
         self.assertEqual(self.answer(refused("beta", paused_until=NOW + 600), gamma)[:2], ("switch", "gamma"))
@@ -1180,7 +1184,13 @@ class RefusedRenewalTest(unittest.TestCase):
                          "so Delta is used up to 99%." + used.format("Delta"))
         # A paused account that was tried twice is not tried again yet, and Beta is asked again meanwhile.
         result = self.decide(refused("beta"), paused("gamma", 10, 4 * DAY), tried={"gamma": (60, 2)})
-        self.assertEqual((result["action"], result["hold"], result["exhausted"]), ("none", self.CHECKING.format("Beta, Gamma"), False))
+        self.assertEqual((result["action"], result["hold"], result["exhausted"]),
+                         ("none", "Claude paused the usage checks of Gamma, and the login of Beta could not be renewed", False))
+        # An account kept for its week alone names the one in front of it as well (Opus 4 of the second round).
+        result = self.decide(refused("beta"), paused("zeta", 20, 5 * DAY, model=100))
+        self.assertEqual((result["action"], result["target"], result["last_reading"]), ("switch", "zeta", True))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta could not be read, and Zeta's week can still be used, "
+                         "though its Fable weekly limit is at 100%." + used.format("Zeta"))
         # The reverse: an old reading that nothing is known against is waited for before a paused account is used.
         self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=1200), paused("gamma", 10, 4 * DAY)),
                          ("none", None, None, self.CHECKING.format("Beta, Gamma")))

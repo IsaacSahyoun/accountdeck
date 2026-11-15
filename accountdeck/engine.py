@@ -139,12 +139,12 @@ class Engine:
         self.plans, self.login = {}, None
         self.active_identity = {name: None for name in self.providers}
         self.identity_known = {name: False for name in self.providers}
-        # Since when each client's account in use has been the one in use, as far as this run of the app saw
-        # it (None: nobody signed in so far), and each stretch of `IDLE_GAP` or more in which the app did not
-        # run: (when it ran again, how long it had not). The forecast of an account's usage reads both
-        # (`cli_auto._forecast`). Kept in memory: a new run starts the count again. `_awake` notes the gaps,
-        # from one look at the clock to the next (`_looked`).
-        self.in_use_since = {name: None for name in self.providers}
+        # The newest reading in the store when each client came to its account in use, as far as this run of
+        # the app saw it (`Store.reading_mark`. None: nobody signed in so far), and each stretch of `IDLE_GAP`
+        # or more in which the app did not run: (when it ran again, how long it had not). The forecast of an
+        # account's usage reads both (`cli_auto._forecast`). Kept in memory: a new run starts the count again.
+        # `_awake` notes the gaps, from one look at the clock to the next (`_looked`).
+        self.forecast_from = {name: None for name in self.providers}
         self.gaps, self._looked = (), None
         self.closers = []                    # called once by stop(), e.g. a Codex sign-in helper
         self.scheduler = RefreshScheduler(self._refresh, inline=inline, done=self.bump)
@@ -269,7 +269,7 @@ class Engine:
                     self.identity_known[name] = False
                     continue
                 changed |= (identity, True) != (self.active_identity[name], self.identity_known[name])
-                self.uses(name, identity, now)
+                self.uses(name, identity)
                 if name == "claude_cli":
                     continue
                 before = self.accounts.unsaved[name]
@@ -280,13 +280,25 @@ class Engine:
         if changed:
             self.bump()
 
-    def uses(self, name, identity, now):
+    def uses(self, name, identity):
         """Notes the account a client is signed in to (None: signed out). The one place that writes it, so the
-        time the client came to that account follows every change of it: one `sense_active` reads, and a switch
-        of Claude Code that just ended (`switch_cli.perform`), which notes it before the next look."""
+        mark of when the client came to that account follows every change of it: one `sense_active` reads,
+        and a switch of Claude Code that just ended (`switch_cli.perform`), which notes it before the next
+        look. The mark is the newest reading stored by then, not a time: the forecast is made from the
+        readings stored after it, and the dates of readings do not say that once the clock was set back."""
         if identity != self.active_identity[name]:
-            self.in_use_since[name] = now
+            self.forecast_from[name] = self._mark()
         self.active_identity[name], self.identity_known[name] = identity, True
+
+    def _mark(self):
+        """The newest reading stored so far (`Store.reading_mark`), or None when the store cannot say: then no
+        forecast is made until the next change of account. A switch that just ended notes its account through
+        this, and does not fail for it."""
+        try:
+            return self.store.reading_mark()
+        except Exception as exc:
+            diagnostics.log_exception("engine.reading_mark_failed", exc)
+            return None
 
     # ---- provider status ----
     def status(self, provider, now=None):
@@ -524,16 +536,22 @@ class Engine:
 
     def _awake(self, now):
         """The tick thread's look at the clock before each auto-switch check, for the forecast. `IDLE_GAP` or
-        more since the look before it is time the app did not run. And with the Mac's clock set back, a time
-        noted before the change would be ahead of every new reading: it counts as now. Readings from before
-        the change are dated after now, and `cli_auto._forecast` leaves those out."""
+        more since the look before it is time the app did not run. A clock that reads earlier than at the look
+        before it was set back. The dates of the readings so far then say nothing about now: some are after
+        it, and the time between one of them and a new reading is not what their dates say. So the forecast
+        starts over, from the readings stored from here on, and the gaps noted so far go with them. A clock
+        set back by less than the time since the look before it is not seen, and is off by that little."""
         last, self._looked = self._looked, now
-        if last is not None and now - last >= IDLE_GAP:
+        if last is None:
+            return
+        if now < last:
+            mark = self._mark()
+            for name, came in list(self.forecast_from.items()):
+                if came is not None:
+                    self.forecast_from[name] = mark
+            self.gaps = ()
+        elif now - last >= IDLE_GAP:
             self.gaps = (*self.gaps[-31:], (now, now - last))
-        self.gaps = tuple((min(when, now), seconds) for when, seconds in self.gaps)
-        for name, since in self.in_use_since.items():
-            if since is not None and since > now:
-                self.in_use_since[name] = now
 
     def _autoswitch(self):
         """The auto-switch check, right after a look at the clock. The Mac can go to sleep in the middle of a
