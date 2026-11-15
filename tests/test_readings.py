@@ -593,70 +593,132 @@ class SoonestWeekFirstTest(unittest.TestCase):
 
 
 class FailedSwitchTest(unittest.TestCase):
-    """An account an automatic switch was started to, without the terminals getting there, is passed over for 15
-    minutes (`cli_policy.RETRY`). `cli_auto.note_try` writes the note the rule reads, and the engine tests are
-    `tests.test_switch_safety.TerminalFailedSwitchTest`. Alpha is in use here and has run out, and `tried` says
-    how many seconds ago a switch to an account was started."""
-    HOLD = "A switch to {} was tried and is tried again after 15 minutes"
+    """An automatic switch that did not get the terminals to its account is not started again at the next check.
+    It is started once more 90 seconds later (`cli_policy.AGAIN`), and after a second try in a row the account
+    is passed over for 15 minutes (`cli_policy.RETRY`). `cli_auto.note_try` writes the note the rule reads, and
+    the engine tests are `tests.test_switch_safety.TerminalFailedSwitchTest`. Alpha is in use here and has run
+    out. `tried` gives, per account, how many seconds ago a switch to it was started and which try in a row
+    that was."""
+    ONCE = "A switch to {} was tried a moment ago and is tried once more shortly"
+    TWICE = "A switch to {} was tried and is tried again in {} at the earliest"
+    SEVERAL = "Switches to {} were tried. The next try is in {} at the earliest"
 
     def decide(self, *others, alpha=100, tried=None, **settings):
         active = account("alpha", alpha, 6 * DAY, active=True)
-        history = {"tried": {key: NOW - ago if type(ago) in (int, float) else ago for key, ago in (tried or {}).items()}}
+        history = {"tried": {key: {"at": NOW - ago, "count": count} for key, (ago, count) in (tried or {}).items()}}
         return cli_policy.evaluate([active, *copy.deepcopy(list(others))], {**SETTINGS, **settings}, history, NOW)
 
     def answer(self, *others, **more):
         result = self.decide(*others, **more)
         return (result["action"], result["target"], result["hold"], result["exhausted"])
 
-    def test_the_next_account_is_used_while_the_first_is_passed_over(self):
+    def test_after_a_first_try_the_terminals_stay_and_the_same_switch_is_tried_once_more(self):
+        """Found by the review of this change. Most failures are not the account's: Claude Code held its login
+        lock, or a lookup failed. Passing the account over at once sent the terminals to the next account for
+        one such failure, and they stayed there."""
         others = [account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY)]
         for order in ("soonest_reset", "most_room", "manual"):
             with self.subTest(order=order):
                 how = dict(cli_order=order, cli_manual_order=["beta", "gamma"])
                 self.assertEqual(self.answer(*others, **how), ("switch", "beta", None, False))
-                self.assertEqual(self.answer(*others, tried={"beta": 5}, **how), ("switch", "gamma", None, False))
-        skips = {row["id"]: row["skip"] for row in self.decide(*others, tried={"beta": 5})["next_up"]}
+                self.assertEqual(self.answer(*others, tried={"beta": (5, 1)}, **how),
+                                 ("none", None, self.ONCE.format("Beta"), False))
+        result = self.decide(*others, tried={"beta": (5, 1)})
+        self.assertEqual((result["kind"], result["reason"], result["refresh"]), (None, "", []))
+        # Beta is still the next account: its row says nothing against it.
+        self.assertEqual([(row["id"], row["skip"]) for row in result["next_up"]][:2], [("beta", None), ("gamma", None)])
+        for ago, target in ((0, None), (89, None), (90, "beta"), (91, "beta"), (3600, "beta"),
+                            # the Mac's clock was set back since: the note is dated after now
+                            (-89, None), (-90, "beta")):
+            with self.subTest(tried_seconds_ago=ago):
+                self.assertEqual(self.answer(*others, tried={"beta": (ago, 1)})[1], target)
+
+    def test_a_first_try_is_waited_out_for_every_kind_of_switch(self):
+        beta = account("beta", 40, 2 * DAY)
+        cases = (("at the threshold", [beta], dict(alpha=96)),
+                 ("the early switch", [beta], dict(alpha=20)),
+                 ("an account that is used up as a last resort", [account("delta", 90, 3 * DAY)], {}),
+                 ("an account whose week can still be used", [account("beta", 30, 2 * DAY, model=100)], {}))
+        for name, others, more in cases:
+            with self.subTest(switch=name):
+                key = others[0]["id"]
+                self.assertEqual(self.answer(*others, **more)[:2], ("switch", key))
+                self.assertEqual(self.answer(*others, tried={key: (5, 1)}, **more),
+                                 ("none", None, self.ONCE.format(others[0]["label"]), False))
+        # A note of an account the rule does not choose holds nothing.
+        self.assertEqual(self.answer(account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY), tried={"gamma": (5, 1)})[:2],
+                         ("switch", "beta"))
+
+    def test_after_a_second_try_in_a_row_the_next_account_is_used(self):
+        others = [account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY)]
+        for order in ("soonest_reset", "most_room", "manual"):
+            for count in (2, 3, 40):
+                with self.subTest(order=order, tries=count):
+                    how = dict(cli_order=order, cli_manual_order=["beta", "gamma"])
+                    self.assertEqual(self.answer(*others, tried={"beta": (5, count)}, **how), ("switch", "gamma", None, False))
+        skips = {row["id"]: row["skip"] for row in self.decide(*others, tried={"beta": (5, 2)})["next_up"]}
         self.assertEqual((skips["beta"], skips["gamma"]), ("switch tried 1 min ago", None))
 
     def test_it_is_passed_over_for_15_minutes_and_no_longer(self):
         others = [account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY)]
-        for ago, target in ((0, "gamma"), (61, "gamma"), (899, "gamma"), (900, "beta"), (901, "beta"), (86400, "beta"),
-                            # the Mac's clock was set back since: the note is dated after now
-                            (-899, "gamma"), (-900, "beta"),
-                            # a note that is no time says nothing
-                            (None, "beta"), ("soon", "beta"), (True, "beta"), (float("nan"), "beta")):
+        for ago, target in ((0, "gamma"), (91, "gamma"), (899, "gamma"), (900, "beta"), (901, "beta"), (86400, "beta"),
+                            (-899, "gamma"), (-900, "beta")):
             with self.subTest(tried_seconds_ago=ago):
-                self.assertEqual(self.answer(*others, tried={"beta": ago})[:2], ("switch", target))
-        for history in ({}, {"tried": None}, {"tried": ["beta"]}, {"tried": {"delta": NOW}}):
+                self.assertEqual(self.answer(*others, tried={"beta": (ago, 2)})[:2], ("switch", target))
+
+    def test_a_note_that_is_no_note_says_nothing(self):
+        others = [account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY)]
+        accounts = [account("alpha", 100, 6 * DAY, active=True), *others]
+        notes = (None, "soon", True, 5, NOW, [NOW, 2], {}, {"at": NOW}, {"count": 2}, {"at": "soon", "count": 2},
+                 {"at": float("nan"), "count": 2}, {"at": None, "count": 2}, {"at": NOW, "count": 0},
+                 {"at": NOW, "count": -1}, {"at": NOW, "count": "2"}, {"at": NOW, "count": 2.0}, {"at": NOW, "count": True})
+        for note in notes:
+            with self.subTest(note=note):
+                result = cli_policy.evaluate(copy.deepcopy(accounts), SETTINGS, {"tried": {"beta": note}}, NOW)
+                self.assertEqual((result["action"], result["target"], result["hold"]), ("switch", "beta", None))
+        for history in ({}, {"tried": None}, {"tried": ["beta"]}, {"tried": "beta"}, {"tried": {"delta": {"at": NOW, "count": 2}}}):
             with self.subTest(history=history):
-                accounts = [account("alpha", 100, 6 * DAY, active=True), *copy.deepcopy(others)]
-                self.assertEqual(cli_policy.evaluate(accounts, SETTINGS, history, NOW)["target"], "beta")
+                self.assertEqual(cli_policy.evaluate(copy.deepcopy(accounts), SETTINGS, history, NOW)["target"], "beta")
 
     def test_its_row_says_how_long_ago_the_switch_was_tried(self):
         for ago, words in ((0, "switch tried 1 min ago"), (60, "switch tried 1 min ago"), (61, "switch tried 2 min ago"),
                            (899, "switch tried 15 min ago"), (-30, "switch tried 1 min ago")):
             with self.subTest(tried_seconds_ago=ago):
-                rows = self.decide(account("beta", 30, 2 * DAY), tried={"beta": ago})["next_up"]
+                rows = self.decide(account("beta", 30, 2 * DAY), tried={"beta": (ago, 2)})["next_up"]
                 self.assertEqual(next(row["skip"] for row in rows if row["id"] == "beta"), words)
 
     def test_two_accounts_whose_switch_failed_do_not_take_turns(self):
         """One note for the last try would be written over by the next try, and the two accounts would be
         tried in turn at every check."""
         others = [account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY)]
-        self.assertEqual(self.answer(*others, tried={"beta": 10, "gamma": 5}),
-                         ("none", None, self.HOLD.format("Beta, Gamma"), False))
-        # The hold names three accounts at most, as the hold for old readings does.
-        others += [account("delta", 30, 5 * DAY), account("epsilon", 30, 5.5 * DAY)]
-        self.assertEqual(self.answer(*others, tried={"beta": 10, "gamma": 5, "delta": 5, "epsilon": 5})[2],
-                         self.HOLD.format("Beta, Gamma, Delta"))
+        self.assertEqual(self.answer(*others, tried={"beta": (100, 2), "gamma": (5, 2)}),
+                         ("none", None, self.SEVERAL.format("Beta, Gamma", "14 min"), False))
+        # The hold names three accounts and counts the rest.
+        others += [account("delta", 30, 5 * DAY), account("epsilon", 30, 5.5 * DAY), account("zeta", 30, 5.7 * DAY)]
+        tried = {"beta": (10, 2), "gamma": (5, 2), "delta": (5, 2), "epsilon": (5, 2)}
+        self.assertEqual(self.answer(*others, tried=tried)[:2], ("switch", "zeta"))
+        self.assertEqual(self.answer(*others[:-1], tried=tried)[2], self.SEVERAL.format("Beta, Gamma, Delta and 1 more", "15 min"))
 
     def test_with_nothing_else_to_use_it_waits_and_does_not_say_every_account_is_low(self):
-        """ "All terminal accounts are low" starts an alert, and the account the switch was tried to has room."""
-        self.assertEqual(self.answer(account("beta", 30, 2 * DAY), tried={"beta": 5}),
-                         ("none", None, self.HOLD.format("Beta"), False))
-        self.assertEqual(self.answer(account("beta", 30, 2 * DAY), account("delta", 99, 4 * DAY), tried={"beta": 5}),
-                         ("none", None, self.HOLD.format("Beta"), False))
+        """ "All terminal accounts are low" starts an alert, and the account the switch was tried to has room.
+        The hold gives the earliest time of the next try: a switch also needs a new reading of the account."""
+        beta = account("beta", 30, 2 * DAY)
+        for ago, left in ((5, "15 min"), (300, "10 min"), (840, "1 min"), (899, "1 min")):
+            with self.subTest(tried_seconds_ago=ago):
+                self.assertEqual(self.answer(beta, tried={"beta": (ago, 2)}), ("none", None, self.TWICE.format("Beta", left), False))
+        self.assertEqual(self.answer(beta, account("delta", 99, 4 * DAY), tried={"beta": (5, 2)}),
+                         ("none", None, self.TWICE.format("Beta", "15 min"), False))
         self.assertEqual(self.answer(account("delta", 99, 4 * DAY)), ("none", None, None, True))
+
+    def test_an_account_that_ran_low_since_its_switch_was_tried_does_not_hold_the_alert_back(self):
+        """Found by the review of this change. A switch to Beta was tried while it had room, and its next reading
+        is 98%. No account can be moved to, with or without the note, so every account is low. The hold
+        promised a try that would not come and kept the alert back until the note was 15 minutes old."""
+        for used in (98, 99, 100):
+            with self.subTest(beta_used=used):
+                self.assertEqual(self.answer(account("beta", used, 2 * DAY), tried={"beta": (5, 2)}), ("none", None, None, True))
+                skip = self.decide(account("beta", used, 2 * DAY), tried={"beta": (5, 2)})["next_up"][0]["skip"]
+                self.assertEqual(skip, f"weekly at {used}%")
 
     def test_an_account_with_room_is_waited_for_while_the_one_in_use_still_works(self):
         """As for an account with an old reading: at the threshold, and at 99%, the account in use still works,
@@ -664,53 +726,64 @@ class FailedSwitchTest(unittest.TestCase):
         beta, delta = account("beta", 30, 2 * DAY), account("delta", 90, 4 * DAY)
         for used in (96, 99):
             with self.subTest(alpha_used=used):
-                self.assertEqual(self.answer(beta, delta, alpha=used, tried={"beta": 5}),
-                                 ("none", None, self.HOLD.format("Beta"), False))
+                self.assertEqual(self.answer(beta, delta, alpha=used, tried={"beta": (5, 2)}),
+                                 ("none", None, self.TWICE.format("Beta", "15 min"), False))
         # Once the account in use has run out, the one that is nearly used up is better than staying.
-        result = self.decide(beta, delta, tried={"beta": 5})
+        result = self.decide(beta, delta, tried={"beta": (5, 2)})
         self.assertEqual((result["action"], result["target"]), ("switch", "delta"))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; a switch to Beta was tried, so Delta is used up to 99%.")
 
     def test_an_account_past_the_threshold_is_not_used_up_while_it_is_passed_over(self):
         delta, epsilon = account("delta", 90, 3 * DAY), account("epsilon", 92, 4 * DAY)
         self.assertEqual(self.answer(delta, epsilon)[:2], ("switch", "delta"))
-        result = self.decide(delta, epsilon, tried={"delta": 5})
+        result = self.decide(delta, epsilon, tried={"delta": (5, 2)})
         self.assertEqual((result["action"], result["target"]), ("switch", "epsilon"))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; every account is past 95%, so Epsilon is used up to 99%.")
-        self.assertEqual(self.answer(delta, tried={"delta": 5}), ("none", None, self.HOLD.format("Delta"), False))
+        self.assertEqual(self.answer(delta, tried={"delta": (5, 2)}), ("none", None, self.TWICE.format("Delta", "15 min"), False))
         # It was a last resort and has no room, so at the threshold the account in use is used up as before.
-        self.assertEqual(self.answer(delta, alpha=96, tried={"delta": 5}),
+        self.assertEqual(self.answer(delta, alpha=96, tried={"delta": (5, 2)}),
                          ("none", None, "Every account is past 95% — using Alpha up to 99%", False))
 
     def test_an_account_whose_week_can_still_be_used_is_passed_over_too(self):
         beta = account("beta", 30, 2 * DAY, model=100)
         self.assertEqual(self.answer(beta)[:2], ("switch", "beta"))
-        self.assertEqual(self.answer(beta, tried={"beta": 5}), ("none", None, self.HOLD.format("Beta"), False))
+        self.assertEqual(self.answer(beta, tried={"beta": (5, 2)}), ("none", None, self.TWICE.format("Beta", "15 min"), False))
 
     def test_an_old_reading_is_still_read_again_and_the_tried_account_is_not(self):
         beta, gamma = account("beta", 30, 2 * DAY, age=1000), account("gamma", 30, 4 * DAY)
-        result = self.decide(beta, gamma, alpha=96, tried={"gamma": 5})
-        self.assertEqual((result["action"], result["hold"], result["refresh"]),
-                         ("none", "Checking Beta before switching", ["beta"]))
-        result = self.decide(beta, gamma, tried={"gamma": 5})
-        self.assertEqual((result["action"], result["hold"], result["refresh"]),
-                         ("none", "Checking Beta before switching", ["beta"]))
+        for used in (96, 100):
+            with self.subTest(alpha_used=used):
+                result = self.decide(beta, gamma, alpha=used, tried={"gamma": (5, 2)})
+                self.assertEqual((result["action"], result["hold"], result["refresh"]),
+                                 ("none", "Checking Beta before switching", ["beta"]))
+        # An account with a note and an old reading is read again like any other, and keeps its own words.
+        result = self.decide(beta, alpha=96, tried={"beta": (5, 2)})
+        self.assertEqual((result["hold"], result["refresh"], result["next_up"][0]["skip"]),
+                         ("Checking Beta before switching", ["beta"], "reading 17 min old"))
 
-    def test_the_early_switch_passes_it_over_and_waits_for_nothing(self):
+    def test_the_early_switch_passes_over_an_account_another_switch_was_tried_to(self):
+        """The note here is one a switch at the threshold left. After an early switch that failed, the early
+        switch itself waits 2 hours and moves to no other account (`early_tried`, written by `cli_auto.tick`)."""
         beta, gamma = account("beta", 40, 2 * DAY), account("gamma", 40, 3 * DAY)
         self.assertEqual(self.answer(beta, alpha=20)[:2], ("switch", "beta"))
-        self.assertEqual(self.answer(beta, alpha=20, tried={"beta": 5}), ("none", None, None, False))
-        self.assertEqual(self.answer(beta, gamma, alpha=20, tried={"beta": 5})[:2], ("switch", "gamma"))
+        self.assertEqual(self.answer(beta, alpha=20, tried={"beta": (5, 2)}), ("none", None, None, False))
+        self.assertEqual(self.answer(beta, gamma, alpha=20, tried={"beta": (5, 2)})[:2], ("switch", "gamma"))
+        history = {"tried": {"beta": {"at": NOW - 5, "count": 1}}, "early_tried": NOW - 5}
+        accounts = [account("alpha", 20, 6 * DAY, active=True), beta, gamma]
+        result = cli_policy.evaluate(accounts, SETTINGS, history, NOW)
+        self.assertEqual((result["action"], result["hold"]), ("none", cli_policy.EARLY_PAUSE))
 
     def test_a_note_does_not_change_an_account_that_is_no_target_anyway(self):
         """The account in use, one that is left out, one that needs sign-in and one never read keep their words."""
         others = [account("beta", 30, 2 * DAY, excluded=True), account("gamma", 30, 3 * DAY, health="needs_signin"),
                   account("delta", 30, 4 * DAY, age=None)]
-        tried = {"alpha": 5, "beta": 5, "gamma": 5, "delta": 5}
-        skips = {row["id"]: row["skip"] for row in self.decide(*others, alpha=20, tried=tried)["next_up"]}
-        self.assertEqual(skips, {"alpha": "in use by your terminals", "beta": "left out", "gamma": "needs sign-in",
-                                 "delta": "reading unavailable"})
-        self.assertEqual(self.answer(*others, tried=tried), ("none", None, None, True))
+        for count in (1, 2):
+            with self.subTest(tries=count):
+                tried = {key: (5, count) for key in ("alpha", "beta", "gamma", "delta")}
+                skips = {row["id"]: row["skip"] for row in self.decide(*others, alpha=20, tried=tried)["next_up"]}
+                self.assertEqual(skips, {"alpha": "in use by your terminals", "beta": "left out", "gamma": "needs sign-in",
+                                         "delta": "reading unavailable"})
+                self.assertEqual(self.answer(*others, tried=tried), ("none", None, None, True))
 
 
 class AutoSwitchWordsTest(unittest.TestCase):

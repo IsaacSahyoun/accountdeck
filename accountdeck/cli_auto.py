@@ -25,12 +25,17 @@ def history(engine):
 
 
 def note_try(engine, key):
-    """Notes that an automatic switch to `key` starts now: one time per account, under `tried` in the history.
-    `CLISwitch` calls it before it does anything else and takes the note out once the switch worked. The rule
-    passes an account with a note over for `cli_policy.RETRY` (`cli_policy._row`), and an older note says nothing."""
+    """Notes that an automatic switch to `key` starts now, under `tried` in the history: the time, and which try
+    in a row it is. A try within the hour of the last one counts on from it. `CLISwitch` calls this before it
+    does anything else and takes the note out once the switch worked, and `tick` takes out the note of the
+    account in use. The rule waits `cli_policy.AGAIN` after a first try and passes the account over for
+    `cli_policy.RETRY` after a second in a row (`cli_policy.evaluate`, `_row`). An older note says nothing."""
+    now = engine.clock()
     with history(engine) as past:
-        tried = past.get("tried") if isinstance(past.get("tried"), dict) else {}
-        past["tried"] = {**tried, key: engine.clock()}
+        notes = past.get("tried") if isinstance(past.get("tried"), dict) else {}
+        last = cli_policy.tried(notes.get(key))
+        count = last[1] + 1 if last is not None and abs(now - last[0]) < cli_policy.HOUR else 1
+        past["tried"] = {**notes, key: {"at": now, "count": count}}
 
 
 FORECAST_MARGIN, FORECAST_CAP = 60.0, 1800.0
@@ -102,7 +107,14 @@ def tick(engine):
         return
     leaving = engine.active_identity.get("claude_cli")     # the account this decision is about
     result = decision(engine)
+    in_use = engine.store.find("claude_cli", leaving)
     with history(engine) as past:
+        # The terminals are on this account, however they got there, so a note that a switch to it did not
+        # happen is out of date. The app dying after a switch and before its history is written leaves one, and
+        # so does a sign-in to that account made in Claude Code. Left there, it had the account passed over
+        # once the terminals moved on.
+        if in_use is not None and isinstance(past.get("tried"), dict):
+            past["tried"].pop(in_use["id"], None)
         entered = result["exhausted"] and not past.get("exhausted")
         if entered:
             past["exhausted"] = True
@@ -135,7 +147,7 @@ def tick(engine):
         return
     if result["kind"] == "early":
         # The early switch is not urgent. The rule waits 2 hours after one was started, whether it worked or
-        # not (`cli_policy._early`). The account it failed for is also passed over for 15 minutes, as after
-        # any automatic switch that did not happen (`note_try`).
+        # not (`cli_policy._early`), and moves to no other account meanwhile. The note of `note_try` counts
+        # for the account it failed for when another kind of switch wants that account.
         with history(engine) as past:
             past["early_tried"] = engine.clock()

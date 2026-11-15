@@ -87,9 +87,13 @@ unread = dict(ends_in("beta", "Beta", 30, 2), last_good_at=NOW - 240, paused_unt
 show("   Alpha's week ran out: Gamma is used, and Beta is not waited for", [out, unread, ends_in("gamma", "Gamma", 10, 4)])
 show("   Alpha is at 96%: the same", [full, unread, ends_in("gamma", "Gamma", 10, 4)])
 show("   Alpha's week ran out and Beta is the only other account: the hold names the pause", [out, unread])
-print("H. A switch to Beta, the first in the order, was started 5 seconds ago and the terminals did not get there. Gamma is ready:")
+print("H. A switch to Beta, the first in the order, was started and the terminals did not get there. Gamma is ready:")
 ready = ends_in("beta", "Beta", 30, 2)
-show("   Alpha's week ran out: Gamma is used, and the switch to Beta is not started again", [out, ready, ends_in("gamma", "Gamma", 10, 4)], {"tried": {"beta": NOW - 5}})
-show("   The same 15 minutes later: Beta is tried again", [out, ready, ends_in("gamma", "Gamma", 10, 4)], {"tried": {"beta": NOW - 900}})
-show("   Alpha's week ran out and Beta is the only other account: the hold says when it is tried again", [out, ready], {"tried": {"beta": NOW - 5}})
-show("   Alpha is at 96% and Beta is the only other account: the same hold", [full, ready], {"tried": {"beta": NOW - 5}})
+def tried(seconds, count):
+    return {"tried": {"beta": {"at": NOW - seconds, "count": count}}}
+show("   Alpha's week ran out, the first try was 5 seconds ago: the terminals stay and the switch is tried once more", [out, ready, ends_in("gamma", "Gamma", 10, 4)], tried(5, 1))
+show("   90 seconds after the first try: Beta is tried again", [out, ready, ends_in("gamma", "Gamma", 10, 4)], tried(90, 1))
+show("   5 seconds after a second try in a row: Gamma is used", [out, ready, ends_in("gamma", "Gamma", 10, 4)], tried(5, 2))
+show("   15 minutes after it: Beta is tried again", [out, ready, ends_in("gamma", "Gamma", 10, 4)], tried(900, 2))
+show("   Beta is the only other account, 6 minutes after the second try: the hold gives the earliest time of the next try", [out, ready], tried(360, 2))
+show("   Alpha is at 96% and Beta is the only other account: the same hold", [full, ready], tried(360, 2))
