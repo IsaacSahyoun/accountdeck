@@ -645,6 +645,10 @@ class FailedSwitchTest(unittest.TestCase):
         others = [account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY)]
         self.assertEqual(self.answer(*others, tried={"beta": 10, "gamma": 5}),
                          ("none", None, self.HOLD.format("Beta, Gamma"), False))
+        # The hold names three accounts at most, as the hold for old readings does.
+        others += [account("delta", 30, 5 * DAY), account("epsilon", 30, 5.5 * DAY)]
+        self.assertEqual(self.answer(*others, tried={"beta": 10, "gamma": 5, "delta": 5, "epsilon": 5})[2],
+                         self.HOLD.format("Beta, Gamma, Delta"))
 
     def test_with_nothing_else_to_use_it_waits_and_does_not_say_every_account_is_low(self):
         """ "All terminal accounts are low" starts an alert, and the account the switch was tried to has room."""

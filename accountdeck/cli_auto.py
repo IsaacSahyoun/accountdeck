@@ -25,14 +25,12 @@ def history(engine):
 
 
 def note_try(engine, key):
-    """Notes that an automatic switch to `key` starts now, and drops the notes too old to count. `CLISwitch` calls
-    it before it does anything else and takes the note out once the switch worked. The rule passes an account
-    with a note over for `cli_policy.RETRY` (`cli_policy._row`)."""
-    now = engine.clock()
+    """Notes that an automatic switch to `key` starts now: one time per account, under `tried` in the history.
+    `CLISwitch` calls it before it does anything else and takes the note out once the switch worked. The rule
+    passes an account with a note over for `cli_policy.RETRY` (`cli_policy._row`), and an older note says nothing."""
     with history(engine) as past:
         tried = past.get("tried") if isinstance(past.get("tried"), dict) else {}
-        past["tried"] = {**{k: at for k, at in tried.items()
-                            if cli_policy.number(at) is not None and abs(now - at) < cli_policy.RETRY}, key: now}
+        past["tried"] = {**tried, key: engine.clock()}
 
 
 FORECAST_MARGIN, FORECAST_CAP = 60.0, 1800.0
