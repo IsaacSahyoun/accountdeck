@@ -937,7 +937,12 @@ class TerminalPausedAccountTest(DeckCase):
         self.assertEqual(last["reason"], f"{self.first['label']} will pass 99% before the next check; Claude paused the usage checks of "
                          f"{self.wanted['label']}, so {self.second['label']} is used up to 99%.")
         self.assert_consistent("claude_cli", self.identity(self.second["id"]))
-        # `second` fills as fast and can be read: its reading decides, and the terminals stay.
+        # `second` fills as fast and can be read: its reading decides, and the terminals stay. Its forecast is
+        # made from its readings since the terminals came to it, so it gets two of those first.
+        self.assertEqual(self.forecast(), 0, "an account the terminals just came to has a forecast")
+        support.with_reading(self.engine, self.second["id"], weekly=97, ends=4 * self.DAY - 440)
+        self.engine.clock.advance(150)
+        support.with_reading(self.engine, self.second["id"], weekly=98.6, ends=4 * self.DAY - 590)
         self.assertGreaterEqual(self.forecast(), 99, "the forecast of `second` is under 99%: the rest proves nothing")
         for _ in range(8):
             self.check()
@@ -1175,6 +1180,141 @@ class TerminalPausedAccountTest(DeckCase):
         self.assertEqual(last["reason"], f"{self.first['label']} reached 99%; Claude paused the usage checks of {self.wanted['label']}, "
                          f"so {self.second['label']} is used up to 99%.")
         self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+
+
+class TerminalForecastTest(DeckCase):
+    """The forecast of the account in use, through the real engine: the rate its readings rise at, carried to the
+    moment its next reading can land (`cli_auto._forecast`). Two things moved the terminals for no cause, in
+    the installed build too (2.2.1, commit 41420bb). With no account with room, two accounts that both fill
+    fast traded places at every check. And a rate from before the Mac slept was carried across the sleep, so
+    the terminals moved at the wake. `second` is the only other account that can be used here, and every
+    other account has run out."""
+    DAY = 86400
+    USING = "Every account is past 95% — using {} up to 99%"
+    read, check, hold, forecast = (TerminalPausedAccountTest.read, TerminalPausedAccountTest.check,
+                                   TerminalPausedAccountTest.hold, TerminalPausedAccountTest.forecast)
+
+    def setUp(self):
+        super().setUp()
+        self.engine.sense_active()
+        self.engine.clock.advance(2 * 3600 + 60)        # past the demo's own switch, as in TerminalSoonestWeekTest
+        self.first = self.active("claude_cli")
+        usable = [row for row in self.rows("claude_cli") if not row["active"] and row["switchable"]
+                  and row.get("health", "ok") == "ok" and not row.get("excluded")]
+        self.second, self.wanted = usable[:2]
+        self.rest = usable[2:]
+        self.started, submit = [], self.engine.submit
+        self.engine.submit = lambda op: self.started.append(op.account) or submit(op)
+
+    def checks(self, times=8):
+        """`times` checks, 5 seconds apart, as the engine makes them."""
+        for _ in range(times):
+            self.check()
+            self.engine.clock.advance(5)
+
+    def asleep(self, seconds):
+        """The Mac sleeps: the engine ran just now, and it runs again `seconds` later."""
+        self.engine._last_tick = self.engine.clock()
+        self.engine.clock.advance(seconds)
+        self.engine._check_resume(self.engine.clock())
+
+    def test_two_accounts_that_fill_fast_do_not_trade_places_at_every_check(self):
+        """Found by the first review of the change for a paused account. The account in use and `second` both
+        went from 82% to 96% in 4 minutes, and no account has room. The forecast of whichever was in use said
+        99%, and by its reading each could still be used up: 8 switches in 8 checks. A forecast is made from
+        the readings since the terminals came to the account, so an account they just came to has none."""
+        engine = self.engine
+        self.read(first=82, second=82, wanted=100)
+        engine.clock.advance(240)
+        self.read(first=96, second=96, wanted=100)
+        self.assertGreaterEqual(self.forecast(), 99, "the forecast of the account in use is under 99%: this test proves nothing")
+        self.checks()
+        self.assertEqual(self.started, [self.second["id"]], "the terminals did not move once, to the account to be used up")
+        self.assertEqual(self.forecast(), 0, "an account the terminals just came to has a forecast")
+        self.assertEqual(self.hold(), ("none", False, self.USING.format(self.second["label"])))
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+        # The reverse: with two readings of its own since then that rise as fast, its forecast counts again.
+        support.with_reading(engine, self.second["id"], weekly=96.5, ends=4 * self.DAY)
+        engine.clock.advance(150)
+        support.with_reading(engine, self.second["id"], weekly=98.5, ends=4 * self.DAY - 150)
+        support.with_reading(engine, self.first["id"], weekly=96, ends=6 * self.DAY)
+        self.assertGreaterEqual(self.forecast(), 99)
+        self.checks()
+        self.assertEqual(self.started, [self.second["id"], self.first["id"]])
+        self.assertEqual(self.hold(), ("none", False, self.USING.format(self.first["label"])))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def before_the_sleep(self):
+        """The account in use was read at 95% and, 4 minutes later, at 96%. `second` is at 92%."""
+        self.read(first=95, second=92, wanted=100)
+        self.engine.clock.advance(240)
+        support.with_reading(self.engine, self.first["id"], weekly=96, ends=6 * self.DAY - 240)
+        self.assertLess(self.forecast(), 97)
+        self.check()
+        self.assertEqual(self.started, [])
+
+    def test_a_fill_rate_from_before_a_sleep_is_not_carried_across_it(self):
+        """Found by the fourth review of the change for a paused account. The forecast carried the rate across
+        the 1000 seconds the Mac slept, said 100%, and the terminals moved as soon as the reading of `second`
+        landed. The Mac was asleep, so the account was not used from here in that time."""
+        self.before_the_sleep()
+        self.asleep(1000)
+        self.assertLess(self.forecast(), 97, "the fill rate was carried across the sleep")
+        self.check()
+        support.with_reading(self.engine, self.second["id"], weekly=92, ends=4 * self.DAY - 1240)
+        self.check(2)
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.hold(), ("none", False, self.USING.format(self.first["label"])))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def test_the_same_time_with_the_app_running_is_counted(self):
+        """The reverse. The app ran for those 1000 seconds and no reading of the account in use came. That is
+        what the forecast is for: the account may have been used all that time."""
+        self.before_the_sleep()
+        self.engine.clock.advance(1000)
+        self.assertGreaterEqual(self.forecast(), 99)
+        support.with_reading(self.engine, self.second["id"], weekly=92, ends=4 * self.DAY - 1240)
+        self.check()
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+
+    def test_only_a_gap_of_a_minute_or_more_counts_as_time_the_app_did_not_run(self):
+        """A check comes every 5 seconds. Under load one can come 20 seconds late, with the Mac awake and
+        Claude Code running, and that is not a sleep."""
+        engine = self.engine
+        for seconds in (5, 20, 59):
+            self.asleep(seconds)
+        self.assertEqual(engine.idle_since(0), 0)
+        self.asleep(61)
+        woke = engine.clock()
+        self.assertAlmostEqual(engine.idle_since(woke - 1), 61 - engine.tick_seconds, places=3)
+        self.assertEqual(engine.idle_since(woke), 0, "a reading taken at the wake or after it was taken with the app running")
+        self.asleep(1000)
+        self.assertAlmostEqual(engine.idle_since(woke - 1), 1061 - 2 * engine.tick_seconds, places=3)
+        self.assertAlmostEqual(engine.idle_since(woke), 1000 - engine.tick_seconds, places=3)
+        # The list does not grow for as long as the app runs: the newest 32 are kept.
+        for _ in range(40):
+            self.asleep(70)
+        self.assertEqual(len(engine.gaps), 32)
+        self.assertAlmostEqual(engine.idle_since(woke), 32 * (70 - engine.tick_seconds), places=3)
+
+    def test_the_time_the_terminals_came_is_noted_at_every_change_of_account(self):
+        engine = self.engine
+        start = engine.in_use_since["claude_cli"]
+        self.assertLess(start, engine.clock() - 7000, "the first look at who is signed in did not note the time")
+        engine.sense_active()
+        self.assertEqual(engine.in_use_since["claude_cli"], start, "a look that found the same account started the count again")
+        self.read(first=100, second=30, wanted=100)
+        self.check()
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assertLess(engine.clock() - engine.in_use_since["claude_cli"], 60)
+        # The Mac's clock is set back: the time the terminals came would be ahead of every new reading.
+        came = engine.in_use_since["claude_cli"]
+        engine.clock.advance(-3600)
+        now = engine.clock()
+        engine._check_resume(now)
+        self.assertEqual(engine.in_use_since["claude_cli"], now)
+        self.assertLess(now, came)
 
 
 class TerminalFailedSwitchTest(DeckCase):

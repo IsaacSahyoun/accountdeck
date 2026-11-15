@@ -53,6 +53,7 @@ SLOW_EVERY = 60.0             # shared setup and Codex conversations
 STATUS_MIN = 1.0
 MACHINE_TTL = 1.5             # how old a process observation a snapshot may reuse (real seconds)
 READY_GRACE = 30.0            # `ready` turns true after this long even if a first reading is still missing
+IDLE_GAP = 60.0               # a tick that comes this long after the one before: the app did not run meanwhile
 PLAN_GRACE = 600.0            # a plan is kept this long after it expired
 MAX_SETUP_BYTES = 8 * 1024 * 1024
 HOT_USED, EXHAUSTED_USED = 95.0, 99.5
@@ -138,6 +139,12 @@ class Engine:
         self.plans, self.login = {}, None
         self.active_identity = {name: None for name in self.providers}
         self.identity_known = {name: False for name in self.providers}
+        # Since when each client's account in use has been the one in use, as far as this run of the app saw
+        # it (None: nobody signed in so far), and each stretch of `IDLE_GAP` or more in which the app did not
+        # run: (when it ran again, how long it had not). The forecast of an account's usage reads both
+        # (`cli_auto._forecast`). Kept in memory: a new run starts the count again.
+        self.in_use_since = {name: None for name in self.providers}
+        self.gaps = ()
         self.closers = []                    # called once by stop(), e.g. a Codex sign-in helper
         self.scheduler = RefreshScheduler(self._refresh, inline=inline)
         self.accounts = AccountService(self.store, self.vault, self.providers, clock=clock, observed=self.observed,
@@ -261,7 +268,7 @@ class Engine:
                     self.identity_known[name] = False
                     continue
                 changed |= (identity, True) != (self.active_identity[name], self.identity_known[name])
-                self.active_identity[name], self.identity_known[name] = identity, True
+                self.uses(name, identity, now)
                 if name == "claude_cli":
                     continue
                 before = self.accounts.unsaved[name]
@@ -271,6 +278,14 @@ class Engine:
                     self.accounts.touch_active(name, identity, now)
         if changed:
             self.bump()
+
+    def uses(self, name, identity, now):
+        """Notes the account a client is signed in to (None: signed out). The one place that writes it, so the
+        time the client came to that account follows every change of it: one `sense_active` reads, and a switch
+        of Claude Code that just ended (`switch_cli.perform`), which notes it before the next look."""
+        if identity != self.active_identity[name]:
+            self.in_use_since[name] = now
+        self.active_identity[name], self.identity_known[name] = identity, True
 
     # ---- provider status ----
     def status(self, provider, now=None):
@@ -499,7 +514,20 @@ class Engine:
                 diagnostics.log_exception("engine.tick_failed", exc)
             self.stopping.wait(self.tick_seconds)
 
+    def idle_since(self, at):
+        """How many seconds the app did not run since `at`: the Mac slept, or its clock was set ahead. A tick
+        that comes under a minute late is not counted. Under load one comes 20 seconds late with the Mac awake."""
+        return sum(seconds for when, seconds in self.gaps if when > at)
+
     def _check_resume(self, now):
+        # For the forecast: the time since the tick before this one, when it is `IDLE_GAP` or more, is time
+        # the app did not run. And with the Mac's clock set back, the time the terminals came to an account
+        # would be ahead of every new reading, so it starts again now.
+        if self._last_tick is not None and now - self._last_tick >= IDLE_GAP:
+            self.gaps = (*self.gaps[-31:], (now, now - self._last_tick - self.tick_seconds))
+        for name, since in self.in_use_since.items():
+            if since is not None and since > now:
+                self.in_use_since[name] = now
         wall = self.real_time()
         jumped = wall - self._wall > 3 * self.tick_seconds
         self._wall = wall

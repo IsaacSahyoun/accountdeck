@@ -2,7 +2,8 @@
 
 `evaluate` decides, for the active terminal account, whether to switch now and to which account:
 - threshold: any considered limit (weekly, Fable weekly, the pinned model's weekly) at or past
-  `cli_threshold`, or projected to pass it before the next read can land (the burn-rate forecast);
+  `cli_threshold`, or projected to pass it before the next read can land (the burn-rate forecast, which
+  the executor makes from the account's readings since the terminals came to it, `cli_auto._forecast`);
 - out / login: a limit reached or a sign-in that needs renewing switches whatever the threshold;
 - eligible targets have a reading at most 15 minutes old and at least 10 points of room below the
   threshold in every considered window; left-out, frozen and needs-sign-in accounts never qualify;
@@ -126,9 +127,11 @@ def same_window(a, b):
     return a == b if a is None or b is None else abs(a - b) <= SAME_RESET
 
 
-def forecast(readings, now, horizon):
+def forecast(readings, now, horizon, idle=0.0):
     """Projected % used at `now + horizon` from one window's recent readings (oldest first, {"at", "used",
-    "reset"}), or None without a rising trend or when the window refills first."""
+    "reset"}), or None without a rising trend or when the window refills first. `idle` is how much of the
+    time since the last reading the app did not run (the Mac slept): the account was not used from here in
+    that time, so the rate is not carried across it."""
     if not readings:
         return None
     last = readings[-1]
@@ -139,7 +142,7 @@ def forecast(readings, now, horizon):
         return None
     if number(last.get("reset")) is not None and last["reset"] <= now + horizon:
         return None
-    return last["used"] + (last["used"] - first["used"]) / span * (now + horizon - last["at"])
+    return last["used"] + (last["used"] - first["used"]) / span * (max(0.0, now - last["at"] - idle) + horizon)
 
 
 def reset(window):
@@ -404,8 +407,7 @@ def _need(active, threshold, history, now):
     `old` row passes it over as a target (`_leave`), so the terminals do not come straight back to it. A
     reading that is over 15 minutes old with no pause does not count. Every reading is that old for some
     seconds after a start or a wake, and the terminals would move for no cause whenever another account
-    was read first. (A forecast of 99% made from readings before a sleep still moves them at the wake, as it
-    did before this rule.) Nor does the pause of an account the terminals came to by an automatic switch less than
+    was read first. (A forecast is not carried across a sleep either: `cli_auto._forecast`.) Nor does the pause of an account the terminals came to by an automatic switch less than
     `STAY` ago (`_came`). After a switch the engine asks for a reading of that account, and when Claude
     refused it the terminals left again minutes later, for as long as Claude refused. A switch on a last
     reading moves to a paused account on purpose, and it was left seconds later for the next one that was

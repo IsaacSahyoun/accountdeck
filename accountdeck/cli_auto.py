@@ -59,15 +59,27 @@ FORECAST_MARGIN, FORECAST_CAP = 60.0, 1800.0
 
 def _forecast(engine, row, now):
     """Projected % used per window id of the active account when its next read can land (planned time or
-    the governor's wait, whichever is later, plus a margin for the read itself)."""
+    the governor's wait, whichever is later, plus a margin for the read itself).
+
+    The rate comes from the readings since the terminals came to the account (`Engine.in_use_since`). An
+    account they just came to has none, and is judged on its readings until it has two of its own that are
+    2 minutes apart. Its readings from before say how fast it filled when it was last used, and with two
+    accounts that both filled fast, and no account with room, the terminals went from one to the other at
+    every check: each was left on its forecast and could still be used up by its reading.
+    Time the app did not run since the last reading is not counted (`Engine.idle_since`). The Mac slept,
+    so the account was not used from here, and a rate carried across the sleep moved the terminals at the
+    wake. With the app running and no reading coming, the time counts: that is what the forecast is for."""
     planned = engine.scheduler.planned(row["id"])
     wait = engine.scheduler.governor.delay(("claude_cli", row["identity"]), now, urgent=True)
     horizon = min(max((planned or now) - now, wait, 0.0) + FORECAST_MARGIN, FORECAST_CAP)
+    came = engine.in_use_since.get("claude_cli")
+    since = max(now - cli_policy.FORECAST_SPAN - 600, now if came is None else came)
     result = {}
     for window in (row["last_good_usage"] or {}).get("windows", []):
         if isinstance(window, dict) and isinstance(window.get("id"), str):
-            value = cli_policy.forecast(engine.store.readings(row["id"], window["id"], since=now - cli_policy.FORECAST_SPAN - 600),
-                                        now, horizon)
+            readings = engine.store.readings(row["id"], window["id"], since=since)
+            idle = engine.idle_since(readings[-1]["at"]) if readings else 0.0
+            value = cli_policy.forecast(readings, now, horizon, idle)
             if value is not None:
                 result[window["id"]] = value
     return result

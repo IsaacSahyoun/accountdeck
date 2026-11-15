@@ -1037,6 +1037,24 @@ class PausedAccountTest(unittest.TestCase):
                 self.assertEqual(in_use("gamma", dict(age=60), forecast), ("switch", "alpha", None))
 
 
+class ForecastTest(unittest.TestCase):
+    """`cli_policy.forecast`: the last reading of one limit, plus the rate its readings rose at, for the time
+    since that reading and until the next one can land."""
+
+    def test_time_the_app_did_not_run_is_not_counted(self):
+        """Found by the fourth review of the change for a paused account, in the installed build too (2.2.1,
+        commit 41420bb). The Mac slept for 1000 seconds after a reading. The rate was carried across the sleep
+        and the forecast said 100%."""
+        readings = [{"at": NOW - 1240, "used": 95.0, "reset": NOW + 3 * DAY}, {"at": NOW - 1000, "used": 96.0, "reset": NOW + 3 * DAY}]
+        rate = 1 / 240
+        self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60), 96 + rate * 1060)
+        self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 0), 96 + rate * 1060)
+        self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 1000), 96 + rate * 60)
+        self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 400), 96 + rate * 660)
+        # More time not running than the reading is old (the Mac's clock was set back): the time ahead still counts.
+        self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 5000), 96 + rate * 60)
+
+
 def failing(key, weekly=30, weekly_reset=2 * DAY, *, age=240, **fields):
     """An account whose last read failed: a read of it failed, and none has worked since
     (`RefreshScheduler.failing`). Its last reading is 4 minutes old, older than a switch is made on."""
