@@ -568,15 +568,20 @@ class Store:
 
         A read dates its answer when it comes and stores it a moment later, after a switch that is running.
         A reading dated after the clock as it reads here was answered before the Mac's clock was set back.
-        It is stored like any other and not noted for `taken`: among the readings that follow, its date says
-        nothing about the time between it and them."""
-        now = self.clock()
-        at = now if at is None else at
+        It is stored like any other, and noted for `taken` as taken now: among the readings that follow, its
+        own date says nothing about the time between it and them. It is not left out, because the readings
+        before it would then go on without the newest one. The clock is read under the lock, the one
+        `reading_mark` takes: a look at the clock before it could be from before a set-back that the engine
+        has seen by the time the reading gets its place in the count. A reading that waited for a switch for
+        longer than the clock was set back in that time is not dated after the clock, and keeps its date:
+        the time from it to the readings after it is short by that set-back, which is less than the wait."""
         payload = _encode(usage)
-        rows = [(key, window["id"], at, window["used"], window.get("reset"))
-                for window in usage.get("windows") or ()
-                if isinstance(window, dict) and isinstance(window.get("id"), str) and _is_number(window.get("used"))]
         with self.lock:
+            now = self.clock()
+            at = now if at is None else at
+            rows = [(key, window["id"], at, window["used"], window.get("reset"))
+                    for window in usage.get("windows") or ()
+                    if isinstance(window, dict) and isinstance(window.get("id"), str) and _is_number(window.get("used"))]
             if self._foreign(key):
                 return
             self.db.execute("UPDATE accounts SET last_good_usage=?, last_good_at=?, error=NULL, error_code=NULL "
@@ -589,10 +594,9 @@ class Store:
             self.db.execute("DELETE FROM readings WHERE at < ?", (now - _READING_DAYS * _DAY,))
             self.db.commit()
             self._takes += 1
-            if at <= now:
-                for _, window, _, used, reset in rows:
-                    kept = self._taken.setdefault((key, window), collections.deque(maxlen=TAKEN_KEPT))
-                    kept.append((self._takes, at, used, reset))
+            for _, window, _, used, reset in rows:
+                kept = self._taken.setdefault((key, window), collections.deque(maxlen=TAKEN_KEPT))
+                kept.append((self._takes, min(at, now), used, reset))
 
     def readings(self, key, window, since=None):
         """[{"at", "used", "reset"}] of one window, oldest first."""
@@ -613,7 +617,7 @@ class Store:
     def taken(self, key, window, after):
         """[{"at", "used", "reset"}] of one window, in the order they were stored: the readings this run of the
         app has stored since the mark `after` was taken (`reading_mark`), the newest `TAKEN_KEPT` of them. One
-        dated after the clock at the moment it was stored is not among them (`observe`)."""
+        dated after the clock at the moment it was stored has the time it was stored at (`observe`)."""
         with self.lock:
             return [{"at": at, "used": used, "reset": reset}
                     for count, at, used, reset in self._taken.get((key, window), ()) if count > after]

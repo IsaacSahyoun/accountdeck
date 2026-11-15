@@ -8,6 +8,7 @@ import uuid
 
 from . import diagnostics, readings
 from .cli_locks import credential_locks
+from .cli_policy import number
 from .core import DeckError, OwnerLock, is_frozen
 from .providers.claude_cli import expires, fingerprint, object_file, oauth, profile
 from .platform.facts_mac import remove_work_directory
@@ -468,9 +469,10 @@ class CLIAccounts:
         is 30 minutes after the last renewal that was asked for, or the wait a read noted for the account
         when that is later (`_blocked`): Claude can refuse a renewal and say to wait up to an hour. The pause
         on the row keeps reads off for that hour. The app dying after the wait was noted and before the pause
-        was left no pause, and 30 minutes later a read asked Claude again, inside the hour."""
-        noted = self.renewal_waits().get(key)
-        until = max(saved.get("refresh_attempt", -1e20) + RENEWAL_WAIT, noted if isinstance(noted, (int, float)) else -1e20)
+        was left no pause, and 30 minutes later a read asked Claude again, inside the hour. A wait counts
+        when the rule counts it too (`cli_policy.number`): one read back as infinity is no wait."""
+        noted = number(self.renewal_waits().get(key))
+        until = max(saved.get("refresh_attempt", -1e20) + RENEWAL_WAIT, -1e20 if noted is None else noted)
         return until if now < until else None
 
     def _settle_read(self, key, flags, **fields):

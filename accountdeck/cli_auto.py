@@ -74,7 +74,8 @@ def _forecast(engine, row, now):
     engine starts the forecast over (`Engine._awake`). A reading dated after now, by a change too small for
     the engine to see, counts as taken now. The file's own order does not say it either: removing an account
     takes rows out of it, and history brought over from another computer puts old readings in. A reading
-    that was answered before the clock was set back and stored after it is not among them (`Store.observe`)."""
+    that was answered before the clock was set back and stored after it, and is dated after the clock by
+    then, has the time it was stored at (`Store.observe`)."""
     came = engine.forecast_from.get("claude_cli")
     if came is None:
         return {}
