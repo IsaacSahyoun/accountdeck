@@ -1,8 +1,10 @@
 """What AccountDeck measures and decides, on synthetic data: the terminal auto-switch rule as a decision table,
 and usage readings, refills and account upkeep for all four clients. Builder B's file (2026-11-12 refactor)."""
 import copy
+from functools import cmp_to_key
 import http.server
 import itertools
+import math
 from pathlib import Path
 import threading
 import time
@@ -631,7 +633,9 @@ class ChainedOrderTest(unittest.TestCase):
         chain = [account("beta", 45, 5 * DAY), account("gamma", 46, 4 * DAY), account("delta", 47, 3 * DAY)]
         self.assertEqual(self.answers(chain, cli_order="most_room"), {("gamma", ("gamma", "beta", "delta"))})
 
-    def test_a_group_of_weeks_is_counted_from_its_soonest_week_and_is_an_hour_wide(self):
+    def test_a_group_of_weeks_is_an_hour_wide_with_the_hour_in_it(self):
+        """How wide a group is, as it was before: none of these is a chain, so two by two gave the same. The
+        tests of a chain hold where a group is counted from."""
         def order(*ends):
             return self.order([account(key, used, end) for (key, used, _), end in zip(self.CHAIN, ends)])
         self.assertEqual(order(3 * DAY, 3 * DAY + HOUR, 5 * DAY), ("gamma", "beta", "delta"))           # an hour apart: together
@@ -641,7 +645,8 @@ class ChainedOrderTest(unittest.TestCase):
         # All three within the hour of the soonest: one group, the most room first.
         self.assertEqual(order(3 * DAY, 3 * DAY + 1800, 3 * DAY + HOUR), ("delta", "gamma", "beta"))
 
-    def test_a_group_of_room_is_counted_from_the_most_room_and_is_a_point_wide(self):
+    def test_a_group_of_room_is_a_point_wide_with_the_point_in_it(self):
+        """How wide a group is, as it was before: none of these is a chain."""
         def order(*used):
             others = [account(key, percent, end) for key, percent, end in zip(("beta", "gamma", "delta"), used, (5 * DAY, 4 * DAY, 3 * DAY))]
             return self.order(others, cli_order="most_room")
@@ -660,10 +665,19 @@ class ChainedOrderTest(unittest.TestCase):
         others = [account("beta", 65, 3 * DAY + 3000), account("gamma", 45, 3 * DAY + 6000)]
         self.assertEqual(self.answers(others, alpha=(96, 3 * DAY)), {("beta", ("beta", "gamma"))})
 
+    def test_an_account_that_is_left_out_takes_part_in_the_groups(self):
+        """The same decision for an account the user left out of auto-switch. Delta's week ends first, and it
+        is never switched to. Beta's ends within the hour of Delta's, and Gamma's over an hour after it."""
+        others = [account("delta", 25, 3 * DAY, excluded=True), account("beta", 65, 3 * DAY + 3000),
+                  account("gamma", 45, 3 * DAY + 6000)]
+        self.assertEqual(self.answers(others), {("beta", ("delta", "beta", "gamma"))})
+
     def test_a_chain_of_weeks_has_one_order_among_accounts_kept_for_their_week(self):
         """The account in use works for no model and every other account has its Fable limit out. Those are
-        ordered by the room of their week, through the same order (`cli_policy._leave`)."""
-        chain = [account(*one, model=100) for one in self.CHAIN]
+        ordered by the room of their week, through the same order (`cli_policy._leave`). Their Fable limits
+        are at 100, 99 and 98%, so they are a chain in the order of every account too: with one Fable number
+        for all three that order had one answer two by two, and so had this one."""
+        chain = [account(*one, model=used) for one, used in zip(self.CHAIN, (100, 99, 98))]
         self.assertEqual({target for target, _ in self.answers(chain, alpha=(100, 6 * DAY))}, {"gamma"})
 
     def test_accounts_without_a_week_come_last_and_two_of_one_name_have_one_order(self):
@@ -688,6 +702,36 @@ class ChainedOrderTest(unittest.TestCase):
                 found = {tuple(row["id"] for row in cli_policy._ordered(list(listing), settings)) for listing in itertools.permutations(rows)}
                 if len(found) != 1:
                     self.fail(f"{mode}: {picked} is ordered {sorted(found)}")
+
+    def test_without_a_chain_the_order_is_what_two_by_two_gave(self):
+        """`two_by_two` is the comparison the order was made with through 2.2.0. Where no three accounts are a
+        chain it is an order, and the groups give the same one. The grid is the one above, with two weeks an
+        hour apart and two rooms a point apart in it."""
+        def two_by_two(a, b, most_room):
+            ar, br = a["weekly_reset"] or math.inf, b["weekly_reset"] or math.inf
+            am, bm = a["room"] if a["room"] is not None else -math.inf, b["room"] if b["room"] is not None else -math.inf
+            primary = ((br - ar) if abs(am - bm) <= 1 else am - bm) if most_room else (am - bm if abs(ar - br) <= HOUR else br - ar)
+            if primary and not math.isnan(primary):
+                return -1 if primary > 0 else 1
+            return (a["label"] > b["label"]) - (a["label"] < b["label"])
+
+        def chain(values, width):
+            known = [value for value in values if value is not None]
+            return any(abs(a - b) <= width and abs(b - c) <= width and abs(a - c) > width
+                       for a, b, c in itertools.permutations(known, 3))
+        weeks, rooms = (None, NOW + 3 * DAY, NOW + 3 * DAY + 1800, NOW + 3 * DAY + HOUR + 1, NOW + 3 * DAY + 5400), (None, 10, 11, 12)
+        plain = 0
+        for most_room in (False, True):
+            settings = {"cli_order": "most_room" if most_room else "soonest_reset"}
+            for picked in itertools.product(itertools.product(weeks, rooms), repeat=3):
+                rows = [{"id": key, "label": key.upper(), "weekly_reset": week, "room": room} for key, (week, room) in zip("abc", picked)]
+                if chain([row["room"] for row in rows], 1) if most_room else chain([row["weekly_reset"] for row in rows], HOUR):
+                    continue
+                plain += 1
+                was = sorted(rows, key=cmp_to_key(lambda a, b: two_by_two(a, b, most_room)))
+                if cli_policy._ordered(rows, settings) != was:
+                    self.fail(f"{settings['cli_order']}: {picked} was {[row['id'] for row in was]}")
+        self.assertGreater(plain, 10000)
 
 
 class FailedSwitchTest(unittest.TestCase):

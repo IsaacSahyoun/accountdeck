@@ -259,10 +259,12 @@ def _ordered(rows, settings):
     Weeks that end within the hour of each other end together, and of those the account with the most room
     goes first. Under "most room first", room within a point is the same room, and of those the week that ends
     sooner goes first. Compared two by two, that is no order: with three weeks that each end within the hour
-    of the next, the first and the last are further apart, and the sort put a different account first for
-    each order the store listed them in. So the rows are grouped from the first one (`_grouped`): a week ends
-    with a group while it ends within the hour of the soonest week of that group. Two accounts are ordered as
-    they were, and so are three without such a chain."""
+    of the next, the first and the last are further apart, and the first account depended on the order the
+    store listed them in. So the rows are grouped from the first one (`_grouped`): a week is in a group while
+    it ends within the hour of the soonest week of that group. Without such a chain the order is what it
+    was, except for two accounts of one name that are equal in both values: those go by their id, where the
+    listing decided. A reset time that reads a second later at the edge of a group moves that edge, and with
+    a chain behind it the edges of the groups after it too."""
     def name(row):
         return (row["label"].casefold(), row["id"])
 
