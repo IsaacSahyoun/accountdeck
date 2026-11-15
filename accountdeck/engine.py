@@ -633,7 +633,8 @@ class Engine:
                 "running": self._running(name, machine, now),
                 "switching": bool(pending and pending["provider"] == name and pending["phase"] not in TERMINAL_PHASES),
                 "paused": bool(self.prefs.get("refresh_paused")) or self.scheduler.provider_pause.get(name, False)}
-        providers["claude_cli"].update(autoswitch=cli_auto.state(self), enrollment=copy.deepcopy(self.cli.phase),
+        providers["claude_cli"].update(autoswitch=cli_auto.state(self, providers["claude_cli"]["switching"]),
+                                        enrollment=copy.deepcopy(self.cli.phase),
                                         readonly_reason=self.cli.adapter.readonly_reason)
         raw = {"app": "accountdeck2", "version": __version__, "rev": rev, "mode": self.mode, "safe_mode": safe_mode(),
                "ready": self._ready(rows, now), "read_only": self.read_only, "settings": settings,

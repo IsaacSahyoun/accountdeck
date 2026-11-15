@@ -603,8 +603,8 @@ class FailedSwitchTest(unittest.TestCase):
     TWICE = "A switch to {} was tried and is tried again in {} at the earliest"
     SEVERAL = "Switches to {} were tried. The next try is in {} at the earliest"
 
-    def decide(self, *others, alpha=100, tried=None, **settings):
-        active = account("alpha", alpha, 6 * DAY, active=True)
+    def decide(self, *others, alpha=100, fable=None, tried=None, **settings):
+        active = account("alpha", alpha, 6 * DAY, active=True, model=fable)
         history = {"tried": {key: {"at": NOW - ago, "count": count} for key, (ago, count) in (tried or {}).items()}}
         return cli_policy.evaluate([active, *copy.deepcopy(list(others))], {**SETTINGS, **settings}, history, NOW)
 
@@ -648,6 +648,14 @@ class FailedSwitchTest(unittest.TestCase):
         # A note of an account the rule does not choose holds nothing.
         self.assertEqual(self.answer(account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY), tried={"gamma": (5, 1)})[:2],
                          ("switch", "beta"))
+
+    def test_the_first_wait_is_the_accounts_and_a_new_first_account_is_moved_to(self):
+        """Raised by the second review of this change and kept as it is. During the wait a new reading puts
+        Gamma first. Gamma has had no failed try and is where the rule goes on these readings, so the terminals
+        move there at once. Waiting would keep them on an account that ran out with the right one ready."""
+        gamma, how = account("gamma", 31, 4 * DAY), dict(cli_order="most_room", tried={"beta": (5, 1)})
+        self.assertEqual(self.answer(account("beta", 30, 2 * DAY), gamma, **how), ("none", None, self.ONCE.format("Beta"), False))
+        self.assertEqual(self.answer(account("beta", 33, 2 * DAY), gamma, **how), ("switch", "gamma", None, False))
 
     def test_after_a_second_try_in_a_row_the_next_account_is_used(self):
         others = [account("beta", 30, 2 * DAY), account("gamma", 30, 4 * DAY)]
@@ -719,6 +727,34 @@ class FailedSwitchTest(unittest.TestCase):
                 self.assertEqual(self.answer(account("beta", used, 2 * DAY), tried={"beta": (5, 2)}), ("none", None, None, True))
                 skip = self.decide(account("beta", used, 2 * DAY), tried={"beta": (5, 2)})["next_up"][0]["skip"]
                 self.assertEqual(skip, f"weekly at {used}%")
+
+    def test_an_account_this_decision_could_not_use_anyway_does_not_hold_the_alert_back(self):
+        """Found by the second review of this change. The account in use and Beta both have their Fable limit
+        out and their week left. An account is used for its week alone only when the one in use works for no
+        model, so Beta is no target here, with or without its note. The hold promised a try that would not
+        come and kept "All terminal accounts are low" back until the note was 15 minutes old."""
+        beta = account("beta", 30, 2 * DAY, model=100)
+        # The account in use still works: its Fable limit is out and its week is not, or its week is at 99%.
+        for in_use in (dict(alpha=30, fable=100), dict(alpha=99)):
+            for tried in (None, {"beta": (5, 2)}):
+                with self.subTest(in_use=in_use, tried=tried):
+                    self.assertEqual(self.answer(beta, tried=tried, **in_use), ("none", None, None, True))
+        # Once the account in use works for no model, Beta's week is a target, and its note counts.
+        self.assertEqual(self.answer(beta, alpha=100, fable=100)[:2], ("switch", "beta"))
+        self.assertEqual(self.answer(beta, alpha=100, fable=100, tried={"beta": (5, 2)}),
+                         ("none", None, self.TWICE.format("Beta", "15 min"), False))
+
+    def test_the_time_left_falls_when_the_note_is_dated_after_now(self):
+        """Found by the second review of this change. The Mac's clock was set back since the try, so the note is
+        dated after now, and it counts until 15 minutes after its date. The hold gave the time left as if the
+        note were that old: 5 minutes for a note dated 10 minutes ahead, and more at every later check."""
+        beta = account("beta", 30, 2 * DAY)
+        for ago, left in ((-600, "25 min"), (-300, "20 min"), (-1, "16 min"), (0, "15 min"), (300, "10 min")):
+            with self.subTest(tried_seconds_ago=ago):
+                self.assertEqual(self.answer(beta, tried={"beta": (ago, 2)})[2], self.TWICE.format("Beta", left))
+        others = [beta, account("gamma", 30, 4 * DAY)]
+        self.assertEqual(self.answer(*others, tried={"beta": (-600, 2), "gamma": (300, 2)})[2],
+                         self.SEVERAL.format("Beta, Gamma", "10 min"))
 
     def test_an_account_with_room_is_waited_for_while_the_one_in_use_still_works(self):
         """As for an account with an old reading: at the threshold, and at 99%, the account in use still works,

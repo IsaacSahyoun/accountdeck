@@ -13,7 +13,8 @@
   an account that had run out;
 - an automatic switch that did not get the terminals to its account is not started again at the next check.
   It is started once more 90 seconds after it was started (`AGAIN`), and the terminals stay where they are
-  until then: most failures are over by then (Claude Code was renewing its own login, a lookup failed). After
+  until then: most failures are over by then (Claude Code was renewing its own login, a lookup failed). The
+  wait is the account's: a new reading that puts another account first moves the terminals there. After
   a second try in a row the account is no target for 15 minutes (`RETRY`), and the next account is used
   meanwhile. An account with room is waited for while the account in use still works, like one with an old
   reading;
@@ -163,9 +164,10 @@ def evaluate(accounts, settings, history, now):
         result.update(_early(rows, active, history, now))
     # A switch to this account was started less than `AGAIN` ago and the terminals are not there. Most failures
     # are not the account's and are over in a minute: Claude Code held its login lock, or a lookup of whose
-    # login is live failed, which is not asked again for 60 seconds (`CLIAccounts.owner`). So the same switch
+    # login is live failed (every automatic switch asks again itself, `CLISwitch.run`). So the same switch
     # is tried once more before the account is passed over, and the terminals stay until then. Moving on at
-    # once sent them to the next account for one failure that had nothing to do with the first.
+    # once sent them to the next account for one failure that had nothing to do with the first. The wait
+    # belongs to the account: when a new reading puts another account first, that one is moved to.
     chosen = next((row for row in rows if row["id"] == result["target"]), None)
     if chosen is not None and chosen["again"]:
         result.update(action="none", target=None, kind=None, reason="",
@@ -221,15 +223,21 @@ def _row(account, settings, threshold, now, note=None):
     # check, 5 seconds later, started the same switch again. After a first try the account stays a target and
     # the rule waits (`evaluate`). After a second try in a row it is no target of any kind for `RETRY`: not
     # with room, not to be used up, not for its week. An account that is no target anyway keeps its own words.
-    wait = 0 if note is None else (AGAIN if note[1] == 1 else RETRY) - abs(now - note[0])
-    failed = wait > 0 and note[1] > 1 and (skip is None or drainable or week_only is not None)
-    roomy = failed and skip is None
+    # A note counts while now is within the limit of its date, on either side: one dated after now (the Mac's
+    # clock was set back) then counts for no more than twice the limit. `wait` is the time left until it ends.
+    limit = 0 if note is None else AGAIN if note[1] == 1 else RETRY
+    wait = note[0] + limit - now if note is not None and abs(now - note[0]) < limit else 0
+    # `failed` names what the account is a target as without its note: with room, to be used up ("drain"), or
+    # for its week alone, which only an account in use that works for no model is left for (`_leave`).
+    failed = None
+    if wait > 0 and note[1] > 1:
+        failed = "room" if skip is None else "drain" if drainable else "week" if week_only is not None else None
     if failed:
         skip, drainable, week_only = f"switch tried {max(1, math.ceil((now - note[0]) / 60))} min ago", False, None
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
             "weekly_reset": reset(values[0][2]), "account": account, "values": values,
             "drainable": drainable, "week_only": week_only, "stale": stale, "old": old, "paused": paused,
-            "again": wait > 0 and note[1] == 1, "failed": failed, "roomy": roomy, "wait": wait}
+            "again": wait > 0 and note[1] == 1, "failed": failed, "wait": wait}
 
 
 def _ordered(rows, settings):
@@ -337,9 +345,10 @@ def _leave(need, rows, active, history, settings, now):
         return _checking(stale)
     # An account a switch was tried to twice is tried again `RETRY` after that. One with room is waited for
     # while the account in use still works, as a new reading is. One past the threshold is not: it was a last
-    # resort.
-    failed = [row for row in rows if row["failed"]]
-    roomy = [row for row in failed if row["roomy"]]
+    # resort. A note counts only for an account this decision would use without it: while the account in use
+    # still works, one kept for its week alone is no target, and its note holds nothing back.
+    failed = [row for row in rows if row["failed"] and (row["failed"] != "week" or not need["yields"])]
+    roomy = [row for row in failed if row["failed"] == "room"]
     if roomy and need["yields"]:
         return _retry(roomy)
     if need["trigger"] == "threshold" and need["peak"] < DRAIN_CEILING:

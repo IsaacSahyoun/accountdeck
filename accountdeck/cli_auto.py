@@ -26,15 +26,22 @@ def history(engine):
 
 def note_try(engine, key):
     """Notes that an automatic switch to `key` starts now, under `tried` in the history: the time, and which try
-    in a row it is. A try within the hour of the last one counts on from it. `CLISwitch` calls this before it
-    does anything else and takes the note out once the switch worked, and `tick` takes out the note of the
-    account in use. The rule waits `cli_policy.AGAIN` after a first try and passes the account over for
-    `cli_policy.RETRY` after a second in a row (`cli_policy.evaluate`, `_row`). An older note says nothing."""
+    in a row it is. `CLISwitch` calls this before it does anything else and takes the note out once the switch
+    worked, and `tick` takes out the note of the account in use. The rule waits `cli_policy.AGAIN` after a
+    first try and passes the account over for `cli_policy.RETRY` after a second in a row
+    (`cli_policy.evaluate`, `_row`). An older note says nothing.
+
+    A try counts on from the last one while that one is recent. After a first try the second is due 90
+    seconds later, so one that comes more than `RETRY` after it is a first try again: the second was never
+    made (the user moved the terminals, or the need went away), and counting on made one passing failure
+    pass the account over. After a second try the next is due `RETRY` later, or 30 minutes later after a
+    refused renewal, so those count on within the hour."""
     now = engine.clock()
     with history(engine) as past:
         notes = past.get("tried") if isinstance(past.get("tried"), dict) else {}
         last = cli_policy.tried(notes.get(key))
-        count = last[1] + 1 if last is not None and abs(now - last[0]) < cli_policy.HOUR else 1
+        recent = last is not None and abs(now - last[0]) < (cli_policy.RETRY if last[1] == 1 else cli_policy.HOUR)
+        count = last[1] + 1 if recent else 1
         past["tried"] = {**notes, key: {"at": now, "count": count}}
 
 
@@ -83,16 +90,18 @@ def decision(engine, settings=None):
                                engine.store.setting("cli_history", {}), engine.clock())
 
 
-def state(engine):
+def state(engine, switching=False):
     """The state's `providers.claude_cli.autoswitch` block: the decision and the order under each mode
-    (one pass over the store, evaluated four times)."""
+    (one pass over the store, evaluated four times). While an operation of Claude Code runs (`switching`) the
+    rule decides nothing and no hold is given: the note of an automatic switch is written when it starts, so
+    the hold said that switch "was tried a moment ago and is tried once more" while it ran."""
     settings, rows = engine.prefs.public(), inputs(engine)
     history, now = engine.store.setting("cli_history", {}), engine.clock()
     result = cli_policy.evaluate(rows, settings, history, now)
     return {"enabled": settings["cli_autoswitch"], "threshold": settings["cli_threshold"],
             "order_mode": settings["cli_order"], "early_switch": settings["cli_early_switch"],
             "next_up": result["next_up"], "last": history.get("last"),
-            "hold": engine.cli.adapter.readonly_reason or result["hold"],
+            "hold": engine.cli.adapter.readonly_reason or (None if switching else result["hold"]),
             "previews": {mode: cli_policy.evaluate(rows, {**settings, "cli_order": mode}, history, now)["next_up"]
                          for mode in ("soonest_reset", "most_room", "manual")}}
 
@@ -102,19 +111,22 @@ def tick(engine):
     not stop it (such a wait lasts until its confirmation runs out, 30 minutes); any other running operation does."""
     if (not engine.owns_login or not engine.identity_known.get("claude_cli")
             or not engine.runner.free_for("claude_cli", beside_waits=True)
-            or engine.cli.enrollment or engine.recovery or engine.cli.adapter.readonly_reason
-            or engine.prefs.get("refresh_paused")):
+            or engine.cli.enrollment or engine.recovery or engine.cli.adapter.readonly_reason):
         return
     leaving = engine.active_identity.get("claude_cli")     # the account this decision is about
-    result = decision(engine)
     in_use = engine.store.find("claude_cli", leaving)
     with history(engine) as past:
         # The terminals are on this account, however they got there, so a note that a switch to it did not
         # happen is out of date. The app dying after a switch and before its history is written leaves one, and
         # so does a sign-in to that account made in Claude Code. Left there, it had the account passed over
-        # once the terminals moved on.
+        # once the terminals moved on. This comes before the pause of usage checks: auto-switch does nothing
+        # while they are paused, and the terminals are on this account all the same.
         if in_use is not None and isinstance(past.get("tried"), dict):
             past["tried"].pop(in_use["id"], None)
+    if engine.prefs.get("refresh_paused"):
+        return
+    result = decision(engine)
+    with history(engine) as past:
         entered = result["exhausted"] and not past.get("exhausted")
         if entered:
             past["exhausted"] = True

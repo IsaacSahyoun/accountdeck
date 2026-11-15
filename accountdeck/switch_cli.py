@@ -262,6 +262,11 @@ class CLISwitch(Operation):
             # Before anything else, so the note is there whatever stops this switch. Only the end of a switch
             # that worked takes it out (below). A switch by hand is not noted: the user sees it fail.
             cli_auto.note_try(self.engine, self.account)
+            # This switch asks the provider itself whose login is live. A lookup that failed is not repeated for
+            # a minute (`CLIAccounts.owner`), and each check asks again once that minute is over. So the second
+            # try could meet a failure under a minute old and fail on it without asking, with the provider
+            # answering again. The notes keep automatic switches few, so this adds a lookup per try at most.
+            self.engine.cli.owner_retry.clear()
         with self.step("switch", phase="restoring", message="Switching the terminal login…", cancellable=False):
             manifest = diagnostics.Manifest.start(self.id, "switch", directory=self.engine.paths.data_dir / "logs" / "manifests")
             manifest.set("provider", "claude_cli").set("account", diagnostics.account_ref(self.account))
