@@ -959,6 +959,19 @@ class TerminalFailedSwitchTest(DeckCase):
         self.assertEqual((decision["action"], decision["target"], decision["hold"]), ("switch", self.wanted["id"], None))
         self.assertEqual(self.notes(), {})
 
+    def test_a_check_with_nobody_signed_in_leaves_the_notes_alone(self):
+        """A check takes out the note of the account in use. With Claude Code signed out there is none."""
+        cli_auto.note_try(self.engine, self.wanted["id"])
+        Path(self.paths.claude_cli_credentials).unlink()
+        config = json.loads(Path(self.paths.claude_user_config).read_text())
+        config.pop("oauthAccount", None)
+        Path(self.paths.claude_user_config).write_text(json.dumps(config))
+        self.engine.sense_active()
+        self.assertTrue(self.engine.identity_known.get("claude_cli"))
+        self.assertIsNone(self.engine.active_identity.get("claude_cli"))
+        cli_auto.tick(self.engine)
+        self.assertEqual(self.tries(self.wanted), 1)
+
     def test_a_switch_by_hand_that_works_takes_the_note_out(self):
         """The reverse of the note. The user signs the terminals in to the account themselves, so its login
         works. When they move on, the account is a target again at once."""
