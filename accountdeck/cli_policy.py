@@ -41,7 +41,6 @@
   switch, and after one of its own that did not finish. Where a switch at the threshold goes is the order's
   to say, as before.
 """
-from functools import cmp_to_key
 import math
 
 from .core import is_frozen
@@ -240,22 +239,47 @@ def _row(account, settings, threshold, now, note=None):
             "again": wait > 0 and note[1] == 1, "failed": failed, "wait": wait}
 
 
+def _grouped(rows, value, width, then, rest):
+    """`rows` in groups by `value`, from the smallest value on: a group is every row whose value is at most
+    `width` above the smallest of the group. Each group is ordered by `then`. The rows without a value come
+    last, ordered by `rest`."""
+    known = sorted((row for row in rows if value(row) is not None), key=value)
+    ordered, start = [], 0
+    for end in range(1, len(known) + 1):
+        if end == len(known) or value(known[end]) - value(known[start]) > width:
+            ordered += sorted(known[start:end], key=then)
+            start = end
+    return ordered + sorted((row for row in rows if value(row) is None), key=rest)
+
+
 def _ordered(rows, settings):
     """The rows in switching order: the week that ends soonest first, the most room first, or the user's own
-    order with the rest after it."""
-    def compare(a, b, most_room=False):
-        ar, br = a["weekly_reset"] or math.inf, b["weekly_reset"] or math.inf
-        am, bm = a["room"] if a["room"] is not None else -math.inf, b["room"] if b["room"] is not None else -math.inf
-        if most_room:
-            primary = (br - ar) if abs(am - bm) <= 1 else am - bm
-        else:
-            primary = am - bm if abs(ar - br) <= HOUR else br - ar
-        if primary and not math.isnan(primary):
-            return -1 if primary > 0 else 1
-        return (a["label"].casefold() > b["label"].casefold()) - (a["label"].casefold() < b["label"].casefold())
+    order with the rest after it.
+
+    Weeks that end within the hour of each other end together, and of those the account with the most room
+    goes first. Under "most room first", room within a point is the same room, and of those the week that ends
+    sooner goes first. Compared two by two, that is no order: with three weeks that each end within the hour
+    of the next, the first and the last are further apart, and the sort put a different account first for
+    each order the store listed them in. So the rows are grouped from the first one (`_grouped`): a week ends
+    with a group while it ends within the hour of the soonest week of that group. Two accounts are ordered as
+    they were, and so are three without such a chain."""
+    def name(row):
+        return (row["label"].casefold(), row["id"])
+
+    def week(row):
+        return row["weekly_reset"] or None
+
+    def room(row):          # the negative, so that the most room is the smallest value
+        return None if row["room"] is None else -row["room"]
+
+    def last(value):
+        return lambda row: (math.inf if value(row) is None else value(row), name(row))
 
     mode = settings.get("cli_order", "soonest_reset")
-    rows = sorted(rows, key=cmp_to_key(lambda a, b: compare(a, b, mode == "most_room")))
+    if mode == "most_room":
+        rows = _grouped(rows, room, 1, last(week), name)
+    else:
+        rows = _grouped(rows, week, HOUR, last(room), name)
     if mode == "manual":
         place = {key: index for index, key in enumerate(settings.get("cli_manual_order", []))}
         rows.sort(key=lambda row: place.get(row["id"], math.inf))
@@ -426,9 +450,9 @@ def _early(rows, active, history, now):
         return {"hold": MANUAL_HOLD}
     if not able:
         return {}
-    # Of the weeks that end within the hour of the soonest, the one with the most room. `_ordered` breaks a tie
-    # of two weeks the same way. Its tie is pairwise, so with three weeks that each end within the hour of the
-    # next its first account can be another one.
+    # Of the weeks that end within the hour of the soonest, the one with the most room. `_ordered` groups weeks
+    # the same way, from the soonest week of every account. The soonest here is of the accounts the early
+    # switch can use, so with a chain of weeks its pick can be another account than the order's first.
     soonest = min(row["weekly_reset"] for row in able)
     target = min((row for row in able if row["weekly_reset"] - soonest <= HOUR),
                  key=lambda row: (-row["room"], row["label"].casefold()))

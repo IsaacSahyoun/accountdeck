@@ -2,6 +2,7 @@
 and usage readings, refills and account upkeep for all four clients. Builder B's file (2026-11-12 refactor)."""
 import copy
 import http.server
+import itertools
 from pathlib import Path
 import threading
 import time
@@ -590,6 +591,103 @@ class SoonestWeekFirstTest(unittest.TestCase):
             "2 days": "Using Beta's weekly allowance before it resets in 2d 0h (60% left).",
             "3 days 5 hours": "Using Beta's weekly allowance before it resets in 3d 5h (60% left).",
         })
+
+
+class ChainedOrderTest(unittest.TestCase):
+    """The switching order with a chain: three weeks that each end within the hour of the next, with the first
+    and the last further apart. Found by the fifth review of the soonest-week change, in the build that was
+    installed. The order compared two accounts at a time, which is no order for such a chain, and the account
+    a switch went to depended on the order the store listed the accounts in. Alpha is in use here, and Beta,
+    Gamma and Delta have 30, 50 and 70 points of room."""
+    CHAIN = (("beta", 65, 3 * DAY), ("gamma", 45, 3 * DAY + 3000), ("delta", 25, 3 * DAY + 6000))
+
+    def answers(self, others, alpha=(96, 6 * DAY), **settings):
+        """Every (target, order of the accounts) the rule gives, over every order the store can list them in."""
+        found = set()
+        for listing in itertools.permutations([account("alpha", *alpha, active=True), *others]):
+            result = cli_policy.evaluate(copy.deepcopy(list(listing)), {**SETTINGS, **settings}, {}, NOW)
+            found.add((result["target"], tuple(row["id"] for row in result["next_up"] if row["id"] != "alpha")))
+        return found
+
+    def order(self, others, **more):
+        answers = self.answers(others, **more)
+        self.assertEqual(len(answers), 1, answers)
+        return next(iter(answers))[1]
+
+    def test_a_chain_of_weeks_has_one_order_however_the_store_lists_the_accounts(self):
+        """Gamma's week ends within the hour of Beta's, the soonest, so the two end together, and Gamma has
+        more room. Delta's ends 100 minutes after Beta's: it is the next group, with the most room of all."""
+        chain = [account(*one) for one in self.CHAIN]
+        for name, settings in (("soonest reset first", {}),
+                               ("my own order, with none of them in it", {"cli_order": "manual", "cli_manual_order": []})):
+            with self.subTest(order=name):
+                self.assertEqual(self.answers(chain, **settings), {("gamma", ("gamma", "beta", "delta"))})
+        # The early switch picks the same account: of the weeks within the hour of the soonest, the most room.
+        self.assertEqual(self.answers(chain, alpha=(20, 6 * DAY)), {("gamma", ("gamma", "beta", "delta"))})
+
+    def test_a_chain_of_room_has_one_order_under_most_room_first(self):
+        """Room within a point is the same room, and of those the week that ends sooner goes first. Beta has 50
+        points of room, Gamma 49 and Delta 48. Gamma is in Beta's group and its week ends sooner."""
+        chain = [account("beta", 45, 5 * DAY), account("gamma", 46, 4 * DAY), account("delta", 47, 3 * DAY)]
+        self.assertEqual(self.answers(chain, cli_order="most_room"), {("gamma", ("gamma", "beta", "delta"))})
+
+    def test_a_group_of_weeks_is_counted_from_its_soonest_week_and_is_an_hour_wide(self):
+        def order(*ends):
+            return self.order([account(key, used, end) for (key, used, _), end in zip(self.CHAIN, ends)])
+        self.assertEqual(order(3 * DAY, 3 * DAY + HOUR, 5 * DAY), ("gamma", "beta", "delta"))           # an hour apart: together
+        self.assertEqual(order(3 * DAY, 3 * DAY + HOUR + 1, 5 * DAY), ("beta", "gamma", "delta"))       # a second more: apart
+        # Gamma's and Delta's end within the hour of each other and over an hour after Beta's: the next group.
+        self.assertEqual(order(3 * DAY, 3 * DAY + HOUR + 1, 3 * DAY + 2 * HOUR), ("beta", "delta", "gamma"))
+        # All three within the hour of the soonest: one group, the most room first.
+        self.assertEqual(order(3 * DAY, 3 * DAY + 1800, 3 * DAY + HOUR), ("delta", "gamma", "beta"))
+
+    def test_a_group_of_room_is_counted_from_the_most_room_and_is_a_point_wide(self):
+        def order(*used):
+            others = [account(key, percent, end) for key, percent, end in zip(("beta", "gamma", "delta"), used, (5 * DAY, 4 * DAY, 3 * DAY))]
+            return self.order(others, cli_order="most_room")
+        self.assertEqual(order(45, 46, 60), ("gamma", "beta", "delta"))         # a point apart: the same room
+        self.assertEqual(order(45, 46.5, 60), ("beta", "gamma", "delta"))       # a point and a half: more room first
+        # Gamma and Delta are within a point of each other and over a point below Beta: the next group.
+        self.assertEqual(order(45, 46.5, 47), ("beta", "delta", "gamma"))
+        # All three within a point of the most room: one group, the week that ends soonest first.
+        self.assertEqual(order(45, 45.5, 46), ("delta", "gamma", "beta"))
+
+    def test_the_account_in_use_takes_part_in_the_groups(self):
+        """A decision, held here. The groups are counted from the soonest week of every account, the one in use
+        too: the order is the list the page shows, and that list has every account. Alpha's week ends first
+        and Beta's within the hour of it. Gamma's ends within the hour of Beta's and over an hour after
+        Alpha's, so it is the next group, though it has more room than Beta."""
+        others = [account("beta", 65, 3 * DAY + 3000), account("gamma", 45, 3 * DAY + 6000)]
+        self.assertEqual(self.answers(others, alpha=(96, 3 * DAY)), {("beta", ("beta", "gamma"))})
+
+    def test_a_chain_of_weeks_has_one_order_among_accounts_kept_for_their_week(self):
+        """The account in use works for no model and every other account has its Fable limit out. Those are
+        ordered by the room of their week, through the same order (`cli_policy._leave`)."""
+        chain = [account(*one, model=100) for one in self.CHAIN]
+        self.assertEqual({target for target, _ in self.answers(chain, alpha=(100, 6 * DAY))}, {"gamma"})
+
+    def test_accounts_without_a_week_come_last_and_two_of_one_name_have_one_order(self):
+        def no_week(key, used, label):
+            one = account(key, used, label=label)
+            del one["windows"][0]["reset"]
+            return one
+        # As before: the accounts whose week has no end come after the others, by name.
+        others = [no_week("zeta", 10, "Zeta"), no_week("eta", 50, "Eta"), account("beta", 65, 3 * DAY)]
+        self.assertEqual(self.order(others), ("beta", "eta", "zeta"))
+        # Two accounts of one name and one room were left in the order the store listed them in.
+        twins = [dict(account("gamma", 40, 3 * DAY), label="Work"), dict(account("beta", 40, 3 * DAY), label="Work")]
+        self.assertEqual(self.order(twins), ("beta", "gamma"))
+
+    def test_no_order_depends_on_how_the_store_lists_the_accounts(self):
+        """Every mix of three accounts from a grid of weeks and room, chains among them, under each order."""
+        weeks, rooms = (None, NOW + 3 * DAY, NOW + 3 * DAY + 1800, NOW + 3 * DAY + HOUR + 1, NOW + 3 * DAY + 5400), (None, 10, 11, 12)
+        for mode in ("soonest_reset", "most_room", "manual"):
+            settings = {"cli_order": mode, "cli_manual_order": ["b"]}
+            for picked in itertools.product(itertools.product(weeks, rooms), repeat=3):
+                rows = [{"id": key, "label": key.upper(), "weekly_reset": week, "room": room} for key, (week, room) in zip("abc", picked)]
+                found = {tuple(row["id"] for row in cli_policy._ordered(list(listing), settings)) for listing in itertools.permutations(rows)}
+                if len(found) != 1:
+                    self.fail(f"{mode}: {picked} is ordered {sorted(found)}")
 
 
 class FailedSwitchTest(unittest.TestCase):
