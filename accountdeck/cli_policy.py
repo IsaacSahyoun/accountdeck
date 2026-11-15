@@ -360,12 +360,17 @@ def _ordered(rows, settings):
 
 
 def _came(history, active, now):
-    """True for `STAY` after an automatic switch brought the terminals to the account in use (`last`, which
-    only those write). Dated as a note of a try is (`_row`): a switch dated after now, when the Mac's clock
-    was set back, counts for no more than twice that long."""
-    last = history.get("last") or {}
-    at = number(last.get("at"))          # an old `last` can have no time
-    return last.get("to") == active["id"] and at is not None and abs(now - at) < STAY
+    """True for `STAY` after an automatic switch brought the terminals to the account in use. Such a switch
+    notes that at its end (`last`, which only those write). When the app died after the login was switched
+    and before that note, the next check finds the terminals on the account with the note of the try still
+    there, and keeps its time (`came`, `cli_auto.tick`). Either one counts. Dated as a note of a try is
+    (`_row`): a switch dated after now, when the Mac's clock was set back, counts for no more than twice
+    that long."""
+    for note in (history.get("last"), history.get("came")):
+        at = number(note.get("at")) if isinstance(note, dict) else None         # an old `last` can have no time
+        if at is not None and note.get("to") == active["id"] and abs(now - at) < STAY:
+            return True
+    return False
 
 
 def _need(active, threshold, history, now):
@@ -561,10 +566,14 @@ def _leave(need, rows, active, history, settings, now):
                 return {"action": "switch", "target": row["id"], "kind": how, "last_reading": True,
                         "reason": f"{label} {why}; {words}. {_unasked(row)}"}
         return _retry([row for row, _ in unread] + failed)
+    # Each of `failed` is a target but for its note, so this is not "all low", which starts an alert. With
+    # nothing left that can be read before its pause ends, the hold says when the next try comes. The fifth
+    # review found it naming that pause at the ceiling, where the try of an account with room is not waited
+    # for further up, and the page no longer said when that account is tried again.
+    if failed and all(row["paused"] for row, _ in unread):
+        return _retry(failed)
     if unread:
         return _checking([row for row, _ in unread])
-    if failed:
-        return _retry(failed)       # not "all low", which starts an alert: each of these is a target but for its note
     if need["trigger"] == "threshold" and need["peak"] < DRAIN_CEILING:
         return using                # it cannot be read and there is nowhere to go: it is used on, as one that can be
     return {"exhausted": True, "reason": "All terminal accounts are low." + _refills_first(rows, threshold, now)}

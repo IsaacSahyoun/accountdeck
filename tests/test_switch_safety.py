@@ -1020,14 +1020,58 @@ class TerminalPausedAccountTest(DeckCase):
         self.assertEqual(self.started, [moved["id"]], "the terminals left the account they had just come to")
         self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(moved["label"])))
         self.assert_consistent("claude_cli", self.identity(moved["id"]))
-        # 15 minutes after the switch its pause counts, and the account that can be read is used up.
-        engine.clock.advance(900)
+        # 16 minutes after the switch its pause counts, and the account that can be read is used up.
+        engine.clock.advance(cli_policy.STAY + 60)
         read_again()
         self.check()
         last = self.last()
         self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("threshold", moved["id"], other["id"]))
         self.assertEqual(last["reason"], f"{moved['label']} reached 95% of its weekly limit and its usage checks are paused; every "
                          f"account is past 95%, so {other['label']} is used up to 99%.")
+        self.assert_consistent("claude_cli", self.identity(other["id"]))
+
+    def test_an_account_the_terminals_just_came_to_is_not_left_when_claude_refuses_its_first_read(self):
+        """Found by the fourth review, and by the fifth that no test ran it through the engine. The account in
+        use reaches 99% with `second` and `wanted` past the threshold, so the terminals move to one of them to
+        use it up. After a switch the engine asks for a reading of the account they came to
+        (`Engine._finished`), and here Claude refuses it. That account then had a reading over 3 minutes old
+        with its reads paused, so it counted as one that cannot be read, and the terminals went on to the other
+        account. It is used for 15 minutes first. Claude answers every other read with the numbers the
+        account had."""
+        engine, reading = self.engine, []
+        self.read(first=99, second=96, wanted=96)
+        self.check()
+        moved = next((row for row in (self.second, self.wanted) if row["id"] == self.last().get("to")), None)
+        self.assertIsNotNone(moved, "the terminals did not move to an account that can be used up")
+        other, read = self.wanted if moved is self.second else self.second, engine.cli.read
+
+        def read_one(account):
+            reading.append(account)
+            try:
+                return read(account)
+            finally:
+                reading.pop()
+
+        def answers(credentials):
+            if reading[-1] == moved["id"]:
+                raise DeckError("Too many requests.", "rate_limited", 3600)
+            answer = copy.deepcopy(engine.store.account(reading[-1])["last_good_usage"])
+            answer["checked"] = engine.clock()
+            return answer
+        engine.cli.read, engine.cli.adapter.usage = read_one, answers
+        try:
+            engine.clock.advance(cli_policy.READY + 60)
+            engine._schedule(engine.clock())        # the read the engine asked for goes out, and Claude refuses it
+            self.assertGreater(engine.store.account(moved["id"])["paused_until"] or 0, engine.clock() + 3000)
+            self.check(2)
+            self.assertEqual(self.started, [moved["id"]], "the terminals left the account they had just come to")
+            self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(moved["label"])))
+            engine.clock.advance(cli_policy.STAY - cli_policy.READY)       # 16 minutes after the switch
+            engine._schedule(engine.clock())
+            self.check()
+        finally:
+            del engine.cli.read, engine.cli.adapter.usage
+        self.assertEqual(self.started, [moved["id"], other["id"]])
         self.assert_consistent("claude_cli", self.identity(other["id"]))
 
     def test_after_a_wake_an_old_reading_of_the_account_in_use_moves_nothing(self):
@@ -1444,6 +1488,41 @@ class TerminalFailedSwitchTest(DeckCase):
         self.assertEqual((decision["action"], decision["target"], decision["hold"]), ("switch", self.wanted["id"], None))
         self.assertEqual(self.notes(), {})
 
+    def test_a_switch_the_app_died_after_still_keeps_the_terminals_for_15_minutes(self):
+        """Found by the fifth review of the change for a paused account. An account an automatic switch moved
+        the terminals to is used for 15 minutes before its paused usage checks count (`cli_policy.STAY`), so
+        that Claude refusing its first read does not move the terminals on at once. The rule took the time of
+        that switch from what the switch writes at its end. The app dies after the login is switched and
+        before that, so the time was missing, and the terminals left `wanted` for `second` as soon as Claude
+        refused a read of it. The check that takes out the note of the try keeps its time (`came`)."""
+        support.with_reading(self.engine, self.second["id"], weekly=96, ends=4 * self.DAY)
+        support.with_reading(self.engine, self.wanted["id"], weekly=96, ends=2 * self.DAY)
+        cli_auto.note_try(self.engine, self.wanted["id"], self.identity(self.first["id"]))
+        tried_at = self.notes()[self.wanted["id"]]["at"]
+        switch_cli.perform(self.engine.cli, self.wanted["id"], leaving=self.identity(self.first["id"]))     # and the app dies here
+        self.restart()
+        self.assert_consistent("claude_cli", self.identity(self.wanted["id"]))
+        self.assertNotEqual((self.engine.store.setting("cli_history", {}).get("last") or {}).get("to"), self.wanted["id"])
+        self.engine.clock.advance(200)      # the reading that switch went by is over 3 minutes old
+
+        def refused(credentials):
+            raise DeckError("Too many requests.", "rate_limited", 3600)
+        self.engine.cli.adapter.usage = refused
+        self.assertEqual(self.engine.cli.read(self.wanted["id"]), "rate_limited")
+        del self.engine.cli.adapter.usage
+        support.with_reading(self.engine, self.second["id"], weekly=96, ends=4 * self.DAY - 200)
+        self.check(2)
+        self.assertEqual(self.started, [], "the terminals left the account they had just come to")
+        self.assertEqual(self.hold(), ("none", False, f"Claude paused the usage checks of {self.wanted['label']}"))
+        history = self.engine.store.setting("cli_history", {})
+        self.assertEqual((history.get("came"), self.notes()), ({"to": self.wanted["id"], "at": tried_at}, {}))
+        # 16 minutes after that switch the pause counts, and the account that can be read is used up.
+        self.engine.clock.advance(cli_policy.STAY + 60 - 200)
+        support.with_reading(self.engine, self.second["id"], weekly=96, ends=4 * self.DAY - 960)
+        self.check(1)
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+
     def test_an_account_used_while_usage_checks_were_paused_is_not_passed_over_afterwards(self):
         """Found by the second review of this change. With usage checks paused auto-switch does nothing, and it
         also left the note of the account in use where it was. The user signs in to that account in Claude Code,
@@ -1456,8 +1535,11 @@ class TerminalFailedSwitchTest(DeckCase):
         self.engine.sense_active()
         self.assert_consistent("claude_cli", self.identity(self.wanted["id"]))
         self.read_all(second=100)       # the account in use is out by its reading, and nothing is to move
+        tried_at = self.notes()[self.wanted["id"]]["at"]
         self.check(1)
         self.assertEqual((self.started, self.notes()), ([], {}))
+        # The time of that try is kept: it may be the switch that brought the terminals here (`cli_policy._came`).
+        self.assertEqual(self.engine.store.setting("cli_history", {}).get("came"), {"to": self.wanted["id"], "at": tried_at})
         self.assertEqual(self.act("claude_cli", "switch", self.second["id"])["outcome"], "success")
         self.engine.update_settings({"refresh_paused": False})
         self.read_all(second=100)

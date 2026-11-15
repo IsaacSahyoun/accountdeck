@@ -28,7 +28,7 @@ def note_try(engine, key, leaving=None):
     """Notes that an automatic switch to `key` starts now, under `tried` in the history: the time, which try in
     a row it is, and the account it is leaving (`leaving` is that account's identity, as `CLISwitch` has it).
     `CLISwitch` calls this before it does anything else and takes the note out once the switch worked, and
-    `tick` takes out the note of the account in use. The rule waits `cli_policy.AGAIN` after a first try and
+    `tick` takes out the note of the account in use and keeps its time (`came`). The rule waits `cli_policy.AGAIN` after a first try and
     passes the account over for `cli_policy.RETRY` after a second in a row (`cli_policy.evaluate`, `_row`). An
     older note says nothing.
 
@@ -141,7 +141,16 @@ def tick(engine):
         # once the terminals moved on. This comes before the pause of usage checks: auto-switch does nothing
         # while they are paused, and the terminals are on this account all the same.
         if in_use is not None and isinstance(past.get("tried"), dict):
-            past["tried"].pop(in_use["id"], None)
+            note = cli_policy.tried(past["tried"].pop(in_use["id"], None))
+            if note is not None:
+                # When the app died, this is the note of the switch that brought the terminals here, and what
+                # that switch writes at its end (`last`) is missing. The same after a switch that failed past
+                # its write and left the login on its target (`switch_cli.settle`). The rule uses an account
+                # the terminals just came to for 15 minutes before its paused reads count
+                # (`cli_policy._came`), and without the time of that switch it left the account again at
+                # once. After a sign-in in Claude Code the time is that of the try that failed, and the same
+                # stay does no harm.
+                past["came"] = {"to": in_use["id"], "at": note[0]}
     if engine.prefs.get("refresh_paused"):
         return
     result = decision(engine)

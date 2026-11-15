@@ -63,7 +63,8 @@ older builds waited for the pause to end. The 99% is the last reading of the acc
 account cannot be read either (its own checks are paused and its reading is over 3 minutes old), it is
 not used on unseen: once it is past your threshold, an account that can still be used up is used. An
 account your terminals were moved to in the last 15 minutes is the exception. It is used for those 15
-minutes first, so that Claude refusing checks does not move your terminals back and forth. When
+minutes first, so moves that come from Claude refusing checks are at least 15 minutes apart. A reading or a
+forecast of 99%, a limit that ran out and a sign-in problem still move your terminals within them. When
 the account in use has stopped working and every account it
 could move to is paused, it moves to the first of them on that account's last reading, however old, and
 the reason it shows says how old. Staying would leave Claude Code with nothing that works. A weekly or
@@ -75,7 +76,7 @@ reading's age. An automatic switch that fails is not started again at once. It i
 90 seconds later, and your terminals stay where they are until then, unless a new usage reading puts
 another account first. If that fails too, the account is
 skipped for at least 15 minutes, its row says "switch tried 3 min ago", and the next account is used
-meanwhile. (A row that already says why its account waits, such as "Claude paused its checks" or "reading 21 min old", keeps those words.) With no other account that has room, auto-switch waits and says when it tries again, until the account in use reaches 99% or cannot be read: then an account that can still be used up is used. A failed early
+meanwhile. (A row that already says why its account waits, such as "Claude paused its checks" or "reading 21 min old", keeps those words.) With no other account that has room, auto-switch waits and says when it tries again. Once the account in use reaches 99%, has used up its Fable limit, or cannot be read (after its first 15 minutes, as above), it stops waiting for that try when an account that can still be used up is ready, and uses that one. A failed early
 switch moves to no other account: it waits its own 2 hours.
 Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
