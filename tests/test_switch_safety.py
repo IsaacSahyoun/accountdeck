@@ -688,15 +688,16 @@ class TerminalPausedAccountTest(DeckCase):
         if wanted is not None:
             support.with_reading(self.engine, self.wanted["id"], weekly=wanted, ends=2 * self.DAY)
 
-    def pause(self):
-        """Claude refuses a usage read of `wanted` (HTTP 429), which pauses its reads for an hour. Returns the
-        account's row as the refusal left it."""
+    def pause(self, account=None):
+        """Claude refuses a usage read of `wanted`, or of `account` (HTTP 429), which pauses its reads for an
+        hour. Returns the account's row as the refusal left it."""
         def refused(credentials):
             raise DeckError("Too many requests.", "rate_limited", 3600)
+        key = (account or self.wanted)["id"]
         self.engine.cli.adapter.usage = refused
-        self.assertEqual(self.engine.cli.read(self.wanted["id"]), "rate_limited")
+        self.assertEqual(self.engine.cli.read(key), "rate_limited")
         del self.engine.cli.adapter.usage
-        row = self.engine.store.account(self.wanted["id"])
+        row = self.engine.store.account(key)
         self.assertGreater(row["paused_until"], self.engine.clock() + 3000)
         return row
 
@@ -773,8 +774,8 @@ class TerminalPausedAccountTest(DeckCase):
         last = self.last()
         self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("out", self.first["id"], self.wanted["id"]),
                          "the terminals did not move to the account whose week has refilled")
-        self.assertEqual(last["reason"], f"{self.first['label']} reached its weekly limit; {self.wanted['label']}'s week has refilled "
-                         f"since its last reading. Claude has paused {self.wanted['label']}'s usage checks, so its reading from 5 min ago is used.")
+        self.assertEqual(last["reason"], f"{self.first['label']} reached its weekly limit; {self.wanted['label']}'s weekly limit has refilled "
+                         f"since its last reading. Claude has paused {self.wanted['label']}'s usage checks, so it is used without a new reading.")
         self.assert_consistent("claude_cli", self.identity(self.wanted["id"]))
         row = self.engine.store.account(self.wanted["id"])
         self.assertEqual((row["last_good_at"], row["paused_until"]), (paused["last_good_at"], paused["paused_until"]))
@@ -906,6 +907,53 @@ class TerminalPausedAccountTest(DeckCase):
         self.assertEqual(self.started, [])
         self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(self.wanted["label"])))
         self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def forecast(self):
+        """The highest forecast of the account in use, as the rule is handed it."""
+        return max(next(row["forecast"] for row in cli_auto.inputs(self.engine) if row["active"]).values(), default=0)
+
+    def test_an_account_in_use_whose_own_checks_are_paused_is_left_at_99_percent_by_its_forecast(self):
+        """Found by the second review of this change. Claude pauses the reads of the account in use too. Its
+        reading stays where it was then, so it never says 99%, and the terminals waited on it for the paused
+        account with room while `second` was ready to be used up. Once that reading is too old to act on, its
+        forecast counts. The account left is not gone back to while it cannot be read."""
+        self.read(first=82, second=70, wanted=30)
+        self.engine.clock.advance(240)
+        self.pause()
+        self.read(first=96, second=96)
+        self.pause(self.first)
+        self.assertGreaterEqual(self.forecast(), 99, "the forecast of the account in use is under 99%: this test proves nothing")
+        self.check(2)                   # its reading is new: it could be gone back to on it, so the reading decides
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(self.wanted["label"])))
+        self.engine.clock.advance(200)
+        # The reset time of its first reading, so that all three readings are of one week and its fill rate
+        # counts from the first (`cli_policy.same_window`).
+        support.with_reading(self.engine, self.second["id"], weekly=97, ends=4 * self.DAY - 440)
+        self.check()
+        last = self.last()
+        self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("threshold", self.first["id"], self.second["id"]),
+                         "the terminals did not move to the account that was ready")
+        self.assertEqual(last["reason"], f"{self.first['label']} will pass 99% before the next check; Claude paused the usage checks of "
+                         f"{self.wanted['label']}, so {self.second['label']} is used up to 99%.")
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+        # `second` fills as fast and can be read: its reading decides, and the terminals stay.
+        self.assertGreaterEqual(self.forecast(), 99, "the forecast of `second` is under 99%: the rest proves nothing")
+        for _ in range(8):
+            self.check()
+            self.engine.clock.advance(5)
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(self.wanted["label"])))
+        # Claude pauses its reads too. The account that was left still has its old reading, so nothing moves.
+        self.pause(self.second)
+        self.engine.clock.advance(200)
+        self.assertGreaterEqual(self.forecast(), 99)
+        for _ in range(8):
+            self.check()
+            self.engine.clock.advance(5)
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(f"{self.wanted['label']}, {self.first['label']}")))
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
 
     def test_at_99_percent_the_account_that_is_ready_is_used_up_while_the_one_with_room_is_paused(self):
         """Below 99% the account in use is used on, and the hold names the pause. At 99% the rule used to wait

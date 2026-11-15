@@ -59,16 +59,19 @@ that account still works for the other models. Change it in
 15 minutes old. An account whose usage checks are paused (Claude refused one, for 15 to 60 minutes) is
 skipped while the pause lasts and its reading is over 3 minutes old, so a switch never waits on it while
 another account is ready. That holds at 99% too: an account that can still be used up is used then, where
-older builds waited for the pause to end. When the account in use has stopped working and every account it
+older builds waited for the pause to end. The 99% is the last reading of the account in use. When that
+account cannot be read either (its own checks are paused, or its reading is over 15 minutes old), its
+forecast counts instead. When the account in use has stopped working and every account it
 could move to is paused, it moves to the first of them on that account's last reading, however old, and
-the reason it shows says how old. Staying would leave Claude Code with nothing that works. An account
-whose week was used up at its last reading counts as refilled once that week's reset time has passed. It
-is read again before it is used. When its checks are paused too, and the account in use has stopped
-working, your terminals move to it without that reading. An automatic switch that fails is not started again at once. It is tried once more
+the reason it shows says how old. Staying would leave Claude Code with nothing that works. A weekly or
+Fable limit that was used up at an account's last reading, taken before that limit's reset time, counts
+as refilled 45 seconds after that time, and the account's row says "refilled since its last reading". The
+account is read again before it is used. When its checks are paused too, and the account in use has
+stopped working, your terminals move to it without that reading. An automatic switch that fails is not started again at once. It is tried once more
 90 seconds later, and your terminals stay where they are until then, unless a new usage reading puts
 another account first. If that fails too, the account is
 skipped for at least 15 minutes, its row says "switch tried 3 min ago", and the next account is used
-meanwhile. (An account whose usage checks are paused keeps "Claude paused its checks" on its row.) With no other account to use, auto-switch waits and says when it tries again. A failed early
+meanwhile. (A row that already says why its account waits, such as "Claude paused its checks" or "reading 21 min old", keeps those words.) With no other account to use, auto-switch waits and says when it tries again. A failed early
 switch moves to no other account: it waits its own 2 hours.
 Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic

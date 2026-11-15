@@ -97,9 +97,22 @@ show("   Alpha is at 99%: Gamma is used up, and Beta's pause is not waited for",
      [ends_in("alpha", "Alpha", 99, 6, active=True), unread, nearly])
 show("   Alpha is at 96% and its forecast says 99%: the pause is waited for, since Alpha could be gone back to",
      [dict(full, forecast={"seven_day": 99.5}), unread, ends_in("gamma", "Gamma", 96, 4)])
+show("   the same with Alpha's own reads paused and its reading 5 minutes old: no reading can say 99%, so the forecast counts",
+     [dict(full, forecast={"seven_day": 99.5}, last_good_at=NOW - 300, paused_until=NOW + 600), unread, ends_in("gamma", "Gamma", 96, 4)])
+show("   then, with Gamma in use and its reads paused: Alpha is not gone back to before it is read again",
+     [dict(full, active=False, last_good_at=NOW - 300, paused_until=NOW + 600), unread,
+      dict(ends_in("gamma", "Gamma", 96, 4, active=True), forecast={"seven_day": 99.5}, last_good_at=NOW - 300, paused_until=NOW + 600)])
 gone = account("beta", "Beta", 100, NOW - 600, age=1200)
 show("   Alpha's week ran out. Beta was at 100% when it was last read and its week ended since: Beta is read again first", [out, gone])
-show("   the same with Beta's reads paused: Beta is used on the reading it has", [out, dict(gone, paused_until=NOW + 600)])
+show("   the same with Beta's reads paused: the terminals move to Beta without a new reading", [out, dict(gone, paused_until=NOW + 600)])
+show("   Beta's week ended 30 seconds ago: it counts as refilled 45 seconds after its reset, when the scheduler reads it",
+     [out, account("beta", "Beta", 100, NOW - 30, age=1200)])
+def limits(week, fable, ends):
+    return [{"id": "seven_day", "kind": "weekly", "used": week, "reset": ends},
+            {"id": "seven_day_fable", "kind": "model", "model": "Fable", "label": "Fable weekly", "used": fable, "reset": ends}]
+show("   Alpha's Fable limit ran out and its week has room. Beta's Fable limit was at 99% and ended since, and its reads are paused: not \"all low\"",
+     [account("alpha", "Alpha", None, None, active=True, windows=limits(50, 100, NOW + 6 * 86400)),
+      dict(account("beta", "Beta", None, None, age=1200, windows=limits(40, 99, NOW - 600)), paused_until=NOW + 600)])
 show("   Beta's 100% was read after its week ended: the number stands, and every account is low",
      [out, account("beta", "Beta", 100, NOW - 600, age=300)])
 print("H. A switch to Beta, the first in the order, was started and the terminals did not get there. Gamma is ready:")

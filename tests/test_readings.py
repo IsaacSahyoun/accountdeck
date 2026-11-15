@@ -607,7 +607,7 @@ class PausedAccountTest(unittest.TestCase):
     USED = " Claude has paused {}'s usage checks, so its reading from {} ago is used."
 
     def decide(self, *others, alpha=100, fable=None, tried=None, history=None, **settings):
-        fields = {key: settings.pop(key) for key in ("health", "forecast") if key in settings}
+        fields = {key: settings.pop(key) for key in ("health", "forecast", "age", "paused_until") if key in settings}
         active = account("alpha", alpha, 6 * DAY, active=True, model=fable, **fields)
         past = dict(history or {}, tried={key: {"at": NOW - ago, "count": count} for key, (ago, count) in (tried or {}).items()})
         return cli_policy.evaluate([active, *copy.deepcopy(list(others))], {**SETTINGS, **settings}, past, NOW)
@@ -803,6 +803,16 @@ class PausedAccountTest(unittest.TestCase):
         self.assertEqual((result["target"], result["last_reading"]), ("delta", True))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; a switch to Beta was tried, so Delta is used up to 99%."
                          + self.USED.format("Delta", "4 min"))
+        # Found by the second review: with two such accounts the reason named the first alone. Each is named,
+        # on a last reading and on a new one.
+        twice = {"beta": (5, 2), "epsilon": (65, 2)}
+        result = self.decide(paused("beta"), paused("epsilon", 30, 3 * DAY), paused("delta", 96, 4 * DAY), tried=twice)
+        self.assertEqual((result["target"], result["last_reading"]), ("delta", True))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; switches to Beta and Epsilon were tried, so Delta is used "
+                         "up to 99%." + self.USED.format("Delta", "4 min"))
+        result = self.decide(account("beta", 30, 2 * DAY), account("epsilon", 30, 3 * DAY), account("delta", 96, 4 * DAY), tried=twice)
+        self.assertEqual((result["target"], result["last_reading"]), ("delta", False))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; switches to Beta and Epsilon were tried, so Delta is used up to 99%.")
 
     def test_a_forecast_does_not_send_the_terminals_back_and_forth_past_a_paused_account(self):
         """Found by the review of this change. Alpha and Gamma are both at 96% and filling fast, so the forecast
@@ -817,6 +827,65 @@ class PausedAccountTest(unittest.TestCase):
         self.assertEqual(in_use("alpha"), ("none", None, self.PAUSED.format("Beta")))
         self.assertEqual(in_use("gamma"), ("none", None, self.PAUSED.format("Beta")))
 
+    def test_an_account_in_use_that_cannot_be_read_is_left_at_99_percent_by_its_forecast(self):
+        """Found by the second review of this change. The wait for a paused account ends at 99% by the reading of
+        the account in use. Claude pauses the reads of that account too, and a read can fail for 15 minutes.
+        Its reading stays at 97% then, whatever is used, and the terminals waited on it with Gamma ready until
+        it had run out. So its forecast counts once its reading is too old to act on."""
+        gamma, soon = account("gamma", 92, 4 * DAY), {"seven_day": 103.0}
+        until = NOW + 1500
+        moves = ("switch", "gamma", "threshold", None)
+        waits = ("none", None, None, self.PAUSED.format("Beta"))
+        cases = (("its reads are paused and its reading is 5 minutes old", dict(age=300, paused_until=until), moves),
+                 ("its reads are paused and its reading is 20 minutes old", dict(age=1200, paused_until=until), moves),
+                 ("its reads fail and its reading is 20 minutes old", dict(age=1200), moves),
+                 # The reverse: a reading that is new enough is one to go back to, so the reading decides.
+                 ("its reads are paused and its reading is 1 minute old", dict(age=60, paused_until=until), waits),
+                 ("it can be read and its reading is 1 minute old", dict(age=60), waits),
+                 ("it can be read and its reading is 5 minutes old", dict(age=300), waits),
+                 ("its pause is over and its reading is 5 minutes old", dict(age=300, paused_until=NOW - 1), waits))
+        for name, more, wanted in cases:
+            with self.subTest(alpha=name):
+                self.assertEqual(self.answer(paused("beta"), gamma, alpha=97, forecast=soon, **more), wanted)
+        # A forecast below 99% moves nothing, and neither does a reading below the threshold with no forecast.
+        cannot = dict(age=300, paused_until=until)
+        self.assertEqual(self.answer(paused("beta"), gamma, alpha=97, forecast={"seven_day": 98.9}, **cannot), waits)
+        self.assertEqual(self.answer(paused("beta"), gamma, alpha=97, forecast={"seven_day": 99.0}, **cannot), moves)
+        self.assertEqual(self.answer(paused("beta"), gamma, alpha=97, **cannot), waits)
+        # The reason says it is a forecast. It said "reached 99%" for one, also with no paused account.
+        result = self.decide(paused("beta"), gamma, alpha=97, forecast=soon, **cannot)
+        self.assertEqual(result["reason"], "Alpha will pass 99% before the next check; Claude paused the usage checks of Beta, "
+                         "so Gamma is used up to 99%.")
+        self.assertEqual(self.decide(gamma, alpha=97, forecast=soon)["reason"],
+                         "Alpha will pass 99% before the next check; every account is past 95%, so Gamma is used up to 99%.")
+        # An account with room that can be read is still waited for, and the user's own choice still holds.
+        self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=1200), gamma, alpha=97, forecast=soon, **cannot)[3],
+                         "Checking Beta before switching")
+        chose = {"manual_at": NOW - 5, "manual_for": "alpha"}
+        self.assertEqual(self.answer(paused("beta"), gamma, alpha=97, forecast=soon, history=chose, **cannot)[3], cli_policy.MANUAL_HOLD)
+
+    def test_an_account_left_on_its_forecast_is_not_gone_back_to_before_it_is_read_again(self):
+        """The back-and-forth of the test before last needs an account that is left on a forecast and is still a
+        target. An account is left on its forecast only with a reading too old to act on, and with that reading
+        it is passed over. So the terminals go back to it on a new reading, and on nothing else."""
+        soon, until = {"seven_day": 103.0}, NOW + 1500
+
+        def in_use(key, alpha):
+            """Gamma or Alpha in use, with a forecast of 103% and no way to read it. The other one is at 97%."""
+            rows = [account("alpha", 97, 6 * DAY, active=key == "alpha", **(dict(forecast=soon, age=300, paused_until=until)
+                                                                         if key == "alpha" else alpha)),
+                    account("gamma", 97, 4 * DAY, active=key == "gamma", **(dict(forecast=soon, age=300, paused_until=until)
+                                                                         if key == "gamma" else {})),
+                    paused("beta")]
+            result = cli_policy.evaluate(rows, SETTINGS, {}, NOW)
+            return (result["action"], result["target"], result["hold"])
+        self.assertEqual(in_use("alpha", {}), ("switch", "gamma", None))
+        left = "Claude paused the usage checks of Beta, Alpha"
+        self.assertEqual(in_use("gamma", dict(age=300, paused_until=until)), ("none", None, left))
+        self.assertEqual(in_use("gamma", dict(age=1200, paused_until=until)), ("none", None, left))
+        self.assertEqual(in_use("gamma", dict(age=1200)), ("none", None, "Checking Beta, Alpha before switching"))
+        self.assertEqual(in_use("gamma", dict(age=60)), ("switch", "alpha", None))
+
 
 class RefilledSinceTest(unittest.TestCase):
     """An account to move to whose week was used up at its last reading, and has ended since. Its week has
@@ -825,8 +894,11 @@ class RefilledSinceTest(unittest.TestCase):
     the account's reads, the terminals stayed on an account that had run out for the whole pause, with "All
     terminal accounts are low" on the page. Found by the first review of the change for a paused account, and
     the installed build (2.2.0, commit dadbf00) does the same. Alpha is in use here and has run out."""
-    PAUSED, USED = PausedAccountTest.PAUSED, PausedAccountTest.USED
-    REFILLED = "Alpha reached its weekly limit; Beta's week has refilled since its last reading."
+    PAUSED = PausedAccountTest.PAUSED
+    # The reading said the limit was used up and the switch goes against that number, so the reason does not
+    # say that the reading "is used", as it does for a paused account with room (`PausedAccountTest.USED`).
+    UNREAD = " Claude has paused Beta's usage checks, so it is used without a new reading."
+    REFILLED = "Alpha reached its weekly limit; Beta's weekly limit has refilled since its last reading."
     decide, answer = PausedAccountTest.decide, PausedAccountTest.answer
 
     def beta(self, weekly=100, *, age=1200, ended=600, pause=True, **fields):
@@ -839,11 +911,11 @@ class RefilledSinceTest(unittest.TestCase):
 
     def test_a_paused_account_whose_week_refilled_since_its_reading_is_used_on_it(self):
         """No reading comes before the pause ends, and staying means Claude Code works for nothing."""
-        for age, ended, old in ((100, 60, "2 min"), (700, 600, "12 min"), (1200, 600, "20 min"), (4000, 600, "1h 7m")):
+        for age, ended in ((100, 60), (700, 600), (1200, 600), (4000, 600)):
             with self.subTest(age=age, ended=ended):
                 result = self.decide(self.beta(age=age, ended=ended))
                 self.assertEqual((result["action"], result["target"], result["kind"], result["hold"]), ("switch", "beta", "out", None))
-                self.assertEqual(result["reason"], self.REFILLED + self.USED.format("Beta", old))
+                self.assertEqual(result["reason"], self.REFILLED + self.UNREAD)
                 self.assertEqual((result["refresh"], result["exhausted"], result["last_reading"]), ([], False, True))
         # The week counts as used up from 98% on. It also does when Claude said it was reached with a lower
         # number and another limit leaves no room: by those numbers the account was no target either. The Fable
@@ -857,7 +929,7 @@ class RefilledSinceTest(unittest.TestCase):
         result = self.decide(said)
         self.assertEqual((result["action"], result["target"], result["kind"], result["last_reading"]), ("switch", "beta", "out", True))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; every account is past 95%, so Beta is used up to 99%."
-                         + self.USED.format("Beta", "20 min"))
+                         + self.UNREAD)
         # After "All terminal accounts are low" the switch is the one for a refill, and a sign-in need is left too.
         self.assertEqual(self.answer(self.beta(), history={"exhausted": True})[:3], ("switch", "beta", "refilled"))
         self.assertEqual(self.answer(self.beta(), alpha=30, health="needs_signin")[:3], ("switch", "beta", "login"))
@@ -866,18 +938,23 @@ class RefilledSinceTest(unittest.TestCase):
                          ("none", None, None, "A switch to Beta was tried and is tried again in 15 min at the earliest"))
 
     def test_one_that_can_be_read_is_read_again_before_it_is_used(self):
-        """Its reading is seconds away. The rule asks for it and says so, where it said every account is low."""
-        for age, ended, words in ((100, 60, "refilled since its last reading"), (700, 600, "refilled since its last reading"),
-                                  (1200, 600, "reading 20 min old")):
+        """Its reading is seconds away. The rule asks for it and says so, where it said every account is low.
+        Its row says that the limit refilled, however old its reading is and with its reads paused too: until
+        the second review it said so only with a reading under 3 minutes old, or under 15 and not paused, and
+        "reading 20 min old" or "Claude paused its checks" for the accounts this rule is for."""
+        for age, ended in ((100, 60), (700, 600), (1200, 600)):
             with self.subTest(age=age, ended=ended):
                 result = self.decide(self.beta(age=age, ended=ended, pause=False))
                 self.assertEqual((result["action"], result["hold"], result["refresh"], result["exhausted"]),
                                  ("none", "Checking Beta before switching", ["beta"], False))
-                self.assertEqual(self.skip(result), words)
+                self.assertEqual(self.skip(result), "refilled since its last reading")
         # The same while Alpha still works. A paused one is waited for then, as any paused account with room is.
         self.assertEqual(self.answer(self.beta(pause=False), alpha=96), ("none", None, None, "Checking Beta before switching"))
-        result = self.decide(self.beta(age=700), alpha=96)
-        self.assertEqual((result["action"], result["hold"], self.skip(result)), ("none", self.PAUSED.format("Beta"), "Claude paused its checks"))
+        for age in (700, 1200):
+            with self.subTest(paused_and_read_seconds_ago=age):
+                result = self.decide(self.beta(age=age), alpha=96)
+                self.assertEqual((result["action"], result["hold"], self.skip(result)),
+                                 ("none", self.PAUSED.format("Beta"), "refilled since its last reading"))
         # An account that is ready is used before it, and at 99% a paused one is not waited for.
         gamma = account("gamma", 92, 4 * DAY)
         self.assertEqual(self.answer(self.beta(pause=False), gamma)[:3], ("switch", "gamma", "out"))
@@ -885,6 +962,29 @@ class RefilledSinceTest(unittest.TestCase):
         result = self.decide(self.beta(), gamma, alpha=99)
         self.assertEqual((result["action"], result["target"]), ("switch", "gamma"))
         self.assertEqual(result["reason"], "Alpha reached 99%; Claude paused the usage checks of Beta, so Gamma is used up to 99%.")
+
+    def test_a_week_counts_as_refilled_when_the_scheduler_takes_its_own_reading(self):
+        """Found by the second review. The scheduler reads an account 45 seconds after a reset, not at it: Claude
+        may still answer with the old week then. The rule asked for a reading at the first check after the
+        reset, and the governor then put the scheduler's own reading off by 3 minutes. A 100% read in those
+        first seconds stood as read for that long. Until 45 seconds after the reset the account is what it
+        was by its last numbers, as in the installed build."""
+        for pause in (True, False):
+            with self.subTest(paused=pause):
+                result = self.decide(self.beta(age=100, ended=44, pause=pause))
+                self.assertEqual((result["action"], result["target"], result["hold"], result["refresh"], result["exhausted"]),
+                                 ("none", None, None, [], True))
+                self.assertEqual(self.skip(result), "weekly at 100%")
+        self.assertEqual(self.answer(self.beta(age=100, ended=45))[:3], ("switch", "beta", "out"))
+        result = self.decide(self.beta(age=100, ended=45, pause=False))
+        self.assertEqual((result["action"], result["hold"], result["refresh"]), ("none", "Checking Beta before switching", ["beta"]))
+        # Each limit by its own reset time: a Fable limit that ended 30 seconds ago counts as it was read.
+        for ended, words in ((30, "Beta's week can still be used, though its Fable weekly limit is at 100%."),
+                             (60, "Beta's weekly limit has refilled since its last reading.")):
+            with self.subTest(fable_ended=ended):
+                later = self.beta(model=100)
+                later["windows"][1]["reset"] = NOW - ended
+                self.assertEqual(self.decide(later)["reason"], "Alpha reached its weekly limit; " + words + self.UNREAD)
 
     def test_a_number_that_was_read_after_the_week_ended_stands(self):
         """Claude gave that number after the reset time, so nothing says the week has refilled since."""
@@ -897,8 +997,9 @@ class RefilledSinceTest(unittest.TestCase):
         self.assertIs(self.decide(paused("beta", 100, 600, age=1200))["exhausted"], True)
 
     def test_an_account_that_is_a_target_by_its_last_numbers_stays_the_target_it_was(self):
-        """A refill only adds room, so a number from before the reset is a floor. An account with room by it, one
-        that can be used up and one kept for its week are used at once on a new enough reading, as before."""
+        """A refill only adds room, so a number from before the reset is a floor. An account with room by it and
+        one that can be used up are used at once on a new enough reading, as before. So is one kept for its
+        week, while the limit that is used up has not ended."""
         result = self.decide(account("beta", 30, -60, age=120))
         self.assertEqual((result["action"], result["target"], result["kind"], result["last_reading"]), ("switch", "beta", "out", False))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta is first in your eligible order.")
@@ -906,7 +1007,9 @@ class RefilledSinceTest(unittest.TestCase):
         result = self.decide(account("beta", 97, -60, age=120))
         self.assertEqual((result["action"], result["target"], result["last_reading"]), ("switch", "beta", False))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; every account is past 95%, so Beta is used up to 99%.")
-        result = self.decide(account("beta", 30, -60, age=120, model=100))
+        kept = account("beta", 30, -60, age=120, model=100)
+        kept["windows"][1]["reset"] = NOW + 2 * DAY             # its Fable limit has 2 days to run
+        result = self.decide(kept)
         self.assertEqual((result["action"], result["target"], result["last_reading"]), ("switch", "beta", False))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta's week can still be used, though its Fable weekly limit is at 100%.")
         # A week Claude said was reached, with room by every number: the rule has always used such an account.
@@ -919,7 +1022,7 @@ class RefilledSinceTest(unittest.TestCase):
     def test_every_limit_that_refilled_since_counts_as_full_and_one_that_did_not_counts_as_read(self):
         both = self.beta(model=100)                 # the Fable limit ended with the week
         result = self.decide(both)
-        self.assertEqual((result["target"], result["reason"]), ("beta", self.REFILLED + self.USED.format("Beta", "20 min")))
+        self.assertEqual((result["target"], result["reason"]), ("beta", self.REFILLED + self.UNREAD))
         self.assertEqual([row["room"] for row in result["next_up"] if row["id"] == "beta"], [95])
         for fable, words in ((100, "Beta's week can still be used, though its Fable weekly limit is at 100%."),
                              (96, "every account is past 95%, so Beta is used up to 99%.")):
@@ -928,13 +1031,60 @@ class RefilledSinceTest(unittest.TestCase):
                 later["windows"][1]["reset"] = NOW + 2 * DAY        # the Fable limit has 2 days to run
                 result = self.decide(later)
                 self.assertEqual((result["action"], result["target"], result["last_reading"]), ("switch", "beta", True))
-                self.assertEqual(result["reason"], "Alpha reached its weekly limit; " + words + self.USED.format("Beta", "20 min"))
+                self.assertEqual(result["reason"], "Alpha reached its weekly limit; " + words + self.UNREAD)
         # A limit with no number is not known to be full.
         unknown = self.beta(model=100)
         unknown["windows"][1]["used"] = None
         self.assertEqual((self.answer(unknown)[:2], self.skip(self.decide(unknown))), (("none", None), "reading incomplete"))
         nothing = self.beta(None)
         self.assertEqual((self.answer(nothing)[:2], self.skip(self.decide(nothing))), (("none", None), "weekly reading unknown"))
+
+    def fable(self, weekly=40, fable=99, *, ended=600, pause=True, **fields):
+        """Beta with room in its week and its Fable limit used up, read 20 minutes ago. Both ended `ended`
+        seconds ago."""
+        return self.beta(weekly, ended=ended, pause=pause, model=fable, **fields)
+
+    def test_a_fable_limit_that_refilled_since_is_not_counted_as_used_up_either(self):
+        """Found by the second review, and the installed build (2.2.0, commit dadbf00) does the same. An account
+        with only its Fable limit used up is a target while the account in use works for no model, and none
+        while it still works. So once that limit had ended, the rule said "All terminal accounts are low" and
+        raised its alert, with an account that had refilled. A pause kept that up for an hour."""
+        out = dict(alpha=50, fable=100)                 # Alpha's Fable limit ran out and its week has room
+        for name, more in (("its Fable limit ran out", out), ("at the threshold", dict(alpha=96)), ("at 99%", dict(alpha=99))):
+            with self.subTest(alpha=name):
+                result = self.decide(self.fable(), **more)
+                self.assertEqual((result["action"], result["hold"], result["refresh"], result["exhausted"]),
+                                 ("none", self.PAUSED.format("Beta"), ["beta"], False))
+                self.assertEqual((self.skip(result), [row["room"] for row in result["next_up"] if row["id"] == "beta"]),
+                                 ("refilled since its last reading", [95]))
+                result = self.decide(self.fable(pause=False), **more)
+                self.assertEqual((result["action"], result["hold"], result["refresh"], result["exhausted"]),
+                                 ("none", "Checking Beta before switching", ["beta"], False))
+        # With Alpha out for every model, Beta was a target for its week. It still is, and the reason names the refill.
+        result = self.decide(self.fable())
+        self.assertEqual((result["action"], result["target"], result["kind"], result["last_reading"]), ("switch", "beta", "out", True))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta's Fable weekly limit has refilled since its last reading."
+                         + self.UNREAD)
+        self.assertEqual(self.answer(self.fable(pause=False)), ("none", None, None, "Checking Beta before switching"))
+        # A week that did not end keeps its number: here it leaves 5 points, so Beta is one to be used up.
+        tight = self.fable(90)
+        tight["windows"][0]["reset"] = NOW + 2 * DAY
+        result = self.decide(tight)
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; every account is past 95%, so Beta is used up to 99%." + self.UNREAD)
+        self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], ["weekly at 90%"])
+        # The reverse: a Fable limit that has not ended, one that ended under 45 seconds ago, and one read
+        # after it ended are used up as they were, so nothing is waited for while Alpha still works.
+        running = self.fable()
+        running["windows"][1]["reset"] = NOW + 2 * DAY
+        for name, beta in (("has 2 days to run", running), ("ended 44 seconds ago", self.fable(ended=44)),
+                           ("read after it ended", self.fable(age=300))):
+            with self.subTest(fable_limit=name):
+                result = self.decide(beta, **out)
+                self.assertEqual((result["action"], result["hold"], result["refresh"], result["exhausted"]), ("none", None, [], True))
+                self.assertEqual(self.skip(result), "Fable weekly at 99%")
+        # A Fable limit below 98% is not used up, and that account is one to be used up, as it was.
+        result = self.decide(self.fable(fable=97), alpha=99)
+        self.assertEqual((result["action"], result["hold"], self.skip(result)), ("none", self.PAUSED.format("Beta"), "Fable weekly at 97%"))
 
     def test_its_new_week_has_no_known_end_so_it_goes_after_the_weeks_that_have_one(self):
         """The reset time it has is of the week before. Under "soonest reset first" that time put it first, ahead
@@ -954,7 +1104,7 @@ class RefilledSinceTest(unittest.TestCase):
         self.assertEqual((result["action"], result["hold"], result["refresh"]),
                          ("none", "Alpha's weekly limit has refilled. Waiting for its new reading.", ["alpha"]))
         # One the user left out, one that needs sign-in and one that was never read are no targets.
-        for name, more in (("left out", dict(excluded=True)), ("needs sign-in", dict(health="needs_signin"))):
+        for name, more in (("left out", dict(excluded=True)), ("needs sign-in", dict(health="needs_signin")), ("never read", dict(age=None))):
             with self.subTest(account=name):
                 self.assertEqual(self.answer(self.beta(**more))[:2], ("none", None))
 
