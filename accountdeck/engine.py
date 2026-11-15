@@ -140,7 +140,7 @@ class Engine:
         self.active_identity = {name: None for name in self.providers}
         self.identity_known = {name: False for name in self.providers}
         # How many readings this run of the app had stored when each client came to its account in use, as far
-        # as it saw that (`Store.reading_mark`. None: nobody signed in so far), and each stretch of `IDLE_GAP`
+        # as it saw that (`Store.reading_mark`. None: nobody signed in so far, or the store could not say), and each stretch of `IDLE_GAP`
         # or more in which the app did not run: (when it ran again, how long it had not). The forecast of an
         # account's usage reads both (`cli_auto._forecast`). Kept in memory: a new run starts the count again.
         # `_awake` notes the gaps, from one look at the clock to the next (`_looked`).

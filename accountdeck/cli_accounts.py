@@ -404,9 +404,11 @@ class CLIAccounts:
             keepalive = now - saved.get("refreshed", 0) >= 7 * 86400
             if not due and not keepalive:
                 return saved, False
-            if not for_switch and now - saved.get("refresh_attempt", -1e20) < RENEWAL_WAIT:
-                raise _waits(DeckError("This terminal login was checked recently. Its last reading is kept.", "busy"),
-                             saved["refresh_attempt"])
+            until = None if for_switch else self._too_soon(key, saved, now)
+            if until is not None:
+                error = DeckError("This terminal login was checked recently. Its last reading is kept.", "busy")
+                error.renewal_wait = until
+                raise error
             if self.enrollment:
                 raise DeckError("Finish adding the terminal account first.", "busy")
             saved = self._ensure_verified(key, saved, now)
@@ -461,6 +463,16 @@ class CLIAccounts:
                                 ms=round((time.perf_counter() - started) * 1000), for_switch=for_switch)
                 return saved, True
 
+    def _too_soon(self, key, saved, now):
+        """Until when a read does not ask Claude to renew the login of `key`, or None when it may ask now. That
+        is 30 minutes after the last renewal that was asked for, or the wait a read noted for the account
+        when that is later (`_blocked`): Claude can refuse a renewal and say to wait up to an hour. The pause
+        on the row keeps reads off for that hour. The app dying after the wait was noted and before the pause
+        was left no pause, and 30 minutes later a read asked Claude again, inside the hour."""
+        noted = self.renewal_waits().get(key)
+        until = max(saved.get("refresh_attempt", -1e20) + RENEWAL_WAIT, noted if isinstance(noted, (int, float)) else -1e20)
+        return until if now < until else None
+
     def _settle_read(self, key, flags, **fields):
         """Writes a read's result onto the row as it is now (another thread may have changed its flags)."""
         with self.mutex:
@@ -489,12 +501,13 @@ class CLIAccounts:
         """Notes until when no read of the account can be taken (None: a read of it worked), for the auto-switch
         rule (`cli_auto.inputs`). It has a setting of its own, which a read alone writes, under one lock. A
         row's `flags` are no place for it: every writer of those writes the whole set back, Leave Out under
-        another lock than a read, so a fact kept there can be lost to an older copy. A wait that has ended
-        is dropped with the next one noted."""
+        another lock than a read, so a fact kept there can be lost to an older copy. The wait of an account
+        that is gone is dropped here. One that has ended is not: the pause on the row is not taken off for
+        having ended either, and with the Mac's clock set ahead and put right both run again. Dropped then,
+        the wait left a pause with no wait, and the rule took the account for a paused one."""
         with self.mutex:
-            waits, now = self.renewal_waits(), self.clock()
-            kept = {account: at for account, at in waits.items()
-                    if account != key and isinstance(at, (int, float)) and at > now}
+            waits, saved = self.renewal_waits(), {row["id"] for row in self.store.accounts()}
+            kept = {account: at for account, at in waits.items() if account != key and account in saved}
             if until is not None:
                 kept[key] = until
             if kept != waits:

@@ -564,7 +564,12 @@ class Store:
         window with a known percentage (kept 7 days for pace, trend and history) and at most one
         v1-style snapshot per quarter hour (kept 90 days). Clears the account's error. This is the one way a
         reading counts as taken by this run of the app (`taken`). History brought over from another computer
-        is written to the file without it (`move_import._copy_history`)."""
+        is written to the file without it (`move_import._copy_history`).
+
+        A read dates its answer when it comes and stores it a moment later, after a switch that is running.
+        A reading dated after the clock as it reads here was answered before the Mac's clock was set back.
+        It is stored like any other and not noted for `taken`: among the readings that follow, its date says
+        nothing about the time between it and them."""
         now = self.clock()
         at = now if at is None else at
         payload = _encode(usage)
@@ -584,9 +589,10 @@ class Store:
             self.db.execute("DELETE FROM readings WHERE at < ?", (now - _READING_DAYS * _DAY,))
             self.db.commit()
             self._takes += 1
-            for _, window, _, used, reset in rows:
-                kept = self._taken.setdefault((key, window), collections.deque(maxlen=TAKEN_KEPT))
-                kept.append((self._takes, at, used, reset))
+            if at <= now:
+                for _, window, _, used, reset in rows:
+                    kept = self._taken.setdefault((key, window), collections.deque(maxlen=TAKEN_KEPT))
+                    kept.append((self._takes, at, used, reset))
 
     def readings(self, key, window, since=None):
         """[{"at", "used", "reset"}] of one window, oldest first."""
@@ -596,8 +602,9 @@ class Store:
         return [dict(row) for row in rows]
 
     def reading_mark(self):
-        """A mark for `taken`: how many readings this run of the app has stored so far, of any account. The
-        count only goes up. A reading's date does not say what came first once the Mac's clock was set back,
+        """A mark for `taken`: how many times this run of the app has stored a read so far (`observe`), of any
+        account, with a known percentage or without. The count only goes up. A reading's date does not say
+        what came first once the Mac's clock was set back,
         and neither does its place in the file: removing an account takes the newest rows out, and the rows
         stored next get their ids."""
         with self.lock:
@@ -605,7 +612,8 @@ class Store:
 
     def taken(self, key, window, after):
         """[{"at", "used", "reset"}] of one window, in the order they were stored: the readings this run of the
-        app has stored since the mark `after` was taken (`reading_mark`), the newest `TAKEN_KEPT` of them."""
+        app has stored since the mark `after` was taken (`reading_mark`), the newest `TAKEN_KEPT` of them. One
+        dated after the clock at the moment it was stored is not among them (`observe`)."""
         with self.lock:
             return [{"at": at, "used": used, "reset": reset}
                     for count, at, used, reset in self._taken.get((key, window), ()) if count > after]

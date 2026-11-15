@@ -35,7 +35,8 @@
   limit counts as refilled 45 seconds after its reset time, which is when the scheduler takes its own
   reading (`scheduler.BOUNDARY_DELAY`);
 - an account whose login Claude did not renew is passed over the same way, until the app asks Claude again
-  (`renewal_wait`, 30 minutes after the renewal that did not work: `CLIAccounts._refresh`). Until then every
+  (`renewal_wait`, 30 minutes after the renewal that did not work, or as long as Claude said to wait when
+  that is longer: `CLIAccounts._refresh`, `CLIAccounts._read`). Until then every
   read of it ends at once with no reading, so with a reading over 3 minutes old no switch to it can be made.
   The rule went on naming such an account, the executor went on asking for the reading, and the terminals
   stayed on an account that had run out until that reading was 15 minutes old. It is not waited for at the
@@ -488,7 +489,8 @@ def _checking(rows):
 def _retry(rows):
     """The hold while the accounts to move to are ones a switch was tried to twice in a row. "At the earliest":
     a switch also needs a new reading of the account unless its reads are paused, and after a refused renewal
-    of its login the app does not read the account for 30 minutes (`CLIAccounts._refresh`)."""
+    of its login the app does not read the account for 30 minutes, or for as long as Claude said to wait
+    when that is longer (`CLIAccounts._refresh`, `CLIAccounts._read`)."""
     wait = duration(min(row["wait"] for row in rows))
     if len(rows) == 1:
         return {"hold": f"A switch to {rows[0]['label']} was tried and is tried again in {wait} at the earliest"}
