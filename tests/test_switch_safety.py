@@ -1200,11 +1200,15 @@ class TerminalFailedSwitchTest(DeckCase):
 
     def read_all(self, second=30):
         """New readings of every account: the one in use is out, `wanted`'s week ends soonest."""
+        self.read_others(second)
+        support.with_reading(self.engine, self.wanted["id"], weekly=30, ends=2 * self.DAY)
+
+    def read_others(self, second=30):
+        """New readings of every account but `wanted`, whose reading goes on getting older."""
         for row in self.rest:
             support.with_reading(self.engine, row["id"], weekly=99, ends=7 * self.DAY)
         support.with_reading(self.engine, self.first["id"], weekly=100, ends=6 * self.DAY)
         support.with_reading(self.engine, self.second["id"], weekly=second, ends=4 * self.DAY)
-        support.with_reading(self.engine, self.wanted["id"], weekly=30, ends=2 * self.DAY)
 
     def later(self, seconds, **readings):
         """`seconds` later, with new readings of every account."""
@@ -1409,6 +1413,108 @@ class TerminalFailedSwitchTest(DeckCase):
         self.engine.clock.advance(900)
         self.assertEqual(service.read(key), "rate_limited")
         self.assertEqual((self.started, len(asked)), ([key] * 2, 3))
+
+    def through_the_scheduler(self):
+        """Only a read that is asked for goes out: the scheduler's own next read of every account is put 2 hours
+        off. A read that reaches Claude is answered with the numbers the account had, dated now."""
+        engine, reading, read = self.engine, [], self.engine.cli.read
+        for row in self.rows("claude_cli"):
+            engine.scheduler.defer(row["id"], engine.clock() + 7200)
+
+        def read_one(account):
+            reading.append(account)
+            try:
+                return read(account)
+            finally:
+                reading.pop()
+
+        def answers(credentials):
+            answer = copy.deepcopy(engine.store.account(reading[-1])["last_good_usage"])
+            answer["checked"] = engine.clock()
+            return answer
+        engine.cli.read, engine.cli.adapter.usage = read_one, answers
+
+    def step(self):
+        """A check, the reads it asked for, and the check after them. The scheduler starts the reads of two
+        idle accounts at a time, so three turns of it reach every account, whatever their order."""
+        self.check(1)
+        for _ in range(3):
+            self.engine._schedule(self.engine.clock())
+        self.check(1)
+
+    def refuse_the_renewal(self):
+        """The reading of `wanted` is 2 minutes old, its login runs out in 100 seconds, and Claude's token
+        endpoint refuses to renew it."""
+        self.engine.clock.advance(120)
+        saved = self.vault.get(self.wanted["id"])
+        saved["credentials"]["claudeAiOauth"]["expiresAt"] = (self.engine.clock() + 100) * 1000
+        self.vault.put(self.wanted["id"], saved)
+
+        def refused(credentials, *, timeout=None):
+            error = DeckError("Too many requests.", "rate_limited")
+            error.http, error.http_class = 429, "4xx"
+            raise error
+        self.engine.cli.adapter.refresh = refused
+
+    def test_an_account_that_cannot_be_read_is_passed_over_for_the_next_one(self):
+        """Found by the second review of the change for failed switches, in the installed build too (2.2.1,
+        commit 41420bb). The first switch to `wanted` fails because Claude refuses to renew its login. It is due
+        again 90 seconds later, and by then the reading of `wanted` is over 3 minutes old, so a new one is asked
+        for first. That read needs the same renewal, and the app does not ask Claude for it again for 30
+        minutes. The rule went on naming `wanted`, nothing started, the page said nothing, and the terminals
+        stayed on an account that had run out until that reading was 15 minutes old, with `second` ready."""
+        engine, key = self.engine, self.wanted["id"]
+        self.through_the_scheduler()
+        self.refuse_the_renewal()
+        self.read_others()
+        self.check(1)
+        self.assertEqual((self.started, self.tries(self.wanted)), ([key], 1))
+        engine.clock.advance(100)       # past the 90 seconds, with the reading of `wanted` 220 seconds old
+        self.read_others()
+        self.check(1)
+        self.assertEqual(self.started, [key], "a switch was started on a reading over 3 minutes old")
+        self.assertLessEqual(engine.scheduler.planned(key), engine.clock(), "no reading of the account was asked for")
+        for _ in range(3):
+            engine._schedule(engine.clock())
+        self.assertEqual(engine.store.account(key)["error_code"], "busy", "the read that was asked for did not fail")
+        self.check(1)
+        self.assertEqual(self.started, [key, self.second["id"]], "the terminals stayed on an account that had run out")
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+        def skipped():
+            return next(row["skip"] for row in cli_auto.decision(engine)["next_up"] if row["id"] == key)
+        self.assertEqual(skipped(), "its last check failed")
+        # The reverse: once a read of it works, it is a target again, also when that reading is over 3 minutes old.
+        del engine.cli.adapter.refresh
+        engine.clock.advance(1800)
+        engine.scheduler.request(key, engine.clock())
+        for _ in range(3):
+            engine._schedule(engine.clock())
+        self.assertLess(engine.clock() - engine.store.account(key)["last_good_at"], 60, "the read did not work")
+        engine.clock.advance(cli_policy.READY + 60)
+        self.assertIsNone(skipped())
+
+    def test_the_only_account_left_is_asked_again_and_used_once_its_reading_comes(self):
+        """The reverse. With no other account to go to, the page says which account is being checked, nothing
+        says that every account is low, and no switch is made on the old reading. Once Claude renews the login,
+        the reading comes and the terminals move."""
+        engine, key = self.engine, self.wanted["id"]
+        self.through_the_scheduler()
+        self.refuse_the_renewal()
+        self.read_others(second=99)
+        self.check(1)
+        engine.clock.advance(100)
+        self.read_others(second=99)
+        self.step()
+        self.assertEqual(self.started, [key])
+        self.assertEqual(self.hold(), ("none", False, f"Checking {self.wanted['label']} before switching"))
+        self.assertNotIn("limit_reached", [alert["kind"] for alert in engine.store.alerts()])
+        # 30 minutes after the refused renewal the app asks Claude again, and this time the login is renewed.
+        del engine.cli.adapter.refresh
+        engine.clock.advance(1800)
+        self.read_others(second=99)
+        self.step()
+        self.assertEqual(self.started, [key, key])
+        self.assert_consistent("claude_cli", self.identity(key))
 
     def test_a_try_within_the_hour_of_the_last_one_counts_on_from_it(self):
         key = self.wanted["id"]

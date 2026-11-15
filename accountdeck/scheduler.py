@@ -294,6 +294,16 @@ class RefreshScheduler:
             plan = self._plans.get(account_id)
             return None if plan is None else plan.next
 
+    def failing(self, account_id) -> bool:
+        """True when a read of this account failed and no read of it has worked since. The auto-switch rule
+        passes such an account over (`cli_policy._row`): it went on naming one whose reading could not be
+        taken, and nothing moved. Claude refusing a read (HTTP 429) does not count, since the account's
+        stored pause says that, and neither does a read that was skipped. Kept in memory: after a start the
+        first read of the account says it again."""
+        with self._lock:
+            plan = self._plans.get(account_id)
+            return bool(plan and plan.failures)
+
     def running(self, account_id) -> bool:
         with self._lock:
             plan = self._plans.get(account_id)

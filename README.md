@@ -58,7 +58,8 @@ that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a reading at most
 15 minutes old. An account whose usage checks are paused (Claude refused one, for 15 to 60 minutes) is
 skipped while the pause lasts and its reading is over 3 minutes old, so a switch never waits on it while
-another account is ready. That holds at 99% too: an account that can still be used up is used then, where
+another account is ready. An account whose last usage check failed is skipped the same way until a check
+of it works, and its row says "its last check failed". That holds at 99% too: an account that can still be used up is used then, where
 older builds waited for the pause to end. The 99% is the last reading of the account in use. When that
 account cannot be read either (its own checks are paused and its reading is over 3 minutes old), it is
 not used on unseen: once it is past your threshold, an account that can still be used up is used. An
@@ -89,7 +90,8 @@ and however far off the other account's reset is. It moves when the other accoun
 resets more than an hour and 5 minutes before the weekly limit of the account in use. Of weeks that reset within
 the hour of each other, the one with more room is used first. The other account has to be
 one auto-switch could move to at your percentage anyway (room in its weekly and its Fable limit, a
-reading at most 15 minutes old, or at most 3 minutes old while its usage checks are paused), with at least
+reading at most 15 minutes old, or at most 3 minutes old while its usage checks are paused or its last
+check failed), with at least
 20% of its week still unused. A week that has not
 started is never moved to. The early switch waits 2 hours after any automatic switch, so a switch at
 your percentage is not followed by a second one right away. An early switch that failed is tried again

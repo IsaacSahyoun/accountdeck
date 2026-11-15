@@ -33,6 +33,13 @@
   read again before it is used, and used on what it has only where an old reading is (the bullet above). A
   limit counts as refilled 45 seconds after its reset time, which is when the scheduler takes its own
   reading (`scheduler.BOUNDARY_DELAY`);
+- an account whose last read failed is passed over the same way (`RefreshScheduler.failing`: a read of it
+  failed, and none has worked since). With a reading over 3 minutes old no switch to it can be made. The
+  rule went on naming such an account, the executor went on asking for the reading, and the terminals
+  stayed on an account that had run out until that reading was 15 minutes old. It is read again when it is
+  needed, as an account with an old reading is, and it is not waited for at the ceiling. It is not used on
+  the reading it has, as a paused account is when nothing else is left: its reads fail for a cause nobody
+  knows, and a switch to it may fail the same way;
 - an automatic switch that did not get the terminals to its account is not started again at the next check.
   It is started once more 90 seconds after it was started (`AGAIN`), and the terminals stay where they are
   until then: most failures are over by then (Claude Code was renewing its own login, a lookup failed). The
@@ -257,7 +264,13 @@ def _row(account, settings, threshold, now, note=None):
     # that had run out.
     pause = number(account.get("paused_until"))
     paused = pause is not None and pause > now
-    unread = age is not None and READY < age <= 900 and paused
+    # The same for an account whose last read failed (a read of it failed, and none has worked since). After
+    # Claude refuses to renew a login, the app does not ask again for 30 minutes, and every read of the
+    # account fails until then. The rule named it all the same, the executor asked for the reading a switch
+    # needs, and nothing moved until the reading was 15 minutes old. `silent` says that no reading of the
+    # account is on its way, for either cause.
+    silent = paused or bool(account.get("failing"))
+    unread = age is not None and READY < age <= 900 and silent
     old = age is not None and (age > 900 or unread or renewed is not None)
     skip, past, stale = None, False, False
     if account.get("active"):
@@ -276,7 +289,8 @@ def _row(account, settings, threshold, now, note=None):
     elif old:
         # Room at its last reading: read it again when it is needed.
         # Not the words of the setting that pauses every check ("Usage checks paused"): this pause is Claude's.
-        skip, stale = ("refilled since its last reading" if renewed is not None else "Claude paused its checks" if unread
+        skip, stale = ("refilled since its last reading" if renewed is not None else
+                       "Claude paused its checks" if unread and paused else "its last check failed" if unread
                        else f"reading {math.ceil(age / 60)} min old"), True
     # Skipped only for being past the threshold (not health, freshness or choice): usable when all are.
     usable = skip is None or past
@@ -305,7 +319,8 @@ def _row(account, settings, threshold, now, note=None):
         skip, drainable, week_only = f"switch tried {max(1, math.ceil((now - note[0]) / 60))} min ago", False, None
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
             "weekly_reset": reset(values[0][2]), "account": account, "values": values,
-            "drainable": drainable, "week_only": week_only, "stale": stale, "old": old, "paused": paused, "age": age,
+            "drainable": drainable, "week_only": week_only, "stale": stale, "old": old, "paused": paused,
+            "silent": silent, "age": age,
             "renewed": renewed, "again": wait > 0 and note[1] == 1, "twice": wait > 0 and note[1] > 1,
             "failed": failed, "wait": wait}
 
@@ -475,9 +490,21 @@ def _passed(stale, roomy, threshold):
     old reading is read again, unless Claude has paused its reads: then no reading is on its way, and the reason
     names the pause, as the hold before this switch did (`_checking`, which lists the accounts its own way)."""
     waits = (f"Claude paused the usage checks of {_listed(stale)}" if all(row["paused"] for row in stale) else
+             f"{_listed(stale)} could not be read" if all(row["silent"] for row in stale) else
              f"{_listed(stale)} need{'s' if len(stale) == 1 else ''} a new reading first")
     # An account with room that was tried twice is passed over too, and it is named beside the ones that wait.
     return ", and ".join(([waits] if stale else []) + ([_tried(roomy)] if roomy else [])) or f"every account is past {threshold}%"
+
+
+def _behind(stale, roomy, others):
+    """Why no account with room is used, for the reason of a switch on a last reading to an account behind
+    them. Each was tried twice, or its last read failed: one whose reads are paused, and that was not tried
+    twice, is used itself. An account whose last read failed is not used on the reading it has. Its reads
+    fail for a cause nobody knows, and a switch to it may fail the same way. It is asked again
+    (`_checking`), and it does not keep a paused account behind it waiting: that one is used as it would be
+    without it."""
+    mute, twice = [row for row in stale if not row["twice"]], [row for row in stale if row["twice"]] + roomy
+    return ", and ".join(([f"{_listed(mute)} could not be read"] if mute else []) + ([_tried(twice)] if twice else [])) or others
 
 
 def _said(row, others):
@@ -518,7 +545,7 @@ def _leave(need, rows, active, history, settings, now):
     # reading is seconds away, and the end of a pause 15 to 60 minutes. Waiting for that kept the terminals
     # on the account in use until it had run out, with an account ready to be used up.
     stale = [row for row in rows if row["stale"]]
-    if stale and need["yields"] and not (need["ceiling"] and all(row["paused"] for row in stale)):
+    if stale and need["yields"] and not (need["ceiling"] and all(row["silent"] for row in stale)):
         return _checking(stale)
     # An account a switch was tried to twice is tried again `RETRY` after that. One with room is waited for
     # while the account in use still works and is below the ceiling, as a paused account with room is: at
@@ -559,13 +586,14 @@ def _leave(need, rows, active, history, settings, now):
     # passes the account over as for any switch (`_row`: a note counts only for an account that is a target).
     # Only an account with room can be passed over here (one to be used up is in `failed` then), so a last
     # resort used behind such accounts says that switches to them were tried, with the ones in `roomy`.
-    if unread and not need["yields"] and all(row["paused"] for row, _ in unread):
+    # An account whose last read failed is asked again and not used on what it has (`_behind`).
+    if unread and not need["yields"] and all(row["silent"] for row, _ in unread):
         for row, how in unread:
-            if not row["twice"]:
-                words = _said(row, _tried(stale + roomy) if stale else others)
+            if row["paused"] and not row["twice"]:
                 return {"action": "switch", "target": row["id"], "kind": how, "last_reading": True,
-                        "reason": f"{label} {why}; {words}. {_unasked(row)}"}
-        return _retry([row for row, _ in unread] + failed)
+                        "reason": f"{label} {why}; {_said(row, _behind(stale, roomy, others))}. {_unasked(row)}"}
+        if all(row["twice"] for row, _ in unread):
+            return _retry([row for row, _ in unread] + failed)
     # Each of `failed` is a target but for its note, so this is not "all low", which starts an alert. With
     # nothing left that can be read before its pause ends, the hold says when the next try comes. The fifth
     # review found it naming that pause at the ceiling, where the try of an account with room is not waited

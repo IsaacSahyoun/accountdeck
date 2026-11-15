@@ -90,6 +90,8 @@ def inputs(engine):
                      # Until when Claude's refusal of a read pauses the account's reads. The row's `error` does not
                      # say so: a save of the login clears it while the pause lasts (`CLIAccounts.save`).
                      "paused_until": row["paused_until"],
+                     # A read of it failed, and none has worked since: no new reading can be had for now.
+                     "failing": engine.scheduler.failing(row["id"]),
                      "windows": (row["last_good_usage"] or {}).get("windows", [])})
     return rows
 
