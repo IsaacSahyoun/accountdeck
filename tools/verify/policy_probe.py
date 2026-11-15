@@ -97,8 +97,14 @@ show("   Alpha is at 99%: Gamma is used up, and Beta's pause is not waited for",
      [ends_in("alpha", "Alpha", 99, 6, active=True), unread, nearly])
 show("   Alpha is at 96% and its forecast says 99%: the pause is waited for, since Alpha could be gone back to",
      [dict(full, forecast={"seven_day": 99.5}), unread, ends_in("gamma", "Gamma", 96, 4)])
-show("   the same with Alpha's own reads paused and its reading 5 minutes old: no reading can say 99%, so the forecast counts",
+show("   the same with Alpha's own reads paused and its reading 5 minutes old: no reading can say 99%, so Alpha is not used on unseen",
      [dict(full, forecast={"seven_day": 99.5}, last_good_at=NOW - 300, paused_until=NOW + 600), unread, ends_in("gamma", "Gamma", 96, 4)])
+show("   the same with no forecast: Alpha's readings did not rise before the pause",
+     [dict(full, last_good_at=NOW - 300, paused_until=NOW + 600), unread, ends_in("gamma", "Gamma", 96, 4)])
+show("   the same with no paused account beside it",
+     [dict(full, last_good_at=NOW - 300, paused_until=NOW + 600), ends_in("gamma", "Gamma", 96, 4)])
+show("   and with nowhere to go: Alpha is used on, and the rule does not say every account is low",
+     [dict(full, last_good_at=NOW - 300, paused_until=NOW + 600), ends_in("gamma", "Gamma", 100, 4)])
 show("   then, with Gamma in use and its reads paused: Alpha is not gone back to before it is read again",
      [dict(full, active=False, last_good_at=NOW - 300, paused_until=NOW + 600), unread,
       dict(ends_in("gamma", "Gamma", 96, 4, active=True), forecast={"seven_day": 99.5}, last_good_at=NOW - 300, paused_until=NOW + 600)])
