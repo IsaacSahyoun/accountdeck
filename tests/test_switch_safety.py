@@ -1027,18 +1027,18 @@ class TerminalFailedSwitchTest(DeckCase):
 
     def test_a_first_try_that_was_never_tried_again_does_not_count_against_a_later_one(self):
         """Found by the second review of this change. A first try failed and its second try was never made: the
-        user moved the terminals by hand. Half an hour later the account is wanted again, and one passing
-        failure stops the switch. The old note made that the second try in a row, so the account was passed
-        over for 15 minutes, which is what one failure was not to cost."""
+        Mac slept. Half an hour later the terminals are on the same account, and one passing failure stops the
+        switch. The old note made that the second try in a row, so the account was passed over for 15 minutes,
+        which is what one failure was not to cost. The terminals do not move here, so only the age of the note
+        ends the count (`test_a_try_after_the_user_moved_the_terminals_is_a_first_try_again` has the move)."""
         self.refuse(self.wanted)
         self.check(1)
         self.assertEqual(self.tries(self.wanted), 1)
-        self.assertEqual(self.act("claude_cli", "switch", self.second["id"])["outcome"], "success")
-        self.started.clear()
-        self.later(1800, second=100)
+        self.later(1800)
         self.check(2)
-        self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]], 1))
+        self.assertEqual((self.started, self.tries(self.wanted)), ([self.wanted["id"]] * 2, 1))
         self.assertEqual(self.hold(), ("none", False, self.ONCE.format(self.wanted["label"])))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
 
     def said(self):
         """What the page is told about `wanted`: the hold, and why its row is skipped."""
