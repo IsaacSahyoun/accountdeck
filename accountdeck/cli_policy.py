@@ -155,11 +155,12 @@ def _row(account, settings, threshold, now):
     age = max(0, now - account["last_good_at"]) if number(account.get("last_good_at")) is not None else None
     # A reading too old to act on is read again first. That is one over 15 minutes old. It is also one the
     # executor takes again before it switches (older than `READY`) while the account's reads are paused. Claude
-    # refusing a read (HTTP 429) pauses them for 15 minutes. Until then the scheduler starts no read of the
+    # refusing a read (HTTP 429) pauses them for 15 to 60 minutes. Until then the scheduler starts no read of the
     # account and the Refresh button is refused, and a switch that waited kept the terminals on an account
     # that had run out.
     pause = number(account.get("paused_until"))
-    unread = age is not None and READY < age <= 900 and pause is not None and pause > now
+    paused = pause is not None and pause > now
+    unread = age is not None and READY < age <= 900 and paused
     old = age is not None and (age > 900 or unread)
     skip, past, stale = None, False, False
     if account.get("active"):
@@ -177,7 +178,8 @@ def _row(account, settings, threshold, now):
         skip, past = f"{label} at {used:g}%", True
     elif old:
         # Room at its last reading: read it again when it is needed.
-        skip, stale = "usage checks paused" if unread else f"reading {math.ceil(age / 60)} min old", True
+        # Not the words of the setting that pauses every check ("Usage checks paused"): this pause is Claude's.
+        skip, stale = "Claude paused its checks" if unread else f"reading {math.ceil(age / 60)} min old", True
     # Skipped only for being past the threshold (not health, freshness or choice): usable when all are.
     usable = skip is None or past
     spent = [(label, used, w) for label, used, w in values
@@ -188,7 +190,7 @@ def _row(account, settings, threshold, now):
                  if spent and all(w.get("kind") == "model" for _, _, w in spent) else None)
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
             "weekly_reset": reset(values[0][2]), "account": account, "values": values,
-            "drainable": usable and not spent, "week_only": week_only, "stale": stale, "old": old}
+            "drainable": usable and not spent, "week_only": week_only, "stale": stale, "old": old, "paused": paused}
 
 
 def _ordered(rows, settings):
@@ -256,8 +258,11 @@ def _held(history, active, now):
 
 
 def _checking(rows):
-    """The hold while accounts whose readings are too old to act on are read again."""
-    return {"hold": f"Checking {', '.join(row['label'] for row in rows[:3])} before switching",
+    """The hold while accounts whose readings are too old to act on are read again. An account whose reads Claude
+    paused is not read before the pause ends, so when every one of them is paused the hold says that."""
+    names = ", ".join(row["label"] for row in rows[:3])
+    waits = all(row["paused"] for row in rows)
+    return {"hold": f"Claude paused the usage checks of {names}" if waits else f"Checking {names} before switching",
             "refresh": [row["id"] for row in rows]}
 
 

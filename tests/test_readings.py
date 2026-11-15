@@ -447,7 +447,7 @@ class SoonestWeekFirstTest(unittest.TestCase):
                     result = self.decide(paused_beta, gamma, alpha=alpha, cli_order=order, cli_manual_order=["beta", "gamma"])
                     self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", kind))
                     self.assertEqual(result["reason"].partition("; ")[2], "Gamma is first in your eligible order.")
-                    self.assertEqual([(row["id"], row["skip"]) for row in result["next_up"] if row["id"] == "beta"], [("beta", "usage checks paused")])
+                    self.assertEqual([(row["id"], row["skip"]) for row in result["next_up"] if row["id"] == "beta"], [("beta", "Claude paused its checks")])
         # The early switch passes it over too.
         self.assertEqual(self.moves(paused_beta, account("gamma", 10, 4 * DAY)), ("switch", "gamma", "early", None))
         # Beta is used when its reading is new enough to switch on, when the pause is over, and when it has none.
@@ -460,15 +460,26 @@ class SoonestWeekFirstTest(unittest.TestCase):
         self.assertEqual(self.moves(account("beta", 30, 2 * DAY, age=240), gamma, **out)[:3], ("switch", "beta", "out"))
         # The skip starts where `cli_auto.tick` stops switching without a new read, and ends where an old
         # reading's skip starts.
-        for age, skip in ((cli_policy.READY, None), (cli_policy.READY + 1, "usage checks paused"), (900, "usage checks paused"),
-                          (901, "reading 16 min old")):
+        for age, skip in ((cli_policy.READY, None), (cli_policy.READY + 1, "Claude paused its checks"),
+                          (900, "Claude paused its checks"), (901, "reading 16 min old")):
             with self.subTest(age=age):
                 result = self.decide(account("beta", 30, 2 * DAY, age=age, paused_until=NOW + 600), gamma, **out)
                 self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], [skip])
                 self.assertEqual(result["target"], "beta" if skip is None else "gamma")
-        # With no other account ready it is read again, like a reading that is too old.
-        result = self.decide(paused_beta, **out)
-        self.assertEqual((result["action"], result["hold"], result["refresh"]), ("none", "Checking Beta before switching", ["beta"]))
+        # With no other account ready the rule waits for it, and the hold says what it waits for: no read comes
+        # before the pause ends, so "Checking Beta" would be false. A read is asked for all the same, and the
+        # scheduler starts it when the pause is over.
+        for alpha in ((100, 6 * DAY), (96, 6 * DAY)):
+            for age in (240, 1200):
+                with self.subTest(alpha=alpha[0], age=age):
+                    result = self.decide(account("beta", 30, 2 * DAY, age=age, paused_until=NOW + 600), alpha=alpha)
+                    self.assertEqual((result["action"], result["hold"], result["refresh"]),
+                                     ("none", "Claude paused the usage checks of Beta", ["beta"]))
+        # An old reading without a pause is being checked, and so is a paused account beside one that is not.
+        old_gamma = account("gamma", 10, 4 * DAY, age=1200)
+        self.assertEqual(self.decide(account("beta", 30, 2 * DAY, age=1200), **out)["hold"], "Checking Beta before switching")
+        self.assertEqual(self.decide(account("beta", 30, 2 * DAY, age=1200, paused_until=NOW - 1), **out)["hold"], "Checking Beta before switching")
+        self.assertEqual(self.decide(paused_beta, old_gamma, **out)["hold"], "Checking Beta, Gamma before switching")
         # Past 15 minutes the words are those of an old reading.
         result = self.decide(account("beta", 30, 2 * DAY, age=1200, paused_until=NOW + 600), gamma, **out)
         self.assertEqual([row["skip"] for row in result["next_up"] if row["id"] == "beta"], ["reading 20 min old"])
@@ -480,6 +491,10 @@ class SoonestWeekFirstTest(unittest.TestCase):
         result = self.decide(paused_beta, account("gamma", 92, 4 * DAY), **out)
         self.assertEqual((result["action"], result["target"], result["reason"]),
                          ("switch", "gamma", "Alpha reached its weekly limit; Beta needs a new reading first, so Gamma is used up to 99%."))
+        # While Alpha still works, at 99%, the rule waits for Beta's pause to end before it uses Gamma up, as it
+        # waits for any account with room. The 2.1.0 build waits there too. Whether it should is the owner's call.
+        result = self.decide(paused_beta, account("gamma", 92, 4 * DAY), alpha=(99, 6 * DAY))
+        self.assertEqual((result["action"], result["hold"]), ("none", "Claude paused the usage checks of Beta"))
 
     def test_of_weeks_that_end_together_the_early_switch_moves_to_the_one_the_order_puts_first(self):
         """Beta's week ends half an hour before Gamma's, and Gamma has more room. The order calls that a tie and
@@ -1351,6 +1366,27 @@ class FlagsTest(unittest.TestCase):
 
 
 class SchedulerTest(unittest.TestCase):
+    def test_a_paused_account_is_not_read_until_its_pause_ends_whoever_asks(self):
+        """The auto-switch rule passes over an account whose reads Claude paused, because no read of it comes
+        before the pause ends: not at its own time, not when the rule or the user asks for one (`request`), not
+        with a refresh of every account (`request_all`)."""
+        scheduler = RefreshScheduler(lambda account_id: "ok")
+        self.addCleanup(scheduler.shutdown)
+        paused = Target("beta", "claude_cli", "identity-beta", paused_until=2000.0)
+
+        def due(now):
+            return [target.id for target in scheduler.due([paused], now)]
+        self.assertEqual(due(1000.0), [])
+        scheduler.request("beta", 1100.0)
+        self.assertEqual(due(1100.0), [])
+        scheduler.request_all(["beta"], 1200.0)
+        self.assertEqual(due(1200.0), [])
+        self.assertEqual(due(1999.0), [])
+        self.assertEqual(due(2001.0), ["beta"])
+        # Without a pause the same request is due at once.
+        scheduler.request("gamma", 1100.0)
+        self.assertEqual([target.id for target in scheduler.due([Target("gamma", "claude_cli", "identity-gamma")], 1100.0)], ["gamma"])
+
     def test_one_helper_read_per_client_at_a_time(self):
         running, most, done, lock = [], [], [], threading.Lock()
 

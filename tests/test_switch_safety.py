@@ -492,7 +492,7 @@ class TerminalSoonestWeekTest(DeckCase):
     def test_an_account_that_ran_out_is_left_for_a_ready_one_while_the_soonest_week_cannot_be_read(self):
         """A switch is made on a reading at most 3 minutes old, and an older one is read again first. The reading
         of the week that ends soonest is 4 minutes old and Claude refuses a new one (HTTP 429, which pauses its
-        reads for 15 minutes). That account is first in the order, and the account in use has run out. The
+        reads for 15 minutes or more). That account is first in the order, and the account in use has run out. The
         terminals go to the next account, which is ready: waiting for the paused one kept them on an account
         that works for no model."""
         def refused(credentials):
@@ -533,27 +533,70 @@ class TerminalSoonestWeekTest(DeckCase):
         self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.later["id"]))
         self.assert_consistent("claude_cli", self.identity(self.later["id"]))
 
-    def test_a_paused_account_is_used_again_once_a_read_of_it_works(self):
-        """The reverse. Claude refuses a read of the week that ends soonest, and the account is passed over
-        while its reads are paused. Then a read of it works, which ends the pause, and the account that ran out
-        is left for it: it is first in the order again."""
+    def test_a_paused_account_is_read_and_used_again_once_its_pause_is_over(self):
+        """The reverse, the way the app gets there. Claude refuses a read of the week that ends soonest, and the
+        account is passed over while its reads are paused. The app's own scheduler starts no read of it in that
+        time, also not the one the rule asks for. Once the pause is over the scheduler reads it, the pause is
+        gone, and the account that ran out is left for it."""
         def refused(credentials):
             raise DeckError("Too many requests.", "rate_limited", 900)
         self.engine.clock.advance(240)
         self.engine.cli.adapter.usage = refused
         self.assertEqual(self.engine.cli.read(self.soonest["id"]), "rate_limited")
         del self.engine.cli.adapter.usage
+        paused = self.soonest["id"]
+
+        def row():
+            return self.engine.store.account(paused)
+        until, tried, reading = row()["paused_until"], row()["flags"]["checked"], row()["last_good_at"]
         self.read(self.first, weekly=100, ends=6 * self.DAY - 240)
         self.read(self.later, weekly=10, ends=4 * self.DAY - 240)
         decision = cli_auto.decision(self.engine)
         self.assertEqual((decision["action"], decision["target"]), ("switch", self.later["id"]))
-        self.assertEqual([row["skip"] for row in decision["next_up"] if row["id"] == self.soonest["id"]], ["usage checks paused"])
-        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "ok")
-        self.assertIsNone(self.engine.store.account(self.soonest["id"])["paused_until"])
-        self.read(self.soonest, weekly=30, ends=2 * self.DAY - 240)
+        self.assertEqual([entry["skip"] for entry in decision["next_up"] if entry["id"] == paused], ["Claude paused its checks"])
+        # During the pause: a read is asked for, the scheduler runs, and no try at the account is made.
+        self.engine.scheduler.request(paused, self.engine.clock())
+        self.engine._schedule(self.engine.clock())
+        self.engine.clock.advance(until - self.engine.clock() - 5)
+        self.engine.scheduler.request(paused, self.engine.clock())
+        self.engine._schedule(self.engine.clock())
+        self.assertEqual((row()["flags"]["checked"], row()["last_good_at"], row()["paused_until"]), (tried, reading, until))
+        # After it: the scheduler reads the account. It starts two reads of accounts not in use at a time.
+        self.engine.clock.advance(400)
+        self.engine.scheduler.request(paused, self.engine.clock())
+        for _ in range(4):
+            self.engine._schedule(self.engine.clock())
+        self.assertGreater(row()["last_good_at"], until)
+        self.assertIsNone(row()["paused_until"])
+        self.read(self.soonest, weekly=30, ends=self.DAY)
+        self.read(self.first, weekly=100, ends=5 * self.DAY)
+        self.read(self.later, weekly=10, ends=3 * self.DAY)
         last = self.switched()
-        self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], self.soonest["id"]))
-        self.assert_consistent("claude_cli", self.identity(self.soonest["id"]))
+        self.assertEqual((last["kind"], last["from"], last["to"]), ("out", self.first["id"], paused))
+        self.assert_consistent("claude_cli", self.identity(paused))
+
+    def test_nothing_reads_an_account_while_its_reads_are_paused(self):
+        """What the rule stands on: while an account's reads are paused no read of it starts. The Refresh button
+        of the account is refused, and a refresh of every account leaves it out. The scheduler's side is in the
+        test above and in `tests.test_readings.SchedulerTest`."""
+        def refused(credentials):
+            raise DeckError("Too many requests.", "rate_limited", 900)
+        self.engine.clock.advance(240)
+        self.engine.cli.adapter.usage = refused
+        self.assertEqual(self.engine.cli.read(self.soonest["id"]), "rate_limited")
+        del self.engine.cli.adapter.usage
+        paused = self.soonest["id"]
+        with self.assertRaises(DeckError) as failure:
+            self.engine.action("refresh", {"id": paused})
+        self.assertEqual(failure.exception.code, "rate_limited")
+        asked, request_all = [], self.engine.scheduler.request_all
+        self.engine.scheduler.request_all = lambda ids, now: asked.extend(ids) or request_all(ids, now)
+        try:
+            self.engine.action("refresh", {})
+        finally:
+            del self.engine.scheduler.request_all
+        self.assertIn(self.later["id"], asked)
+        self.assertNotIn(paused, asked)
 
     def test_a_writer_of_flags_cannot_hide_that_the_reads_of_an_account_are_paused(self):
         """Every writer of a row's `flags` writes the whole set back, and Leave Out does so under another lock
