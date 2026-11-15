@@ -105,6 +105,15 @@ show("   the same with no paused account beside it",
      [dict(full, last_good_at=NOW - 300, paused_until=NOW + 600), ends_in("gamma", "Gamma", 96, 4)])
 show("   and with nowhere to go: Alpha is used on, and the rule does not say every account is low",
      [dict(full, last_good_at=NOW - 300, paused_until=NOW + 600), ends_in("gamma", "Gamma", 100, 4)])
+came = {"last": {"from": "gamma", "to": "alpha", "at": NOW - 230, "kind": "threshold", "reason": "", "undo_until": NOW + 370}}
+show("   the terminals came to Alpha 230 seconds ago by an automatic switch: its pause does not count for 15 minutes",
+     [dict(full, last_good_at=NOW - 225, paused_until=NOW + 600), ends_in("gamma", "Gamma", 96, 4)], came)
+show("   and 15 minutes after that switch it does",
+     [dict(full, last_good_at=NOW - 895, paused_until=NOW + 600), ends_in("gamma", "Gamma", 96, 4)],
+     {"last": dict(came["last"], at=NOW - 900)})
+show("   two switches to Beta, which has room, failed: at the ceiling the next try is not waited for",
+     [dict(full, last_good_at=NOW - 300, paused_until=NOW + 600), ends_in("beta", "Beta", 30, 2), ends_in("gamma", "Gamma", 96, 4)],
+     {"tried": {"beta": {"at": NOW - 5, "count": 2}}})
 show("   then, with Gamma in use and its reads paused: Alpha is not gone back to before it is read again",
      [dict(full, active=False, last_good_at=NOW - 300, paused_until=NOW + 600), unread,
       dict(ends_in("gamma", "Gamma", 96, 4, active=True), forecast={"seven_day": 99.5}, last_good_at=NOW - 300, paused_until=NOW + 600)])

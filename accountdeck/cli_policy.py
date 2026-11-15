@@ -18,8 +18,11 @@
   reads Claude has paused, with a reading over 3 minutes old, counts as at the ceiling, with or without
   a forecast: no reading can say 99% before the pause ends, and it would be used until it ran out with
   nothing to see it. Its `old` row passes it over as a target, so the terminals do not come straight
-  back. Once its pause is over it can be named again, and the executor reads it first. A reading that
-  is old with no pause does not count: after a start or a wake every reading is old for some seconds;
+  back. Once its pause is over the scheduler reads it, and with that reading the rule can name it again.
+  A reading that is old with no pause does not count: after a start or a wake every reading is old for
+  some seconds. Nor does the pause of an account an automatic switch moved the terminals to less than 15
+  minutes ago (`STAY`): Claude refusing the first read of each account they came to moved them again
+  within minutes, and a switch on a last reading goes to a paused account by design;
   And when the account in use works for no model and every account left is paused, the first of them is
   switched to on the reading it has, however old (`last_reading`, which tells the executor to take no new
   one): staying is known to stop the work, and the switch renews and confirms the login it moves to;
@@ -35,8 +38,8 @@
   until then: most failures are over by then (Claude Code was renewing its own login, a lookup failed). The
   wait is the account's: a new reading that puts another account first moves the terminals there. After
   a second try in a row the account is no target for 15 minutes (`RETRY`), and the next account is used
-  meanwhile. An account with room is waited for while the account in use still works, like one with an old
-  reading;
+  meanwhile. An account with room is waited for while the account in use still works and is below the
+  ceiling, like one with an old reading whose reads are paused;
 - once no account qualifies, every account is used up to DRAIN_CEILING (99 %): the active one stays
   until it reaches it, then a target with DRAIN_ROOM points left below it is used;
 - an account in use that works for no model (its week ran out, or it needs sign-in) is left, after every
@@ -71,6 +74,7 @@ HOUR = 3600
 READY = 180     # a switch is made on a reading at most this old: `cli_auto.tick` reads an older one again first
 AGAIN = 90      # an automatic switch that did not happen is started once more this long after it was started
 RETRY = 900     # and after a second try in a row, not before this long after the last one
+STAY = 900      # an account an automatic switch moved the terminals to is not left for its own pause before this
 
 
 def number(value):
@@ -183,7 +187,7 @@ def evaluate(accounts, settings, history, now):
     if active["account"].get("live_expired"):
         result["hold"] = "Usage updates after your next message in Claude Code"
         return result
-    need = _need(active, threshold, now)
+    need = _need(active, threshold, history, now)
     if need["trigger"]:
         result.update(_leave(need, rows, active, history, settings, now))
     elif need["refilled"]:
@@ -355,23 +359,37 @@ def _ordered(rows, settings):
     return rows
 
 
-def _need(active, threshold, now):
+def _came(history, active, now):
+    """True for `STAY` after an automatic switch brought the terminals to the account in use (`last`, which
+    only those write). Dated as a note of a try is (`_row`): a switch dated after now, when the Mac's clock
+    was set back, counts for no more than twice that long."""
+    last = history.get("last") or {}
+    at = number(last.get("at"))          # an old `last` can have no time
+    return last.get("to") == active["id"] and at is not None and abs(now - at) < STAY
+
+
+def _need(active, threshold, history, now):
     """Why the account in use should be left, judged on its windows still running: `trigger` (login, out,
     threshold or None) and `why` in words. A window whose reset time has passed is left out; `refilled` names
     those that ended at or past the threshold, whose new reading is waited for. `yields` says the user's own
     choice outranks this need: the threshold, and a model's limit that ran out while the week has room. `peak`
     is the highest of the readings and their forecasts.
 
-    `ceiling` says the account is no longer one to be used on: it works for no model or needs sign-in, a
-    reading says 99%, or it cannot be read. A forecast alone does not say so. An account left on its forecast
-    is still one to be used up by its reading, and with two such accounts whose forecasts both said 99% the
-    terminals went from one to the other at every check. An account cannot be read while Claude has paused
-    its reads: once its reading is over 3 minutes old (`old` and `paused`), that reading cannot reach 99%
+    `ceiling` says the account is no longer one to be used on: its week or a model's limit ran out, it needs
+    sign-in, a reading says 99%, or it cannot be read. A forecast alone does not say so. An account left on its
+    forecast is still one to be used up by its reading, and with two such accounts whose forecasts both said
+    99% the terminals went from one to the other at every check. An account cannot be read while Claude has
+    paused its reads (`paused` here): once its reading is over 3 minutes old, that reading cannot reach 99%
     before the pause ends, and waiting for it used the account until it ran out, with nothing to see it. Its
     `old` row passes it over as a target (`_leave`), so the terminals do not come straight back to it. A
     reading that is over 15 minutes old with no pause does not count. Every reading is that old for some
     seconds after a start or a wake, and the terminals would move for no cause whenever another account
-    was read first. `drain` is `why` for the reason of a switch to an account that is used up."""
+    was read first. (A forecast of 99% made from readings before a sleep still moves them at the wake, as it
+    did before this rule.) Nor does the pause of an account the terminals came to by an automatic switch less than
+    `STAY` ago (`_came`). After a switch the engine asks for a reading of that account, and when Claude
+    refused it the terminals left again minutes later, for as long as Claude refused. A switch on a last
+    reading moves to a paused account on purpose, and it was left seconds later for the next one that was
+    read. `drain` is `why` for the reason of a switch to an account that is used up."""
     account = active["account"]
     values = [value for value in active["values"] if not ended(value[2], now)]
     # A limit filling fast can pass the threshold, or run out, before the next read is allowed: act on the
@@ -395,11 +413,14 @@ def _need(active, threshold, now):
     peak = max((used for _, used in projected if used is not None), default=0)
     reached = max((used for _, used, _ in values if used is not None), default=0)       # read, not forecast
     drain = (why if trigger != "threshold" else f"reached {DRAIN_CEILING}%" if reached >= DRAIN_CEILING else
-             f"will pass {DRAIN_CEILING}% before the next check" if peak >= DRAIN_CEILING else f"{why} and cannot be read")
+             f"will pass {DRAIN_CEILING}% before the next check" if peak >= DRAIN_CEILING else
+             f"{why} and its usage checks are paused")
+    paused = active["old"] and active["paused"]
     return {"trigger": trigger, "why": why, "drain": drain, "peak": peak,
             "yields": trigger == "threshold" or (trigger == "out" and not account.get("out")
                                                  and all(w.get("kind") == "model" for _, w in out)),
-            "ceiling": trigger != "threshold" or reached >= DRAIN_CEILING or (active["old"] and active["paused"]),
+            "ceiling": trigger != "threshold" or reached >= DRAIN_CEILING or (paused and not _came(history, active, now)),
+            "paused": paused,
             "refilled": [label for label, used, w in active["values"]
                          if ended(w, now) and (w.get("blocked") or (used is not None and used >= threshold))]}
 
@@ -451,7 +472,7 @@ def _passed(stale, roomy, threshold):
     waits = (f"Claude paused the usage checks of {_listed(stale)}" if all(row["paused"] for row in stale) else
              f"{_listed(stale)} need{'s' if len(stale) == 1 else ''} a new reading first")
     # An account with room that was tried twice is passed over too, and it is named beside the ones that wait.
-    return " and ".join(([waits] if stale else []) + ([_tried(roomy)] if roomy else [])) or f"every account is past {threshold}%"
+    return ", and ".join(([waits] if stale else []) + ([_tried(roomy)] if roomy else [])) or f"every account is past {threshold}%"
 
 
 def _said(row, others):
@@ -495,14 +516,18 @@ def _leave(need, rows, active, history, settings, now):
     if stale and need["yields"] and not (need["ceiling"] and all(row["paused"] for row in stale)):
         return _checking(stale)
     # An account a switch was tried to twice is tried again `RETRY` after that. One with room is waited for
-    # while the account in use still works, as a new reading is. One past the threshold is not: it was a last
-    # resort. A note counts only for an account this decision would use without it: while the account in use
-    # still works, one kept for its week alone is no target, and its note holds nothing back.
+    # while the account in use still works and is below the ceiling, as a paused account with room is: at
+    # the ceiling 15 minutes are too long with an account ready to be used up. One past the threshold is
+    # not waited for: it was a last resort. A note counts only for an account this decision would use
+    # without it: while the account in use still works, one kept for its week alone is no target, and its
+    # note holds nothing back.
     failed = [row for row in rows if row["failed"] and (row["failed"] != "week" or not need["yields"])]
     roomy = [row for row in failed if row["failed"] == "room"]
-    if roomy and need["yields"]:
+    if roomy and need["yields"] and not need["ceiling"]:
         return _retry(roomy)
-    using = {"hold": f"Every account is past {threshold}% — using {label} up to {DRAIN_CEILING}%"}
+    # While its own reads are paused the account in use cannot be seen to reach 99%, so the hold names the pause.
+    using = {"hold": f"Claude paused the usage checks of {label}" if need["paused"] else
+             f"Every account is past {threshold}% — using {label} up to {DRAIN_CEILING}%"}
     if not need["ceiling"] and need["peak"] < DRAIN_CEILING:
         return using
     # The last resorts, the better one first. Every account is past the threshold, so one that can still be

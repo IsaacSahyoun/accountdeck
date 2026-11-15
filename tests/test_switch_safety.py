@@ -944,13 +944,19 @@ class TerminalPausedAccountTest(DeckCase):
             self.engine.clock.advance(5)
         self.assertEqual(self.started, [self.second["id"]])
         self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(self.wanted["label"])))
-        # Claude pauses its reads too. The account that was left still has its old reading, so nothing moves.
+        # Claude pauses its reads too. The terminals came to it under 15 minutes ago, so that pause does not
+        # count yet (`cli_policy.STAY`), and the paused account with room is waited for.
         self.pause(self.second)
         self.engine.clock.advance(200)
         self.assertGreaterEqual(self.forecast(), 99)
         for _ in range(8):
             self.check()
             self.engine.clock.advance(5)
+        self.assertEqual(self.started, [self.second["id"]])
+        self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(self.wanted["label"])))
+        # After those 15 minutes it counts. The account that was left still has its old reading, so nothing moves.
+        self.engine.clock.advance(700)
+        self.check(2)
         self.assertEqual(self.started, [self.second["id"]])
         self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(f"{self.wanted['label']}, {self.first['label']}")))
         self.assert_consistent("claude_cli", self.identity(self.second["id"]))
@@ -974,18 +980,62 @@ class TerminalPausedAccountTest(DeckCase):
         last = self.last()
         self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("threshold", self.first["id"], self.second["id"]),
                          "the terminals did not move to the account that was ready")
-        self.assertEqual(last["reason"], f"{self.first['label']} reached 95% of its weekly limit and cannot be read; Claude paused the "
-                         f"usage checks of {self.wanted['label']}, so {self.second['label']} is used up to 99%.")
+        self.assertEqual(last["reason"], f"{self.first['label']} reached 95% of its weekly limit and its usage checks are paused; "
+                         f"Claude paused the usage checks of {self.wanted['label']}, so {self.second['label']} is used up to 99%.")
         self.assert_consistent("claude_cli", self.identity(self.second["id"]))
         for _ in range(8):
             self.check()
             self.engine.clock.advance(5)
         self.assertEqual(self.started, [self.second["id"]])
 
+    def test_an_account_moved_to_on_its_last_reading_is_not_left_at_once_for_the_next_one_that_is_read(self):
+        """Found by the fourth review. The account in use ran out with `second` and `wanted` both paused past
+        the threshold, so the terminals moved to one of them on its last reading. Its reads are paused and
+        that reading is old, so it counted as one that cannot be read from its first check, and the terminals
+        left it seconds later, when the pause of the other ended and it was read. Each move renews a login
+        and takes the Undo of the one before. The account they came to is used for 15 minutes first."""
+        engine = self.engine
+        self.read(first=30, second=96, wanted=96)
+        engine.clock.advance(1200)
+        self.pause(self.second)
+        self.pause(self.wanted)
+        support.with_reading(engine, self.first["id"], weekly=100, ends=6 * self.DAY - 1200)
+        self.check()
+        moved = next((row for row in (self.second, self.wanted) if row["id"] == self.last().get("to")), None)
+        self.assertIsNotNone(moved, "the terminals did not move to a paused account on its last reading")
+        other = self.wanted if moved is self.second else self.second
+
+        def read_again():
+            """The pause of `other` is over and Claude answers its read with the numbers it had."""
+            answer = copy.deepcopy(engine.store.account(other["id"])["last_good_usage"])
+            answer["checked"] = engine.clock()
+            engine.cli.adapter.usage = lambda credentials: answer
+            try:
+                self.assertEqual(engine.cli.read(other["id"]), "ok")
+            finally:
+                del engine.cli.adapter.usage
+            self.assertIsNone(engine.store.account(other["id"])["paused_until"])
+        read_again()
+        self.check(2)
+        self.assertEqual(self.started, [moved["id"]], "the terminals left the account they had just come to")
+        self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(moved["label"])))
+        self.assert_consistent("claude_cli", self.identity(moved["id"]))
+        # 15 minutes after the switch its pause counts, and the account that can be read is used up.
+        engine.clock.advance(900)
+        read_again()
+        self.check()
+        last = self.last()
+        self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("threshold", moved["id"], other["id"]))
+        self.assertEqual(last["reason"], f"{moved['label']} reached 95% of its weekly limit and its usage checks are paused; every "
+                         f"account is past 95%, so {other['label']} is used up to 99%.")
+        self.assert_consistent("claude_cli", self.identity(other["id"]))
+
     def test_after_a_wake_an_old_reading_of_the_account_in_use_moves_nothing(self):
         """The reverse. After a start or a wake every reading is over 15 minutes old for some seconds. Nothing
         says the account in use cannot be read, so a reading of `second` that lands first moves nothing, and
-        the rule asks for none. The first build of the third review's fix went by the age alone and moved."""
+        the rule asks for none. The first build of the third review's fix went by the age alone and moved.
+        The account in use has no forecast here. One of 99% made from readings before the sleep still moves
+        the terminals, in the installed build too: the forecast is not part of this change."""
         self.read(first=96, second=92, wanted=100)
         self.engine.clock.advance(1200)
         asked, request = [], self.engine.scheduler.request
@@ -1006,8 +1056,11 @@ class TerminalPausedAccountTest(DeckCase):
         account 45 and 300 seconds after a reset. The rule asked for a reading at its first check after the
         reset, the governor then put the scheduler's own reading off to 3 minutes after that one, and here
         Claude still answers with the old week in those first seconds. Every fake read answers with the
-        numbers the account already has, so only the reads themselves change anything."""
-        key, engine = self.wanted["id"], self.engine
+        numbers the account already has, so only the reads themselves change anything.
+        The demo's clock runs with real time, so a read is noted by the step it came in, not by the clock's
+        own number: the fourth review found that rounding that number failed the test on a busy Mac. Each
+        step is 5 seconds or more past a time the scheduler acts at, or 15 or more short of it."""
+        key, engine, step = self.wanted["id"], self.engine, ["before the reset"]
         self.read(first=100, second=100)
         support.with_reading(engine, key, weekly=100, ends=300)
         reset = engine.clock() + 300
@@ -1028,15 +1081,16 @@ class TerminalPausedAccountTest(DeckCase):
 
         def watched(targets, now, clock):
             ids = tick(targets, now, clock)
-            started.extend(round(now - reset) for account in ids if account == key)
+            started.extend(step[0] for account in ids if account == key)
             return ids
         engine.cli.read, engine.cli.adapter.usage, engine.scheduler.tick = read_one, the_same, watched
-        engine.scheduler.request = lambda account, now: (asked.append(round(now - reset)) if account == key else None) or request(account, now)
+        engine.scheduler.request = lambda account, now: (asked.append(step[0]) if account == key else None) or request(account, now)
         try:
             for _ in range(4):          # every account gets its plan, and the governor its 180 seconds, before the reset
                 engine._schedule(engine.clock())
-            self.assertEqual(started, [-300], "the scheduler did not read `wanted` at the start")
-            for after in (5, 20, 40, 50, 120, 200, 310):
+            self.assertEqual(started, ["before the reset"], "the scheduler did not read `wanted` at the start")
+            for after in (5, 20, 30, 50, 120, 200, 310):
+                step[0] = after
                 engine.clock.advance(reset + after - engine.clock())
                 self.check()
                 engine._schedule(engine.clock())

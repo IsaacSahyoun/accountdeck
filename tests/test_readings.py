@@ -822,12 +822,17 @@ class PausedAccountTest(unittest.TestCase):
                          "up to 99%." + self.USED.format("Delta", "4 min"))
         result = self.decide(*mixed, account("delta", 96, 4 * DAY), tried=twice)
         self.assertEqual((result["target"], result["last_reading"]), ("delta", False))
-        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Claude paused the usage checks of Beta and a switch to Epsilon "
-                         "was tried, so Delta is used up to 99%.")
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Claude paused the usage checks of Beta, and a switch to "
+                         "Epsilon was tried, so Delta is used up to 99%.")
         result = self.decide(account("beta", 30, 2 * DAY, age=1200), account("epsilon", 30, 3 * DAY), account("delta", 96, 4 * DAY),
                              tried={"epsilon": (65, 2)})
-        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta needs a new reading first and a switch to Epsilon "
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta needs a new reading first, and a switch to Epsilon "
                          "was tried, so Delta is used up to 99%.")
+        # Found by the fourth review: two of each read "Beta and Delta and switches to Epsilon and Zeta".
+        result = self.decide(paused("beta"), paused("delta", 30, 3 * DAY), account("epsilon", 30, 4 * DAY), account("zeta", 30, 5 * DAY),
+                             account("gamma", 92, 6 * DAY), tried={"epsilon": (65, 2), "zeta": (65, 2)})
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Claude paused the usage checks of Beta and Delta, and "
+                         "switches to Epsilon and Zeta were tried, so Gamma is used up to 99%.")
 
     def test_a_forecast_does_not_send_the_terminals_back_and_forth_past_a_paused_account(self):
         """Found by the review of this change. Alpha and Gamma are both at 96% and filling fast, so the forecast
@@ -882,15 +887,23 @@ class PausedAccountTest(unittest.TestCase):
         self.assertEqual(said, {
             "a forecast of 103%": "Alpha will pass 99% before the next check; " + tail,
             "a forecast of 99%": "Alpha will pass 99% before the next check; " + tail,
-            "a forecast of 98.9%": "Alpha reached 95% of its weekly limit and cannot be read; " + tail,
-            "no forecast": "Alpha reached 95% of its weekly limit and cannot be read; " + tail,
-            "a forecast alone": "Alpha will pass 95% of its weekly limit before the next check and cannot be read; " + tail})
+            "a forecast of 98.9%": "Alpha reached 95% of its weekly limit and its usage checks are paused; " + tail,
+            "no forecast": "Alpha reached 95% of its weekly limit and its usage checks are paused; " + tail,
+            "a forecast alone": "Alpha will pass 95% of its weekly limit before the next check and its usage checks are paused; " + tail})
         self.assertEqual(self.decide(gamma, alpha=97, forecast={"seven_day": 103.0})["reason"],
                          "Alpha will pass 99% before the next check; every account is past 95%, so Gamma is used up to 99%.")
         # An account with room that can be read is still waited for, and the user's own choice still holds.
         self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=1200), gamma, alpha=97, **cannot)[3], "Checking Beta before switching")
         chose = {"manual_at": NOW - 5, "manual_for": "alpha"}
         self.assertEqual(self.answer(paused("beta"), gamma, alpha=97, history=chose, **cannot)[3], cli_policy.MANUAL_HOLD)
+        # Nor is the next try of an account with room that was tried twice waited for: it is 15 minutes off.
+        # Found by the fourth review. With nothing to use up, that try is waited for.
+        result = self.decide(account("epsilon", 30, 2 * DAY), gamma, alpha=97, tried={"epsilon": (5, 2)}, **cannot)
+        self.assertEqual((result["action"], result["target"]), ("switch", "gamma"))
+        self.assertEqual(result["reason"], "Alpha reached 95% of its weekly limit and its usage checks are paused; a switch to "
+                         "Epsilon was tried, so Gamma is used up to 99%.")
+        self.assertEqual(self.answer(account("epsilon", 30, 2 * DAY), alpha=97, tried={"epsilon": (5, 2)}, **cannot)[3],
+                         "A switch to Epsilon was tried and is tried again in 15 min at the earliest")
 
     def test_the_same_with_no_paused_account_beside_it(self):
         """Every other account is past the threshold, so the account in use is used up to 99%. That goes by its
@@ -906,30 +919,78 @@ class PausedAccountTest(unittest.TestCase):
         self.assertEqual(self.answer(gamma, alpha=96, age=1200), using)
         result = self.decide(gamma, alpha=96, **cannot)
         self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "gamma", "threshold"))
-        self.assertEqual(result["reason"], "Alpha reached 95% of its weekly limit and cannot be read; every account is past 95%, "
-                         "so Gamma is used up to 99%.")
+        self.assertEqual(result["reason"], "Alpha reached 95% of its weekly limit and its usage checks are paused; every account is "
+                         "past 95%, so Gamma is used up to 99%.")
         # With an old reading the other account is read first. Passed over for its tries, its hold stands.
         result = self.decide(account("gamma", 92, 4 * DAY, age=1200), alpha=96, **cannot)
         self.assertEqual((result["action"], result["hold"], result["refresh"]), ("none", "Checking Gamma before switching", ["gamma"]))
         self.assertEqual(self.answer(gamma, alpha=96, tried={"gamma": (5, 2)}, **cannot)[3],
                          "A switch to Gamma was tried and is tried again in 15 min at the earliest")
-        # With nowhere to go it is used on, as one that can be read: not "all low", which raises an alert.
+        # With nowhere to go it is used on, as one that can be read: not "all low", which raises an alert. The
+        # hold names the pause. It said "using Alpha up to 99%", and no reading can say 99% before the pause ends.
         for name, others in (("no other account", []), ("the other account has run out", [account("gamma", 100, 4 * DAY)])):
             with self.subTest(name):
                 result = self.decide(*others, alpha=96, **cannot)
-                self.assertEqual((result["action"], result["hold"], result["exhausted"]), ("none", using[3], False))
+                self.assertEqual((result["action"], result["hold"], result["refresh"], result["exhausted"]),
+                                 ("none", self.PAUSED.format("Alpha"), [], False))
         # At 99% by its forecast, with nowhere to go, the rule says every account is low, as it did.
         self.assertIs(self.decide(alpha=96, forecast={"seven_day": 99.5}, **cannot)["exhausted"], True)
         # So it does for one that needs sign-in: it works for nothing, whatever its number, so it is not used on.
         result = self.decide(alpha=30, health="needs_signin", **cannot)
         self.assertEqual((result["action"], result["hold"], result["exhausted"]), ("none", None, True))
 
+    def came(self, ago=230, to="alpha", kind="threshold"):
+        """The history after an automatic switch that brought the terminals to `to`, `ago` seconds ago."""
+        return {"left": "gamma", "left_at": NOW - ago,
+                "last": {"from": "gamma", "to": to, "at": NOW - ago, "kind": kind, "reason": "", "undo_until": NOW - ago + 600}}
+
+    def test_an_account_the_terminals_just_came_to_is_not_left_for_its_pause(self):
+        """Found by the fourth review. After a switch the engine asks for a reading of the account the terminals
+        came to. When Claude refused it, that account counted as one that cannot be read 3 minutes after the
+        reading the switch went by, and the terminals left it again: two accounts past the threshold traded
+        places 4 minutes apart, for as long as Claude refused. And a switch on a last reading goes to a paused
+        account on purpose, which was then left seconds later for the next account that was read. An account
+        an automatic switch moved the terminals to is used for 15 minutes (`cli_policy.STAY`) before its pause
+        counts. Alpha is that account here, at 96% with a reading 225 seconds old, and Gamma was just read."""
+        gamma, cannot = account("gamma", 96, 4 * DAY, age=5), dict(age=225, paused_until=NOW + 1500)
+        stays, moves = ("none", None, None, self.PAUSED.format("Alpha")), ("switch", "gamma", "threshold", None)
+        for ago, wanted in ((5, stays), (230, stays), (899, stays), (900, moves), (7200, moves)):
+            with self.subTest(came_seconds_ago=ago):
+                self.assertEqual(self.answer(gamma, alpha=96, history=self.came(ago), **cannot), wanted)
+        # Beside a paused account with room that one is waited for meanwhile, as below the ceiling.
+        self.assertEqual(self.answer(paused("beta"), gamma, alpha=96, history=self.came(), **cannot)[3], self.PAUSED.format("Beta"))
+        self.assertEqual(self.answer(paused("beta"), gamma, alpha=96, history=self.came(900), **cannot)[:2], ("switch", "gamma"))
+        # With a third account past the threshold that can be read, nothing spaced the moves but how soon Claude
+        # refused the account the terminals had reached. Gamma is the one they left, still paused. Delta was read.
+        left, delta = account("gamma", 96, 4 * DAY, age=460, paused_until=NOW + 1300), account("delta", 96, 3 * DAY, age=5)
+        self.assertEqual(self.answer(left, delta, alpha=96, history=self.came(), **cannot), stays)
+        self.assertEqual(self.answer(left, delta, alpha=96, history=self.came(900), **cannot), ("switch", "delta", "threshold", None))
+        # A switch on a last reading, 5 seconds ago, to an account whose reading is 20 minutes old.
+        last = dict(age=1205, paused_until=NOW + 1500)
+        self.assertEqual(self.answer(gamma, account("delta", 100, 3 * DAY), alpha=96, history=self.came(5, kind="out"), **last), stays)
+        self.assertEqual(self.answer(gamma, account("delta", 100, 3 * DAY), alpha=96, history=self.came(900, kind="out"), **last), moves)
+        # Only the pause waits. A reading of 99%, a limit that ran out and a sign-in need move at once.
+        self.assertEqual(self.answer(gamma, alpha=99, history=self.came(), **cannot)[:3], ("switch", "gamma", "threshold"))
+        self.assertEqual(self.answer(gamma, alpha=100, history=self.came(), **cannot)[:3], ("switch", "gamma", "out"))
+        self.assertEqual(self.answer(gamma, alpha=96, health="needs_signin", history=self.came(), **cannot)[:3], ("switch", "gamma", "login"))
+        # The switch has to be one to the account in use: after a sign-in inside Claude Code it is another's.
+        self.assertEqual(self.answer(gamma, alpha=96, history=self.came(to="delta"), **cannot), moves)
+        # A history with no switch, and one whose switch has no time (damaged data: no build writes that).
+        self.assertEqual(self.answer(gamma, alpha=96, history={}, **cannot), moves)
+        untimed = self.came()
+        del untimed["last"]["at"]
+        self.assertEqual(self.answer(gamma, alpha=96, history=untimed, **cannot), moves)
+        # The Mac's clock was set back, so the switch is dated after now. It counts for 15 minutes on that side
+        # too, and not for longer.
+        self.assertEqual(self.answer(gamma, alpha=96, history=self.came(-300), **cannot), stays)
+        self.assertEqual(self.answer(gamma, alpha=96, history=self.came(-900), **cannot), moves)
+
     def test_an_account_left_while_it_cannot_be_read_is_passed_over_until_it_can(self):
         """The back-and-forth of `test_a_forecast_does_not_send_…` needs an account that is left and is still a
-        target. An account is left below a reading of 99% only with a reading too old to act on, and with that
-        reading it is passed over. Once its pause is over, and its reading is at most 15 minutes old, the rule
-        names it again, and `cli_auto.tick` reads it before the switch (`READY`), which
-        `TerminalPausedAccountTest.test_an_account_that_can_be_read_is_still_read_again_before_the_switch` holds."""
+        target. An account is left below a reading of 99% only while its reads are paused, with a reading over
+        3 minutes old, and with that reading it is passed over. A pause lasts 15 minutes or more, so when it is
+        over that reading is too old to act on by its age, and the account is read again first: the scheduler
+        reads it at the end of its pause. With that reading the rule names it again."""
         soon, until = {"seven_day": 103.0}, NOW + 1500
 
         def in_use(key, alpha, forecast=soon):
@@ -948,8 +1009,9 @@ class PausedAccountTest(unittest.TestCase):
                 self.assertEqual(in_use("gamma", dict(age=300, paused_until=until), forecast), ("none", None, left))
                 self.assertEqual(in_use("gamma", dict(age=1200, paused_until=until), forecast), ("none", None, left))
                 self.assertEqual(in_use("gamma", dict(age=1200), forecast), ("none", None, "Checking Beta, Alpha before switching"))
+                self.assertEqual(in_use("gamma", dict(age=1200, paused_until=NOW - 1), forecast),
+                                 ("none", None, "Checking Beta, Alpha before switching"))
                 self.assertEqual(in_use("gamma", dict(age=60), forecast), ("switch", "alpha", None))
-                self.assertEqual(in_use("gamma", dict(age=300, paused_until=NOW - 1), forecast), ("switch", "alpha", None))
 
 
 class RefilledSinceTest(unittest.TestCase):
@@ -1517,13 +1579,23 @@ class FailedSwitchTest(unittest.TestCase):
                          self.SEVERAL.format("Beta, Gamma", "10 min"))
 
     def test_an_account_with_room_is_waited_for_while_the_one_in_use_still_works(self):
-        """As for an account with an old reading: at the threshold, and at 99%, the account in use still works,
-        so an account that is nearly used up is not taken in place of one with room."""
+        """At the threshold the account in use still works, so an account that is nearly used up is not taken in
+        place of one with room. At the ceiling it is, as beside a paused account with room: the next try is 15
+        minutes off. Until the fourth review of the change for a paused account the terminals waited for it
+        on an account at 99%, and on one that could not be read (`PausedAccountTest`), with Delta ready."""
         beta, delta = account("beta", 30, 2 * DAY), account("delta", 90, 4 * DAY)
-        for used in (96, 99):
+        for used in (96, 98.9):
             with self.subTest(alpha_used=used):
                 self.assertEqual(self.answer(beta, delta, alpha=used, tried={"beta": (5, 2)}),
                                  ("none", None, self.TWICE.format("Beta", "15 min"), False))
+        result = self.decide(beta, delta, alpha=99, tried={"beta": (5, 2)})
+        self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "delta", "threshold"))
+        self.assertEqual(result["reason"], "Alpha reached 99%; a switch to Beta was tried, so Delta is used up to 99%.")
+        # The same when a model's limit ran out and the week has room: Alpha does not work for that model.
+        result = self.decide(beta, delta, alpha=50, fable=100, tried={"beta": (5, 2)})
+        self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "delta", "out"))
+        # With nothing to use up, the next try is waited for at the ceiling too.
+        self.assertEqual(self.answer(beta, alpha=99, tried={"beta": (5, 2)}), ("none", None, self.TWICE.format("Beta", "15 min"), False))
         # Once the account in use has run out, the one that is nearly used up is better than staying.
         result = self.decide(beta, delta, tried={"beta": (5, 2)})
         self.assertEqual((result["action"], result["target"]), ("switch", "delta"))
