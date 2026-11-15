@@ -53,7 +53,7 @@ SLOW_EVERY = 60.0             # shared setup and Codex conversations
 STATUS_MIN = 1.0
 MACHINE_TTL = 1.5             # how old a process observation a snapshot may reuse (real seconds)
 READY_GRACE = 30.0            # `ready` turns true after this long even if a first reading is still missing
-IDLE_GAP = 60.0               # a tick that comes this long after the one before: the app did not run meanwhile
+IDLE_GAP = 60.0               # the tick thread did not look at the clock for this long: the app did not run meanwhile
 PLAN_GRACE = 600.0            # a plan is kept this long after it expired
 MAX_SETUP_BYTES = 8 * 1024 * 1024
 HOT_USED, EXHAUSTED_USED = 95.0, 99.5
@@ -142,11 +142,12 @@ class Engine:
         # Since when each client's account in use has been the one in use, as far as this run of the app saw
         # it (None: nobody signed in so far), and each stretch of `IDLE_GAP` or more in which the app did not
         # run: (when it ran again, how long it had not). The forecast of an account's usage reads both
-        # (`cli_auto._forecast`). Kept in memory: a new run starts the count again.
+        # (`cli_auto._forecast`). Kept in memory: a new run starts the count again. `_awake` notes the gaps,
+        # from one look at the clock to the next (`_looked`).
         self.in_use_since = {name: None for name in self.providers}
-        self.gaps = ()
+        self.gaps, self._looked = (), None
         self.closers = []                    # called once by stop(), e.g. a Codex sign-in helper
-        self.scheduler = RefreshScheduler(self._refresh, inline=inline)
+        self.scheduler = RefreshScheduler(self._refresh, inline=inline, done=self.bump)
         self.accounts = AccountService(self.store, self.vault, self.providers, clock=clock, observed=self.observed,
                                        lock_for=self.scheduler.account_lock,
                                        lock_wait=self.timings.lock_wait, on_change=self.bump)
@@ -428,7 +429,7 @@ class Engine:
         phase("status", self._poll_status, now)
         phase("schedule", self._schedule, now)
         phase("slow", self._refresh_slow, now)
-        phase("autoswitch", cli_auto.tick, self)
+        phase("autoswitch", self._autoswitch)
         phase("tidy", self._tidy, now)
         if now - self._last_heartbeat >= HEARTBEAT:
             self._last_heartbeat = now
@@ -515,19 +516,32 @@ class Engine:
             self.stopping.wait(self.tick_seconds)
 
     def idle_since(self, at):
-        """How many seconds the app did not run since `at`: the Mac slept, or its clock was set ahead. A tick
-        that comes under a minute late is not counted. Under load one comes 20 seconds late with the Mac awake."""
+        """How many seconds the app did not run since `at`, as far as the engine can tell: the tick thread did
+        not look at the clock for a minute or more (`_awake`). That is a sleep, a clock set ahead, and also a
+        tick thread held back that long with the Mac awake, as macOS may do to an app in the background. A
+        look that comes under a minute late is not counted: under load one comes 20 seconds late."""
         return sum(seconds for when, seconds in self.gaps if when > at)
 
-    def _check_resume(self, now):
-        # For the forecast: the time since the tick before this one, when it is `IDLE_GAP` or more, is time
-        # the app did not run. And with the Mac's clock set back, the time the terminals came to an account
-        # would be ahead of every new reading, so it starts again now.
-        if self._last_tick is not None and now - self._last_tick >= IDLE_GAP:
-            self.gaps = (*self.gaps[-31:], (now, now - self._last_tick - self.tick_seconds))
+    def _awake(self, now):
+        """The tick thread's look at the clock before each auto-switch check, for the forecast. `IDLE_GAP` or
+        more since the look before it is time the app did not run. And with the Mac's clock set back, a time
+        noted before the change would be ahead of every new reading: it counts as now. Readings from before
+        the change are dated after now, and `cli_auto._forecast` leaves those out."""
+        last, self._looked = self._looked, now
+        if last is not None and now - last >= IDLE_GAP:
+            self.gaps = (*self.gaps[-31:], (now, now - last))
+        self.gaps = tuple((min(when, now), seconds) for when, seconds in self.gaps)
         for name, since in self.in_use_since.items():
             if since is not None and since > now:
                 self.in_use_since[name] = now
+
+    def _autoswitch(self):
+        """The auto-switch check, right after a look at the clock. The Mac can go to sleep in the middle of a
+        tick, and the check then runs at the wake: a look at the start of the tick was before the sleep."""
+        self._awake(self.clock())
+        cli_auto.tick(self)
+
+    def _check_resume(self, now):
         wall = self.real_time()
         jumped = wall - self._wall > 3 * self.tick_seconds
         self._wall = wall

@@ -14,9 +14,17 @@ from .platform.facts_mac import remove_work_directory
 
 
 REFRESH_TIMEOUT = 5.0         # the token POST runs while Claude Code's credential locks are held
+RENEWAL_WAIT = 1800           # after a renewal that did not work, a read asks Claude for the next one this much later
 REAUTH = "Sign in again to repair this terminal account."
 UNVERIFIABLE = "Sign in again so AccountDeck can confirm which account this saved login belongs to."
 MISFILED = "This saved login belongs to a different Claude account. Sign in again with the right account."
+
+
+def _waits(error, asked):
+    """`error` with the time until when no read of the account can be taken: Claude was asked to renew its login
+    at `asked`, the login was not renewed, and a read does not ask again for `RENEWAL_WAIT`."""
+    error.renewal_wait = asked + RENEWAL_WAIT
+    return error
 
 
 class CLIAccounts:
@@ -395,8 +403,9 @@ class CLIAccounts:
             keepalive = now - saved.get("refreshed", 0) >= 7 * 86400
             if not due and not keepalive:
                 return saved, False
-            if not for_switch and now - saved.get("refresh_attempt", -1e20) < 1800:
-                raise DeckError("This terminal login was checked recently. Its last reading is kept.", "busy")
+            if not for_switch and now - saved.get("refresh_attempt", -1e20) < RENEWAL_WAIT:
+                raise _waits(DeckError("This terminal login was checked recently. Its last reading is kept.", "busy"),
+                             saved["refresh_attempt"])
             if self.enrollment:
                 raise DeckError("Finish adding the terminal account first.", "busy")
             saved = self._ensure_verified(key, saved, now)
@@ -441,7 +450,7 @@ class CLIAccounts:
                     error = DeckError("The terminal login could not be renewed. Its last reading is kept.",
                                       exc.code, exc.retry_after)
                     error.http_class = cls        # a provider answer (or its absence) counts as observed
-                    raise error from None
+                    raise _waits(error, now) from None
                 new = fingerprint(credentials)
                 saved.update(credentials=credentials, fingerprint=new, refreshed=now, verified=new)
                 self.vault.put(self._stash_key(key), {**stash, "result": saved}, generation=False)
@@ -510,8 +519,8 @@ class CLIAccounts:
                 note["http"] = "2xx"
                 with self.mutex:
                     readings.record(self.store, key, data)
-                    self._settle_read(key, flags, credential_state="live" if active else "fresh", last_outcome="2xx",
-                                      paused_until=None, expires_at=expires(credentials))
+                    self._settle_read(key, dict(flags, renewal_wait=None), credential_state="live" if active else "fresh",
+                                      last_outcome="2xx", paused_until=None, expires_at=expires(credentials))
                 self.engine.observed["claude_cli"].record(key, "2xx", at=now)
                 note["outcome"] = "ok"
                 return "ok"
@@ -523,7 +532,11 @@ class CLIAccounts:
                 note.update(http=cls, outcome=exc.code)
                 current = self.store.account(key)
                 paused = current["paused_until"] if current else row["paused_until"]
-                self._settle_read(key, {"checked": now}, error="Terminal usage is unavailable. Your last reading is kept.",
+                # A read that ended at the renewal of the login says until when no read of the account can be
+                # taken (`_waits`). The auto-switch rule passes the account over until then (`cli_policy._row`).
+                wait = getattr(exc, "renewal_wait", None)
+                self._settle_read(key, {"checked": now, **({"renewal_wait": wait} if wait else {})},
+                                  error="Terminal usage is unavailable. Your last reading is kept.",
                                   error_code=exc.code, paused_until=now + (exc.retry_after or 900) if exc.code == "rate_limited" else paused)
                 if cls is not None:
                     self.engine.observed["claude_cli"].record(key, cls, at=now)

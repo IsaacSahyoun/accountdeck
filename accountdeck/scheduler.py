@@ -115,10 +115,13 @@ class _Plan:
 
 class RefreshScheduler:
     """`run(account_id)` reads one account and returns the outcome: "ok", "rate_limited",
-    "outage" or any other failure kind (it must not raise)."""
+    "outage" or any other failure kind (it must not raise). `done()` is called once the end of a read is
+    noted here. The page shows whether a read is running from that note (`running`), and `run` has told the
+    page of its reading before the note is made."""
 
-    def __init__(self, run, *, workers=WORKERS, rng=random.random, governor=None, inline=False):
+    def __init__(self, run, *, workers=WORKERS, rng=random.random, governor=None, inline=False, done=None):
         self.run = run
+        self.done = done
         self.rng = rng
         self.governor = governor or RequestGovernor()
         self.inline = inline
@@ -243,6 +246,8 @@ class RefreshScheduler:
                                       acct=diagnostics.account_ref(target.id))
         finally:
             self.completed(target, outcome, clock())
+            if self.done is not None:
+                self.done()
 
     def completed(self, target: Target, outcome: str, now: float) -> None:
         with self._lock:
@@ -293,16 +298,6 @@ class RefreshScheduler:
         with self._lock:
             plan = self._plans.get(account_id)
             return None if plan is None else plan.next
-
-    def failing(self, account_id) -> bool:
-        """True when a read of this account failed and no read of it has worked since. The auto-switch rule
-        passes such an account over (`cli_policy._row`): it went on naming one whose reading could not be
-        taken, and nothing moved. Claude refusing a read (HTTP 429) does not count, since the account's
-        stored pause says that, and neither does a read that was skipped. Kept in memory: after a start the
-        first read of the account says it again."""
-        with self._lock:
-            plan = self._plans.get(account_id)
-            return bool(plan and plan.failures)
 
     def running(self, account_id) -> bool:
         with self._lock:

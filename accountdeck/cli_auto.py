@@ -68,7 +68,9 @@ def _forecast(engine, row, now):
     every check: each was left on its forecast and could still be used up by its reading.
     Time the app did not run since the last reading is not counted (`Engine.idle_since`). The Mac slept,
     so the account was not used from here, and a rate carried across the sleep moved the terminals at the
-    wake. With the app running and no reading coming, the time counts: that is what the forecast is for."""
+    wake. With the app running and no reading coming, the time counts: that is what the forecast is for.
+    A reading dated after now is from before the Mac's clock was set back, and is left out. It passed for
+    one made since the terminals came, with no time gone by since."""
     planned = engine.scheduler.planned(row["id"])
     wait = engine.scheduler.governor.delay(("claude_cli", row["identity"]), now, urgent=True)
     horizon = min(max((planned or now) - now, wait, 0.0) + FORECAST_MARGIN, FORECAST_CAP)
@@ -77,7 +79,7 @@ def _forecast(engine, row, now):
     result = {}
     for window in (row["last_good_usage"] or {}).get("windows", []):
         if isinstance(window, dict) and isinstance(window.get("id"), str):
-            readings = engine.store.readings(row["id"], window["id"], since=since)
+            readings = [reading for reading in engine.store.readings(row["id"], window["id"], since=since) if reading["at"] <= now]
             idle = engine.idle_since(readings[-1]["at"]) if readings else 0.0
             value = cli_policy.forecast(readings, now, horizon, idle)
             if value is not None:
@@ -102,8 +104,9 @@ def inputs(engine):
                      # Until when Claude's refusal of a read pauses the account's reads. The row's `error` does not
                      # say so: a save of the login clears it while the pause lasts (`CLIAccounts.save`).
                      "paused_until": row["paused_until"],
-                     # A read of it failed, and none has worked since: no new reading can be had for now.
-                     "failing": engine.scheduler.failing(row["id"]),
+                     # Until when no read of it can be taken: Claude did not renew its login, and a read does
+                     # not ask for that again before then (`CLIAccounts._read`).
+                     "renewal_wait": row["flags"].get("renewal_wait"),
                      "windows": (row["last_good_usage"] or {}).get("windows", [])})
     return rows
 

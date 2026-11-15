@@ -607,7 +607,7 @@ class PausedAccountTest(unittest.TestCase):
     USED = " Claude has paused {}'s usage checks, so its reading from {} ago is used."
 
     def decide(self, *others, alpha=100, fable=None, tried=None, history=None, **settings):
-        fields = {key: settings.pop(key) for key in ("health", "forecast", "age", "paused_until", "failing") if key in settings}
+        fields = {key: settings.pop(key) for key in ("health", "forecast", "age", "paused_until", "renewal_wait") if key in settings}
         active = account("alpha", alpha, 6 * DAY, active=True, model=fable, **fields)
         past = dict(history or {}, tried={key: {"at": NOW - ago, "count": count} for key, (ago, count) in (tried or {}).items()})
         return cli_policy.evaluate([active, *copy.deepcopy(list(others))], {**SETTINGS, **settings}, past, NOW)
@@ -1051,22 +1051,24 @@ class ForecastTest(unittest.TestCase):
         self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 0), 96 + rate * 1060)
         self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 1000), 96 + rate * 60)
         self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 400), 96 + rate * 660)
-        # More time not running than the reading is old (the Mac's clock was set back): the time ahead still counts.
+        # More time not run than the reading is old (a read in a thread of its own stored its reading inside
+        # the gap): the time ahead still counts.
         self.assertAlmostEqual(cli_policy.forecast(readings, NOW, 60, 5000), 96 + rate * 60)
 
 
-def failing(key, weekly=30, weekly_reset=2 * DAY, *, age=240, **fields):
-    """An account whose last read failed: a read of it failed, and none has worked since
-    (`RefreshScheduler.failing`). Its last reading is 4 minutes old, older than a switch is made on."""
-    return account(key, weekly, weekly_reset, age=age, failing=True, **fields)
+def refused(key, weekly=30, weekly_reset=2 * DAY, *, age=240, **fields):
+    """An account whose login Claude did not renew 5 minutes ago. The app asks again 25 minutes from now, and
+    until then no read of the account can be taken (`renewal_wait`, which `CLIAccounts._read` stores). Its
+    last reading is 4 minutes old, older than a switch is made on."""
+    return account(key, weekly, weekly_reset, age=age, renewal_wait=NOW + 1500, **fields)
 
 
-class FailingReadTest(unittest.TestCase):
+class RefusedRenewalTest(unittest.TestCase):
     """After Claude refuses to renew a login, the app does not ask again for 30 minutes, and every read of that
-    account fails until then. A switch needs a reading at most 3 minutes old. The rule went on naming the
-    account, nothing started, and the terminals stayed on an account that had run out until the reading was
-    15 minutes old, in the installed build too (2.2.1, commit 41420bb). Alpha is in use here. Beta is first
-    in the order, has 70 points of room, and its last read failed."""
+    account ends at once until then, with no reading. A switch needs a reading at most 3 minutes old. The
+    rule went on naming the account, nothing started, and the terminals stayed on an account that had run out
+    until the reading was 15 minutes old, in the installed build too (2.2.1, commit 41420bb). Alpha is in
+    use here. Beta is first in the order, has 70 points of room, and its login was not renewed."""
     CHECKING = "Checking {} before switching"
     decide, answer = PausedAccountTest.decide, PausedAccountTest.answer
 
@@ -1078,10 +1080,10 @@ class FailingReadTest(unittest.TestCase):
         for name, more, kind in (("ran out", {}, "out"), ("at the threshold", dict(alpha=96), "threshold"),
                                  ("needs sign-in", dict(alpha=30, health="needs_signin"), "login")):
             with self.subTest(alpha=name):
-                result = self.decide(failing("beta"), gamma, **more)
+                result = self.decide(refused("beta"), gamma, **more)
                 self.assertEqual((result["action"], result["target"], result["kind"], result["hold"]), ("switch", "gamma", kind, None))
                 self.assertTrue(result["reason"].endswith("; Gamma is first in your eligible order."), result["reason"])
-                self.assertEqual((self.skip(result), result["last_reading"]), ("its last check failed", False))
+                self.assertEqual((self.skip(result), result["last_reading"]), ("its login could not be renewed", False))
                 # The reverse: with nothing known against it, Beta is the target, and the executor asks for its reading.
                 self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=240), gamma, **more), ("switch", "beta", kind, None))
 
@@ -1090,18 +1092,18 @@ class FailingReadTest(unittest.TestCase):
         gamma = account("gamma", 10, 4 * DAY)
         for age, target in ((0, "beta"), (120, "beta"), (cli_policy.READY, "beta"), (cli_policy.READY + 1, "gamma"), (900, "gamma")):
             with self.subTest(age=age):
-                self.assertEqual(self.answer(failing("beta", age=age), gamma)[:2], ("switch", target))
+                self.assertEqual(self.answer(refused("beta", age=age), gamma)[:2], ("switch", target))
         # Over 15 minutes old it is passed over for its age, as it was, and the row says that.
-        result = self.decide(failing("beta", age=1200), gamma)
+        result = self.decide(refused("beta", age=1200), gamma)
         self.assertEqual((result["target"], self.skip(result)), ("gamma", "reading 20 min old"))
         # A limit that refilled since the reading keeps its own words too.
-        result = self.decide(failing("beta", 100, -600, age=1200), gamma)
+        result = self.decide(refused("beta", 100, -600, age=1200), gamma)
         self.assertEqual((result["target"], self.skip(result)), ("gamma", "refilled since its last reading"))
 
     def test_the_early_switch_passes_it_over(self):
         soon = dict(weekly=50, weekly_reset=2 * DAY)
-        self.assertEqual(self.answer(failing("beta", **soon), alpha=20), ("none", None, None, None))
-        self.assertEqual(self.answer(failing("beta", **soon), account("gamma", 10, 4 * DAY), alpha=20)[:3], ("switch", "gamma", "early"))
+        self.assertEqual(self.answer(refused("beta", **soon), alpha=20), ("none", None, None, None))
+        self.assertEqual(self.answer(refused("beta", **soon), account("gamma", 10, 4 * DAY), alpha=20)[:3], ("switch", "gamma", "early"))
         self.assertEqual(self.answer(account("beta", age=240, **soon), alpha=20)[:3], ("switch", "beta", "early"))
 
     def test_it_is_asked_again_and_waited_for_while_the_account_in_use_still_works(self):
@@ -1109,23 +1111,24 @@ class FailingReadTest(unittest.TestCase):
         be used up, is not moved to meanwhile."""
         for others in ([], [account("delta", 96, 3 * DAY)]):
             with self.subTest(others=len(others)):
-                result = self.decide(failing("beta"), *others, alpha=96)
+                result = self.decide(refused("beta"), *others, alpha=96)
                 self.assertEqual((result["action"], result["target"], result["hold"], result["refresh"], result["exhausted"]),
                                  ("none", None, self.CHECKING.format("Beta"), ["beta"], False))
 
     def test_at_99_percent_it_is_not_waited_for(self):
-        """No reading of Beta is on its way, so an account that is ready is used up, as beside a paused account."""
+        """No reading of Beta comes before the app asks Claude again, so an account that is ready is used up, as
+        beside a paused account."""
         delta = account("delta", 96, 3 * DAY)
-        result = self.decide(failing("beta"), delta, alpha=99)
+        result = self.decide(refused("beta"), delta, alpha=99)
         self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "delta", "threshold"))
         self.assertEqual(result["reason"], "Alpha reached 99%; Beta could not be read, so Delta is used up to 99%.")
-        result = self.decide(failing("beta"), delta, alpha=50, fable=100)
+        result = self.decide(refused("beta"), delta, alpha=50, fable=100)
         self.assertEqual((result["action"], result["target"], result["kind"]), ("switch", "delta", "out"))
         self.assertEqual(result["reason"], "Alpha reached its Fable weekly limit; Beta could not be read, so Delta is used up to 99%.")
-        # The same once its reading is over 15 minutes old: its last read failed all the same.
-        self.assertEqual(self.answer(failing("beta", age=1200), delta, alpha=99)[:2], ("switch", "delta"))
+        # The same once its reading is over 15 minutes old: no read of it can be taken all the same.
+        self.assertEqual(self.answer(refused("beta", age=1200), delta, alpha=99)[:2], ("switch", "delta"))
         # Beside an account whose reads Claude paused, the reason says the same of both.
-        result = self.decide(paused("beta"), failing("gamma", 10, 4 * DAY), delta, alpha=99)
+        result = self.decide(paused("beta"), refused("gamma", 10, 4 * DAY), delta, alpha=99)
         self.assertEqual(result["reason"], "Alpha reached 99%; Beta and Gamma could not be read, so Delta is used up to 99%.")
         # The reverse: an old reading that nothing is known against is seconds away, and it is waited for.
         self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=1200), delta, alpha=99),
@@ -1135,47 +1138,79 @@ class FailingReadTest(unittest.TestCase):
 
     def test_it_is_not_used_on_the_reading_it_has(self):
         """A paused account is, when the account in use works for no model and nothing else is left: Claude
-        refused a usage read, and the login is as good as it was. Here the read failed for a cause nobody
-        knows, and a switch may fail the same way. So the account is asked again, and the page says so."""
+        refused a usage read, and the login is as good as it was. Here Claude did not renew the login, and a
+        switch asks for the same renewal. So the account is asked again, and the page says so."""
         for age in (240, 900, 1200):
             with self.subTest(age=age):
-                result = self.decide(failing("beta", age=age))
+                result = self.decide(refused("beta", age=age))
                 self.assertEqual((result["action"], result["target"], result["hold"]), ("none", None, self.CHECKING.format("Beta")))
                 self.assertEqual((result["refresh"], result["last_reading"], result["exhausted"]), (["beta"], False, False))
-        self.assertEqual(self.answer(failing("beta"), failing("delta", 96, 3 * DAY))[3], self.CHECKING.format("Beta, Delta"))
+        self.assertEqual(self.answer(refused("beta"), refused("delta", 96, 3 * DAY))[3], self.CHECKING.format("Beta, Delta"))
         # The reverse: the same account with its reads paused is moved to.
         self.assertEqual(self.answer(paused("beta"))[:2], ("switch", "beta"))
+        # Found by the review of this change (Opus 1). Claude answering the renewal inside a read with HTTP 429
+        # stores a pause as well. The renewal decides: such an account was moved to as a paused one.
+        result = self.decide(refused("beta", paused_until=NOW + 600))
+        self.assertEqual((result["action"], result["target"], result["hold"]), ("none", None, self.CHECKING.format("Beta")))
+        self.assertEqual(self.skip(result), "its login could not be renewed")
+        gamma = account("gamma", 10, 4 * DAY)
+        self.assertEqual(self.answer(refused("beta", paused_until=NOW + 600), gamma)[:2], ("switch", "gamma"))
 
     def test_it_does_not_keep_a_paused_account_behind_it_waiting(self):
-        """Alpha works for no model. Beta's last read failed, and the account behind it is paused: no reading of
-        either is on its way, so the paused one is used on the reading it has, as it would be without Beta."""
+        """Alpha works for no model. Beta's login was not renewed, and the account behind it is paused: no
+        reading of either comes soon, so the paused one is used on the reading it has, as it would be without
+        Beta. The reason names Beta, which is in front of it (Sonnet 3 and Opus 5 of the review of this change)."""
         used = " Claude has paused {}'s usage checks, so its reading from 4 min ago is used."
-        result = self.decide(failing("beta"), paused("gamma", 10, 4 * DAY))
+        result = self.decide(refused("beta"), paused("gamma", 10, 4 * DAY))
         self.assertEqual((result["action"], result["target"], result["kind"], result["last_reading"]), ("switch", "gamma", "out", True))
-        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Gamma had room at its last reading." + used.format("Gamma"))
-        result = self.decide(failing("beta"), paused("delta", 96, 3 * DAY))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta could not be read, and Gamma had room at its last "
+                         "reading." + used.format("Gamma"))
+        # One that could be used up, in front of a paused one that is used up, is named too.
+        result = self.decide(refused("delta", 96, 3 * DAY), paused("zeta", 96, 5 * DAY))
+        self.assertEqual((result["action"], result["target"], result["last_reading"]), ("switch", "zeta", True))
+        self.assertEqual(result["reason"], "Alpha reached its weekly limit; Delta could not be read, so Zeta is used up to 99%."
+                         + used.format("Zeta"))
+        result = self.decide(refused("beta"), paused("delta", 96, 3 * DAY))
         self.assertEqual((result["action"], result["target"], result["last_reading"]), ("switch", "delta", True))
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta could not be read, so Delta is used up to 99%."
                          + used.format("Delta"))
         # With an account that was tried twice beside it, the reason names both.
-        result = self.decide(failing("beta"), paused("epsilon", 20, 3 * DAY), paused("delta", 96, 5 * DAY), tried={"epsilon": (60, 2)})
+        result = self.decide(refused("beta"), paused("epsilon", 20, 3 * DAY), paused("delta", 96, 5 * DAY), tried={"epsilon": (60, 2)})
         self.assertEqual(result["reason"], "Alpha reached its weekly limit; Beta could not be read, and a switch to Epsilon was tried, "
                          "so Delta is used up to 99%." + used.format("Delta"))
         # A paused account that was tried twice is not tried again yet, and Beta is asked again meanwhile.
-        result = self.decide(failing("beta"), paused("gamma", 10, 4 * DAY), tried={"gamma": (60, 2)})
+        result = self.decide(refused("beta"), paused("gamma", 10, 4 * DAY), tried={"gamma": (60, 2)})
         self.assertEqual((result["action"], result["hold"], result["exhausted"]), ("none", self.CHECKING.format("Beta, Gamma"), False))
         # The reverse: an old reading that nothing is known against is waited for before a paused account is used.
         self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=1200), paused("gamma", 10, 4 * DAY)),
                          ("none", None, None, self.CHECKING.format("Beta, Gamma")))
 
     def test_the_account_in_use_is_not_judged_by_it(self):
-        """Left as it is: an account in use whose own reads fail without a pause is used on, as before. Only
-        a stored pause says that it cannot be read (`cli_policy._need`)."""
+        """The account in use is renewed by Claude Code, and its reads need no renewal by the app. A wait left
+        on it from before the terminals came says nothing, and it does not hide a pause of its reads either
+        (`cli_policy._need`)."""
         delta = account("delta", 96, 3 * DAY)
         using = "Every account is past 95% — using Alpha up to 99%"
-        self.assertEqual(self.answer(delta, alpha=96, age=240, failing=True), ("none", None, None, using))
+        self.assertEqual(self.answer(delta, alpha=96, age=240, renewal_wait=NOW + 600), ("none", None, None, using))
         self.assertEqual(self.answer(delta, alpha=96, age=240), ("none", None, None, using))
         self.assertEqual(self.answer(delta, alpha=96, age=240, paused_until=NOW + 600)[:2], ("switch", "delta"))
+        self.assertEqual(self.answer(delta, alpha=96, age=240, paused_until=NOW + 600, renewal_wait=NOW + 600)[:2], ("switch", "delta"))
+
+    def test_the_wait_ends_by_its_time(self):
+        """30 minutes after the renewal that did not work, the app asks Claude again. From then on the account
+        is named, and the executor asks for its reading. Nothing has to take the wait back."""
+        gamma = account("gamma", 10, 4 * DAY)
+        for wait, target in ((NOW + 1, "gamma"), (NOW, "beta"), (NOW - 1, "beta"), (None, "beta"), ("soon", "beta"), (True, "beta"),
+                             ([NOW + 60], "beta"), (float("nan"), "beta")):
+            with self.subTest(renewal_wait=wait):
+                self.assertEqual(self.answer(account("beta", 30, 2 * DAY, age=240, renewal_wait=wait), gamma)[:2], ("switch", target))
+
+    def test_a_switch_tried_twice_is_waited_for_as_for_any_account(self):
+        """Sonnet 4 of the review of this change: an account whose login was not renewed, and that a switch was
+        tried to twice. The hold says when the next try comes, and no reading is asked for."""
+        result = self.decide(refused("beta"), tried={"beta": (60, 2)})
+        self.assertEqual((result["action"], result["hold"], result["refresh"], result["exhausted"]),
+                         ("none", "A switch to Beta was tried and is tried again in 14 min at the earliest", [], False))
 
 
 class RefilledSinceTest(unittest.TestCase):
@@ -2619,31 +2654,6 @@ class SchedulerTest(unittest.TestCase):
         # Without a pause the same request is due at once.
         scheduler.request("gamma", 1100.0)
         self.assertEqual([target.id for target in scheduler.due([Target("gamma", "claude_cli", "identity-gamma")], 1100.0)], ["gamma"])
-
-    def test_a_read_that_failed_is_remembered_until_a_read_works(self):
-        """The auto-switch rule passes over an account whose last read failed (`cli_policy._row`). A read Claude
-        refused does not count, since the stored pause says that, and neither does one that was skipped."""
-        outcomes = []
-        scheduler = RefreshScheduler(lambda account_id: outcomes.pop(0), inline=True)
-        beta, now = Target("beta", "claude_cli", "identity-beta"), [1000.0]
-
-        def read(outcome):
-            """An hour later, so that the read is due by itself and the governor lets it go."""
-            now[0] += 3600
-            outcomes.append(outcome)
-            self.assertEqual(scheduler.tick([beta], now[0], lambda: now[0]), ["beta"])
-            return scheduler.failing("beta")
-
-        self.assertIs(scheduler.failing("beta"), False)             # an account the scheduler has never seen
-        self.assertIs(read("ok"), False)
-        self.assertIs(read("rate_limited"), False, "a read Claude refused: the pause says that")
-        self.assertIs(read("skipped"), False)
-        for outcome in ("busy", "network", "rate_limited", "skipped"):
-            self.assertIs(read(outcome), True, f"after a read that failed, and then one that ended {outcome}")
-        self.assertIs(read("ok"), False)
-        self.assertIs(read("identity"), True)
-        scheduler.forget("beta")
-        self.assertIs(scheduler.failing("beta"), False)
 
     def test_one_helper_read_per_client_at_a_time(self):
         running, most, done, lock = [], [], [], threading.Lock()

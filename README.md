@@ -58,9 +58,10 @@ that account still works for the other models. Change it in
 **Settings → Auto-Switch**, or turn it off. While the account in use still works, it waits for a usable account with a reading at most
 15 minutes old. An account whose usage checks are paused (Claude refused one, for 15 to 60 minutes) is
 skipped while the pause lasts and its reading is over 3 minutes old, so a switch never waits on it while
-another account is ready. An account whose last usage check failed is skipped the same way until a check
-of it works, and its row says "its last check failed". That holds at 99% too: an account that can still be used up is used then, where
-older builds waited for the pause to end. The 99% is the last reading of the account in use. When that
+another account is ready. That holds at 99% too: an account that can still be used up is used then, where
+older builds waited for the pause to end. An account whose login Claude did not renew is skipped the same
+way for the 30 minutes until AccountDeck asks Claude again, and its row then says "its login could not be
+renewed". The 99% is the last reading of the account in use. When that
 account cannot be read either (its own checks are paused and its reading is over 3 minutes old), it is
 not used on unseen: once it is past your threshold, an account that can still be used up is used. An
 account your terminals were moved to in the last 15 minutes is the exception. It is used for those 15

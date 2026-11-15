@@ -26,6 +26,7 @@ Tests to reuse: `tests/test_readings.py` (`RefillTest`, `UpkeepTest`, `Scheduler
 ## Gotchas
 - The demo clock runs from its start. Pass `--now` (the tools do) when two runs must show the same numbers.
 - A limit's note sits under its bar. The 2.0.0 build cut it off in the Desktop, Codex and Muse rows at the window's first width. See `rows-and-menus.md`.
+- A row said "checking" after its read had ended, up to and with the 2.2.1 build, when the page asked for the state between the read's own word to the page and the scheduler's note that the read no longer ran: nothing told the page of that note. The scheduler now tells the engine once the note is made (`RefreshScheduler.done`, `TerminalFailedSwitchTest.test_the_page_is_told_when_a_read_has_ended`).
 - A row says a thing once. The screenshot compare of 2026-11-12 found "Paused" in a badge and again under the name; `OtherClientsRowsTest.test_a_row_says_a_provider_incident_once` holds that.
 
 ## Only on the real Mac
