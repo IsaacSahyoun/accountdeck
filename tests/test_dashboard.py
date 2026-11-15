@@ -755,16 +755,19 @@ class AutoSwitchCardTest(DashboardTestCase):
     """The Auto-switch card when no account can take over. Its line said "Every other account is in use, out of
     room or left out." beside accounts that were none of the three: one whose usage checks Claude has paused,
     one with an old reading, one that needs sign-in, one that was never read. The list under the line gives
-    each account its own reason, so the line names none."""
+    each account its own reason, so the line names none. The title is "No account is ready": while a switch
+    that failed waits for its next try, an account is about to take over, and the hold under the title says so."""
     CARD = """(() => { const card = document.querySelector('#overview .ov-auto');
         const text = (node) => (node ? node.textContent.trim() : null);
         return {title: text(card.querySelector('.figure-block .ov-title')), line: text(card.querySelector('.figure-block .ov-line')),
                 head: text(card.querySelector('.queue-head')),
                 rows: [...card.querySelectorAll('.queue-row')].map((row) => [text(row.firstElementChild), text(row.querySelector('.queue-why'))])}; })()"""
 
-    def card(self, scenario):
+    def card(self, scenario, change=None):
         """(the card, the other accounts as the state lists them with why each is skipped)."""
         state = fixtures.example_state(scenario, now=time.time())
+        if change:
+            change(state)
         in_use = self.account(state, "claude_cli", active=True)["id"]
         others = [[row["label"], row["skip"]] for row in state["providers"]["claude_cli"]["autoswitch"]["next_up"] if row["id"] != in_use]
         self.show(state)
@@ -781,18 +784,29 @@ class AutoSwitchCardTest(DashboardTestCase):
             with self.subTest(scenario=scenario):
                 card, others = self.card(scenario)
                 self.assertTrue(others and all(skip for _, skip in others), "an account can take over here: this proves nothing")
-                self.assertEqual((card["title"], card["line"]), ("No account can take over", "Each account below says why."))
+                self.assertEqual((card["title"], card["line"]), ("No account is ready", "The list below says why."))
                 self.assertEqual((card["head"], card["rows"]), ("Waiting", others[:4]))
                 seen.update(skip for _, skip in others)
         # The reasons the old line did not cover are among them.
         for reason in ("Claude paused its checks", "reading 25 min old", "needs sign-in", "reading unavailable"):
             self.assertIn(reason, seen)
 
+    def test_the_line_does_not_say_each_account_when_the_list_is_cut(self):
+        """Found by the review of this change. The card lists four accounts. The line was "Each account below
+        says why.", and with 34 other accounts and none ready, 30 of them had no row to say it in."""
+        def none_ready(state):
+            for row in state["providers"]["claude_cli"]["autoswitch"]["next_up"]:
+                row["skip"] = row["skip"] or "left out"
+        card, others = self.card("fifty", none_ready)
+        self.assertGreater(len(others), 4, "four accounts or fewer: this proves nothing")
+        self.assertEqual((card["title"], card["line"]), ("No account is ready", "The list below says why."))
+        self.assertEqual((card["head"], card["rows"]), ("Waiting", others[:4]))
+
     def test_an_account_with_no_other_is_told_to_add_one(self):
         card, others = self.card("first-run")
         self.assertEqual(others, [])
         self.assertEqual((card["title"], card["line"], card["rows"]),
-                         ("No account can take over", "Add another terminal account so auto-switch has somewhere to go.", []))
+                         ("No account is ready", "Add another terminal account so auto-switch has somewhere to go.", []))
 
 
 class ClaudeHasNoFiveHourLimitTest(DashboardTestCase):

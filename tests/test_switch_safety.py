@@ -1,6 +1,7 @@
 """Everything that acts on a login, for all three clients: switching, waiting, recovery and the stored copies.
 Each test runs a whole engine on the demo's fake data in safe mode; the real apps, their logins and the
 Keychain are never touched."""
+import copy
 import dataclasses
 import json
 from pathlib import Path
@@ -722,8 +723,16 @@ class TerminalPausedAccountTest(DeckCase):
         return paused
 
     def moved_to_the_paused_account(self, age, words):
+        """The check moves the terminals to `wanted`, and asks for no reading of it before the switch starts.
+        `self.asked` is every reading asked for, with the switches started by then."""
         paused = self.ran_out_beside_the_paused_account(age)
-        self.check()
+        self.asked, request = [], self.engine.scheduler.request
+        self.engine.scheduler.request = lambda key, now: self.asked.append((key, list(self.started))) or request(key, now)
+        try:
+            self.check()
+        finally:
+            del self.engine.scheduler.request
+        self.assertEqual([key for key, started in self.asked if not started], [], "a reading was asked for before the switch")
         last = self.last()
         self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("out", self.first["id"], self.wanted["id"]),
                          "the terminals did not move to the paused account")
@@ -734,7 +743,8 @@ class TerminalPausedAccountTest(DeckCase):
 
     def test_an_account_that_ran_out_is_left_for_the_paused_account_on_its_last_reading(self):
         """The switch is the one every automatic switch makes: it renews the login it moves to and confirms
-        whose it is (`switch_cli.perform`). Nothing reads the paused account for it, and the terminals stay."""
+        whose it is (`switch_cli.perform`). The check asks for no reading of the paused account before it
+        starts the switch (`moved_to_the_paused_account`), and the terminals stay there."""
         paused = self.moved_to_the_paused_account(270, "5 min")
         row = self.engine.store.account(self.wanted["id"])
         self.assertEqual((row["last_good_at"], row["paused_until"]), (paused["last_good_at"], paused["paused_until"]))
@@ -777,19 +787,30 @@ class TerminalPausedAccountTest(DeckCase):
         and with nowhere to go the rule says so and moves nothing."""
         paused = self.moved_to_the_paused_account(270, "5 min")
         key, until = self.wanted["id"], paused["paused_until"]
+
+        def ran_out(credentials):
+            """Claude's answer to every read from here on: the week of that account is used up. The scheduler
+            reads the other accounts too, and nothing else gives any account a number."""
+            answer = copy.deepcopy(paused["last_good_usage"])
+            answer["checked"] = self.engine.clock()
+            next(w for w in answer["windows"] if w.get("kind") == "weekly").update(used=100.0, reset=self.engine.clock() + self.DAY)
+            return answer
+        self.engine.cli.adapter.usage = ran_out
         self.engine.clock.advance(until - self.engine.clock() - 60)
         self.engine.scheduler.request(key, self.engine.clock())
         self.engine._schedule(self.engine.clock())
-        self.assertEqual(self.engine.store.account(key)["last_good_at"], paused["last_good_at"], "read during its pause")
+        row = self.engine.store.account(key)
+        self.assertEqual((row["last_good_at"], row["paused_until"]), (paused["last_good_at"], until), "read during its pause")
+        self.assertEqual([w["used"] for w in row["last_good_usage"]["windows"] if w.get("kind") == "weekly"], [30.0])
         self.engine.clock.advance(120)
         self.engine.scheduler.request(key, self.engine.clock())
         for _ in range(4):
             self.engine._schedule(self.engine.clock())
+        del self.engine.cli.adapter.usage
         row = self.engine.store.account(key)
         self.assertGreater(row["last_good_at"], until)
         self.assertIsNone(row["paused_until"])
-        support.with_reading(self.engine, key, weekly=100, ends=self.DAY)
-        self.read(first=100, second=100)
+        self.assertEqual([w["used"] for w in row["last_good_usage"]["windows"] if w.get("kind") == "weekly"], [100.0])
         self.check(2)
         self.assertEqual(self.started, [key])
         self.assertEqual(self.hold()[:2], ("none", True))
@@ -817,6 +838,24 @@ class TerminalPausedAccountTest(DeckCase):
         self.assertEqual(self.started, [self.wanted["id"]])
         self.assert_consistent("claude_cli", self.identity(self.wanted["id"]))
 
+    def test_a_forecast_does_not_send_the_terminals_back_and_forth_while_the_account_with_room_is_paused(self):
+        """Found by the review of this change. The account in use and `second` both went from 82% to 96% in 4
+        minutes, so the forecast of whichever is in use says 99%, and by its reading each can still be used up.
+        With the wait for the paused account ended on that forecast, 7 of 8 checks moved the terminals from one
+        to the other. The wait ends at 99% by the reading, and an account left there is not gone back to."""
+        self.read(first=82, second=82, wanted=30)
+        self.engine.clock.advance(240)
+        self.pause()
+        self.read(first=96, second=96)
+        forecast = next(row["forecast"] for row in cli_auto.inputs(self.engine) if row["active"])
+        self.assertGreaterEqual(max(forecast.values(), default=0), 99, "the forecast of the account in use is under 99%: this test proves nothing")
+        for _ in range(8):
+            self.check()
+            self.engine.clock.advance(5)
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.hold(), ("none", False, self.PAUSED.format(self.wanted["label"])))
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
     def test_at_99_percent_the_account_that_is_ready_is_used_up_while_the_one_with_room_is_paused(self):
         """Below 99% the account in use is used on, and the hold names the pause. At 99% the rule used to wait
         for the pause to end until the account in use had run out."""
@@ -833,7 +872,7 @@ class TerminalPausedAccountTest(DeckCase):
         last = self.last()
         self.assertEqual((last.get("kind"), last.get("from"), last.get("to")), ("threshold", self.first["id"], self.second["id"]),
                          "the terminals did not move to the account that was ready")
-        self.assertEqual(last["reason"], f"{self.first['label']} reached 99%; {self.wanted['label']} needs a new reading first, "
+        self.assertEqual(last["reason"], f"{self.first['label']} reached 99%; Claude paused the usage checks of {self.wanted['label']}, "
                          f"so {self.second['label']} is used up to 99%.")
         self.assert_consistent("claude_cli", self.identity(self.second["id"]))
 

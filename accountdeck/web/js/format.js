@@ -52,7 +52,7 @@
       takesOver: 'Takes over when {label} reaches {n}% (the notch on its weekly and Fable bars).',
       takesOverPlain: 'Takes over when the account in use reaches {n}% (the notch on its weekly and Fable bars).',
       room: '{n}% room', roomTip: '{n} points below the {t}% switch point',
-      nobody: 'No account can take over', nobodyLine: 'Each account below says why.',
+      nobody: 'No account is ready', nobodyLine: 'The list below says why.',
       nobodyAlone: 'Add another terminal account so auto-switch has somewhere to go.',
       then: 'Then', waitingList: 'Waiting', hold: 'On hold: {reason}', best: 'Most room right now:',
       settingsLink: 'Auto-Switch Settings…',

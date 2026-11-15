@@ -19,7 +19,9 @@ def answered(key, label, answer, *, active=False):
 
 def show(title, accounts, history=None, **settings):
     r = cli_policy.evaluate(accounts, {**SETTINGS, **settings}, history or {}, NOW)
-    print(f"{title}\n   -> action={r['action']} target={r['target']} hold={r['hold']!r} reason={r['reason']!r}")
+    # `last_reading` is in the decision since the change for a paused account; an older copy has no such key.
+    how = " on its last reading, with no new one taken" if r.get("last_reading") else ""
+    print(f"{title}\n   -> action={r['action']} target={r['target']}{how} hold={r['hold']!r} reason={r['reason']!r}")
 
 WEEK = NOW + 3 * 86400
 beta = account("beta", "Beta", 30, WEEK)
@@ -86,7 +88,15 @@ out = ends_in("alpha", "Alpha", 100, 6, active=True)
 unread = dict(ends_in("beta", "Beta", 30, 2), last_good_at=NOW - 240, paused_until=NOW + 600)
 show("   Alpha's week ran out: Gamma is used, and Beta is not waited for", [out, unread, ends_in("gamma", "Gamma", 10, 4)])
 show("   Alpha is at 96%: the same", [full, unread, ends_in("gamma", "Gamma", 10, 4)])
-show("   Alpha's week ran out and Beta is the only other account: the hold names the pause", [out, unread])
+show("   Alpha's week ran out and Beta is the only other account: Beta is used on the reading it has", [out, unread])
+show("   Alpha is at 96% and Beta is the only other account: the hold names the pause", [full, unread])
+nearly = ends_in("gamma", "Gamma", 92, 4)
+show("   Alpha is at 98%, Beta is paused and Gamma is at 92%: Alpha is used on",
+     [ends_in("alpha", "Alpha", 98, 6, active=True), unread, nearly])
+show("   Alpha is at 99%: Gamma is used up, and Beta's pause is not waited for",
+     [ends_in("alpha", "Alpha", 99, 6, active=True), unread, nearly])
+show("   Alpha is at 96% and its forecast says 99%: the pause is waited for, since Alpha could be gone back to",
+     [dict(full, forecast={"seven_day": 99.5}), unread, ends_in("gamma", "Gamma", 96, 4)])
 print("H. A switch to Beta, the first in the order, was started and the terminals did not get there. Gamma is ready:")
 ready = ends_in("beta", "Beta", 30, 2)
 def tried(seconds, count):

@@ -65,7 +65,7 @@ the reason it shows says how old. Staying would leave Claude Code with nothing t
 90 seconds later, and your terminals stay where they are until then, unless a new usage reading puts
 another account first. If that fails too, the account is
 skipped for at least 15 minutes, its row says "switch tried 3 min ago", and the next account is used
-meanwhile. With no other account to use, auto-switch waits and says when it tries again. A failed early
+meanwhile. (An account whose usage checks are paused keeps "Claude paused its checks" on its row.) With no other account to use, auto-switch waits and says when it tries again. A failed early
 switch moves to no other account: it waits its own 2 hours.
 Right after a weekly limit refills, it waits for a new reading of the
 account in use instead of acting on the old number. **Leave out** excludes an account. An automatic
