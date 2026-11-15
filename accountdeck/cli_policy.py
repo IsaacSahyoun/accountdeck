@@ -11,6 +11,10 @@
   first. So an account whose reading is older than that, and whose reads are paused (Claude refused one), is
   not eligible while the pause lasts: nothing reads it until then, and waiting for it kept the terminals on
   an account that had run out;
+- an account an automatic switch was started to in the last 15 minutes (`RETRY`) without the terminals getting
+  there is not a target either. A switch that fails is started again 15 minutes later, not at the next
+  check, and the next account is used meanwhile. An account with room is waited for while the account in
+  use still works, like one with an old reading;
 - once no account qualifies, every account is used up to DRAIN_CEILING (99 %): the active one stays
   until it reaches it, then a target with DRAIN_ROOM points left below it is used;
 - an account in use that works for no model (its week ran out, or it needs sign-in) is left, after every
@@ -43,6 +47,7 @@ from .usage import is_fable
 
 HOUR = 3600
 READY = 180     # a switch is made on a reading at most this old: `cli_auto.tick` reads an older one again first
+RETRY = 900     # an automatic switch that did not happen is started again this long after it was started
 
 
 def number(value):
@@ -126,7 +131,8 @@ def evaluate(accounts, settings, history, now):
     "hold": why it is waiting, "refresh": accounts to read again first, "next_up": every account in switching
     order with why it is skipped, "exhausted": every account is low}."""
     threshold = settings.get("cli_threshold", 95)
-    rows = _ordered([_row(account, settings, threshold, now) for account in accounts], settings)
+    tried = history.get("tried") if isinstance(history.get("tried"), dict) else {}
+    rows = _ordered([_row(account, settings, threshold, now, tried.get(account["id"])) for account in accounts], settings)
     result = {"action": "none", "target": None, "kind": None, "reason": "", "hold": None, "refresh": [],
               "next_up": [{key: row[key] for key in ("id", "label", "skip", "room", "weekly_reset")} for row in rows],
               "exhausted": False}
@@ -147,8 +153,9 @@ def evaluate(accounts, settings, history, now):
     return result
 
 
-def _row(account, settings, threshold, now):
-    """One account as the rule sees it: its room below the threshold and, in `skip`, why it cannot be switched to."""
+def _row(account, settings, threshold, now, tried=None):
+    """One account as the rule sees it: its room below the threshold and, in `skip`, why it cannot be switched to.
+    `tried` is when an automatic switch to it was started that did not get the terminals there."""
     values = considered(account, settings)
     known = all(used is not None for _, used, _ in values)
     room = min(threshold - used for _, used, _ in values) if known else None
@@ -162,7 +169,12 @@ def _row(account, settings, threshold, now):
     paused = pause is not None and pause > now
     unread = age is not None and READY < age <= 900 and paused
     old = age is not None and (age > 900 or unread)
-    skip, past, stale = None, False, False
+    # `CLISwitch` notes the start of every automatic switch and takes the note out once the switch worked. So a
+    # note still there says the terminals never got to this account, whatever stopped the switch. Without it
+    # the next check, 5 seconds later, started the same switch again.
+    at = number(tried)
+    failed = at is not None and abs(now - at) < RETRY
+    skip, past, stale, retry = None, False, False, False
     if account.get("active"):
         skip = "in use by your terminals"
     elif is_frozen(account) or account.get("excluded"):
@@ -173,6 +185,9 @@ def _row(account, settings, threshold, now):
         skip = "reading unavailable"
     elif not known:
         skip = "weekly reading unknown" if values[0][1] is None else "reading incomplete"
+    elif failed:
+        # Before the room: an account past the threshold is not used up either while this lasts.
+        skip, retry = f"switch tried {max(1, math.ceil((now - at) / 60))} min ago", True
     elif room < 10:
         label, used, _ = max(values, key=lambda v: v[1])
         skip, past = f"{label} at {used:g}%", True
@@ -190,7 +205,8 @@ def _row(account, settings, threshold, now):
                  if spent and all(w.get("kind") == "model" for _, _, w in spent) else None)
     return {"id": account["id"], "label": account["label"], "skip": skip, "room": room,
             "weekly_reset": reset(values[0][2]), "account": account, "values": values,
-            "drainable": usable and not spent, "week_only": week_only, "stale": stale, "old": old, "paused": paused}
+            "drainable": usable and not spent, "week_only": week_only, "stale": stale, "old": old, "paused": paused,
+            "failed": retry}
 
 
 def _ordered(rows, settings):
@@ -266,6 +282,13 @@ def _checking(rows):
             "refresh": [row["id"] for row in rows]}
 
 
+def _retry(rows):
+    """The hold while the accounts to move to are ones a switch was tried to and is not started again yet. The
+    words are also true in the second a switch runs, when its note is already there."""
+    names = ", ".join(row["label"] for row in rows[:3])
+    return {"hold": f"A switch to {names} was tried and is tried again after {RETRY // 60} minutes"}
+
+
 def _leave(need, rows, active, history, settings, now):
     """What to do once the account in use asks to be left: wait, read the others again, switch, or say that every
     account is low. Returns the fields of the result that change."""
@@ -284,6 +307,12 @@ def _leave(need, rows, active, history, settings, now):
     stale = [row for row in rows if row["stale"]]
     if stale and need["yields"]:
         return _checking(stale)
+    # An account a switch was tried to is tried again `RETRY` after that. One with room is waited for while the
+    # account in use still works, as a new reading is. One past the threshold is not: it was a last resort.
+    failed = [row for row in rows if row["failed"]]
+    roomy = [row for row in failed if row["room"] >= 10]
+    if roomy and need["yields"]:
+        return _retry(roomy)
     if need["trigger"] == "threshold" and need["peak"] < DRAIN_CEILING:
         return {"hold": f"Every account is past {threshold}% — using {label} up to {DRAIN_CEILING}%"}
     # The last resorts, the better one first. Every account is past the threshold, so one that can still be
@@ -292,7 +321,8 @@ def _leave(need, rows, active, history, settings, now):
     # use still works, it is not.
     why = f"reached {DRAIN_CEILING}%" if need["trigger"] == "threshold" else need["why"]
     names = [row["label"] for row in stale[:3]] + ([f"{len(stale) - 3} more"] if len(stale) > 3 else [])
-    others = (f"every account is past {threshold}%" if not stale else
+    others = (f"a switch to {roomy[0]['label']} was tried" if roomy and not stale else
+              f"every account is past {threshold}%" if not stale else
               f"{names[0]} needs a new reading first" if len(names) == 1 else
               f"{', '.join(names[:-1])} and {names[-1]} need a new reading first")
     last = [(row, kind, f"{others}, so {row['label']} is used up to {DRAIN_CEILING}%") for row in rows if row["drainable"]]
@@ -308,6 +338,8 @@ def _leave(need, rows, active, history, settings, now):
             return {"action": "switch", "target": row["id"], "kind": how, "reason": f"{label} {why}; {words}."}
     if stale or last:
         return _checking(stale + [row for row, _, _ in last])
+    if failed:
+        return _retry(failed)       # not "all low": that starts an alert, and an account here may have room
     return {"exhausted": True, "reason": "All terminal accounts are low." + _refills_first(rows, threshold, now)}
 
 

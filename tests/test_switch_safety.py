@@ -654,6 +654,153 @@ class TerminalSoonestWeekTest(DeckCase):
         self.assert_consistent("claude_cli", self.identity(self.later["id"]))
 
 
+class TerminalFailedSwitchTest(DeckCase):
+    """An automatic switch that does not happen is not started again at every check. The account in use here has
+    run out. `wanted` is first in the order, `second` is ready behind it, and every other account is used up.
+    The rule's own answers are in `tests.test_readings` (`FailedSwitchTest`)."""
+    DAY = 86400
+
+    def setUp(self):
+        super().setUp()
+        self.engine.sense_active()
+        self.engine.clock.advance(2 * 3600 + 60)        # past the demo's own switch, as in TerminalSoonestWeekTest
+        self.first = self.active("claude_cli")
+        usable = [row for row in self.rows("claude_cli") if not row["active"] and row["switchable"]
+                  and row.get("health", "ok") == "ok" and not row.get("excluded")]
+        self.second, self.wanted = usable[:2]
+        self.rest = usable[2:]
+        self.read_all()
+        self.started, submit = [], self.engine.submit
+        self.engine.submit = lambda op: self.started.append(op.account) or submit(op)
+
+    def read_all(self, second=30):
+        """New readings of every account: the one in use is out, `wanted`'s week ends soonest."""
+        for row in self.rest:
+            support.with_reading(self.engine, row["id"], weekly=99, ends=7 * self.DAY)
+        support.with_reading(self.engine, self.first["id"], weekly=100, ends=6 * self.DAY)
+        support.with_reading(self.engine, self.second["id"], weekly=second, ends=4 * self.DAY)
+        support.with_reading(self.engine, self.wanted["id"], weekly=30, ends=2 * self.DAY)
+
+    def check(self, times):
+        """`times` checks of auto-switch, each run to its end."""
+        for _ in range(times):
+            cli_auto.tick(self.engine)
+            self.assertTrue(self.engine.runner.wait(30))
+
+    def refuse(self, row):
+        """The login of `row` cannot be renewed for a switch, as when Claude's token endpoint refuses it."""
+        renew = self.engine.cli.refresh
+
+        def refresh(key, **how):
+            if key == row["id"]:
+                raise DeckError("The terminal login could not be renewed. Its last reading is kept.", "rate_limited")
+            return renew(key, **how)
+        self.engine.cli.refresh = refresh
+
+    def notes(self):
+        return self.engine.store.setting("cli_history", {}).get("tried") or {}
+
+    def test_a_switch_that_fails_is_not_started_again_and_the_next_account_is_used(self):
+        """Found by the fifth review of the soonest-week change, in the build that was installed. A switch that
+        fails before it writes left nothing behind, so the next check, 5 seconds later, decided the same and
+        started it again: a call to renew the login and an alert each time, with the terminals left on an
+        account that had run out while another account was ready."""
+        self.refuse(self.wanted)
+        self.check(3)
+        self.assertEqual(self.started, [self.wanted["id"], self.second["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+        self.assertEqual(list(self.notes()), [self.wanted["id"]], "a switch that worked left its note behind")
+
+    def stopped_by(self, failure):
+        """Every switch ends with `failure`. Each account is tried once, and then nothing is started."""
+        with mock.patch.object(switch_cli, "perform", side_effect=failure):
+            self.check(4)
+        self.assertEqual(self.started, [self.wanted["id"], self.second["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["exhausted"]), ("none", False))
+        self.assertIn("was tried", decision["hold"])
+
+    def test_it_is_not_started_again_after_an_error_nobody_planned_for(self):
+        self.stopped_by(RuntimeError("no such thing"))
+
+    def test_it_is_not_started_again_after_claude_code_changed_accounts_under_it(self):
+        self.stopped_by(switch_cli.OperationCancelled(switch_cli.CHANGED_SINCE))
+
+    def test_it_is_not_started_again_after_the_app_died_in_it(self):
+        """The note is written before the switch starts, so it is there whatever the switch got to."""
+        self.stopped_by(Crash())
+
+    def test_the_only_account_with_room_is_waited_for_and_tried_again_15_minutes_later(self):
+        """With no other account to use, the page says what is waited for. It does not say every account is
+        low, which starts an alert and is not true."""
+        self.read_all(second=99)
+        self.refuse(self.wanted)
+        self.check(3)
+        self.assertEqual(self.started, [self.wanted["id"]])
+        decision = cli_auto.decision(self.engine)
+        self.assertEqual((decision["action"], decision["exhausted"], decision["hold"]),
+                         ("none", False, f"A switch to {self.wanted['label']} was tried and is tried again after 15 minutes"))
+        self.assertNotIn("limit_reached", [alert["kind"] for alert in self.engine.store.alerts()])
+        self.engine.clock.advance(899)
+        self.read_all(second=99)
+        self.check(1)
+        self.assertEqual(self.started, [self.wanted["id"]], "tried again before the 15 minutes were over")
+        # The reverse: once the 15 minutes are over it is tried again, and when the login can be renewed it works.
+        self.engine.clock.advance(1)
+        self.read_all(second=99)
+        del self.engine.cli.refresh
+        self.check(1)
+        self.assertEqual(self.started, [self.wanted["id"]] * 2)
+        self.assert_consistent("claude_cli", self.identity(self.wanted["id"]))
+        self.assertEqual(self.notes(), {})
+
+    def test_a_switch_by_hand_that_works_takes_the_note_out(self):
+        """The reverse of the note. The user signs the terminals in to the account themselves, so its login
+        works. When they move on, the account is a target again at once."""
+        self.read_all(second=99)
+        self.refuse(self.wanted)
+        self.check(1)
+        self.assertEqual(list(self.notes()), [self.wanted["id"]])
+        del self.engine.cli.refresh
+        self.assertEqual(self.act("claude_cli", "switch", self.wanted["id"])["outcome"], "success")
+        self.assertEqual(self.notes(), {})
+
+    def test_a_note_that_is_no_table_of_times_does_not_fail_a_switch_that_worked(self):
+        """The note is taken out after the login was written. A history that holds something else under that
+        name must not turn a switch that happened into one that reports a failure."""
+        for found in (["x"], "x", 5, None):
+            with self.subTest(tried=found):
+                self.read_all()
+                with cli_auto.history(self.engine) as history:
+                    history["tried"] = found
+                # By hand: nothing is noted first, so the end of the switch meets the history as it was found.
+                self.assertEqual(self.act("claude_cli", "switch", self.second["id"])["outcome"], "success")
+                self.assert_consistent("claude_cli", self.identity(self.second["id"]))
+                with cli_auto.history(self.engine) as history:
+                    history["tried"] = found
+                self.engine.submit(switch_cli.CLISwitch(self.engine, self.first["id"], kind="out", reason="It ran out."))
+                self.assertTrue(self.engine.runner.wait(30))
+                self.assertEqual(self.engine.snapshot()["report"]["outcome"], "success")
+                self.assert_consistent("claude_cli", self.identity(self.first["id"]))
+
+    def test_a_switch_by_hand_that_fails_leaves_no_note(self):
+        """The user saw it fail and chose it themselves. The pause is for switches nobody watches."""
+        self.refuse(self.wanted)
+        self.assertEqual(self.act("claude_cli", "switch", self.wanted["id"])["outcome"], "failed")
+        self.assertEqual(self.notes(), {})
+        self.assertEqual(cli_auto.decision(self.engine)["target"], self.wanted["id"])
+
+    def test_a_switch_that_could_not_be_started_leaves_no_note(self):
+        """The job runner is busy, so nothing ran: the next check starts the switch."""
+        def busy(op):
+            raise DeckError("Finish the current operation first.", "busy")
+        self.engine.submit = busy
+        cli_auto.tick(self.engine)
+        self.assertEqual(self.notes(), {})
+        self.assertEqual(cli_auto.decision(self.engine)["target"], self.wanted["id"])
+
+
 class TerminalFableLimitTest(DeckCase):
     """Auto-switch and the Fable weekly limit, through the real engine: who is signed in afterwards. The
     rule's own answers are in `tests.test_readings` (the decision table and `FableLimitTest`)."""

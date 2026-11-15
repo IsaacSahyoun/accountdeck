@@ -258,6 +258,10 @@ class CLISwitch(Operation):
         self.engine, self.auto_kind, self.reason, self.leaving = engine, kind, reason, leaving
 
     def run(self):
+        if self.auto_kind != "manual":
+            # Before anything else, so the note is there whatever stops this switch. Only the end of a switch
+            # that worked takes it out (below). A switch by hand is not noted: the user sees it fail.
+            cli_auto.note_try(self.engine, self.account)
         with self.step("switch", phase="restoring", message="Switching the terminal login…", cancellable=False):
             manifest = diagnostics.Manifest.start(self.id, "switch", directory=self.engine.paths.data_dir / "logs" / "manifests")
             manifest.set("provider", "claude_cli").set("account", diagnostics.account_ref(self.account))
@@ -273,6 +277,8 @@ class CLISwitch(Operation):
             now = self.engine.clock()
             with cli_auto.history(self.engine) as history:
                 history.update(left=previous, left_at=now)
+                if isinstance(history.get("tried"), dict):
+                    history["tried"].pop(self.account, None)        # the terminals got here: `cli_auto.note_try`
                 if self.auto_kind == "manual":
                     history.update(manual_at=now, manual_for=self.account)      # the hold is for this account
                     if history.get("last"):

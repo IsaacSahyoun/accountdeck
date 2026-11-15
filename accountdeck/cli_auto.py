@@ -24,6 +24,17 @@ def history(engine):
             engine.store.set_setting("cli_history", value)
 
 
+def note_try(engine, key):
+    """Notes that an automatic switch to `key` starts now, and drops the notes too old to count. `CLISwitch` calls
+    it before it does anything else and takes the note out once the switch worked. The rule passes an account
+    with a note over for `cli_policy.RETRY` (`cli_policy._row`)."""
+    now = engine.clock()
+    with history(engine) as past:
+        tried = past.get("tried") if isinstance(past.get("tried"), dict) else {}
+        past["tried"] = {**{k: at for k, at in tried.items()
+                            if cli_policy.number(at) is not None and abs(now - at) < cli_policy.RETRY}, key: now}
+
+
 FORECAST_MARGIN, FORECAST_CAP = 60.0, 1800.0
 
 
@@ -125,7 +136,8 @@ def tick(engine):
         diagnostics.log("cli.deferred", code=exc.code)
         return
     if result["kind"] == "early":
-        # A switch that fails before it writes leaves no trace, and the next tick would start it again. The
-        # rule waits 2 hours after an early switch was started, whether it worked or not (`cli_policy._early`).
+        # The early switch is not urgent. The rule waits 2 hours after one was started, whether it worked or
+        # not (`cli_policy._early`). The account it failed for is also passed over for 15 minutes, as after
+        # any automatic switch that did not happen (`note_try`).
         with history(engine) as past:
             past["early_tried"] = engine.clock()
