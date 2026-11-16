@@ -17,9 +17,9 @@ import unittest
 from unittest import mock
 import uuid
 
-from tests import support
+from tests import support, test_dashboard
 
-from accountdeck import diagnostics
+from accountdeck import diagnostics, readings
 from accountdeck.config import Paths, Timings
 from accountdeck.core import DeckError, FileTransaction, Vault, atomic_write, json_bytes, read_json, recover_transactions
 from accountdeck.engine import Engine
@@ -31,8 +31,9 @@ from accountdeck.providers.errors import ProviderError
 from accountdeck.providers.muse import (KEYCHAIN_MESSAGE, REJECTED_MESSAGE, LoginOutput, Muse, classify_failure,
                                         cleared_env, identity_key)
 from accountdeck.scheduler import RefreshScheduler, Target
+from accountdeck.server import Server
 from accountdeck.switching import DryRun
-from accountdeck.usage import muse_plan, muse_usage
+from accountdeck.usage import fill_unreported, muse_idle_usage, muse_plan, muse_usage
 
 NOW_MS = 1_793_000_000_000
 
@@ -43,6 +44,16 @@ def payload(window=8.0, weekly=81.0, **extra):
                  "weekly": {"usedPercent": weekly, "resetsAtMs": NOW_MS + 86_400_000}}
     allowance.update(extra.pop("allowance", {}))
     return {"allowance": allowance, "asOfMs": NOW_MS, "source": "mint", **extra}
+
+
+def no_usage(paths, *emails):
+    """The synthetic Muse now answers for these accounts as the real one does when nothing was used since the
+    account's 5-hour block ended. Called with no account, every account has usage again."""
+    Path(paths.muse_exe).with_name("stub-no-usage").write_text("\n".join(emails), encoding="utf-8")
+
+
+def by_id(windows):
+    return {window["id"]: window for window in windows}
 
 
 class ParserTest(unittest.TestCase):
@@ -65,6 +76,37 @@ class ParserTest(unittest.TestCase):
             windows = {w["id"]: w for w in muse_usage(data, now=NOW_MS / 1000)["windows"]}
             self.assertEqual(windows["muse:window"]["blocked"], "usage_limited")
             self.assertIsNone(windows["muse:weekly"]["blocked"])
+
+    def test_a_week_the_answer_could_not_report_is_taken_from_the_reading_before(self):
+        now = NOW_MS / 1000
+        before = muse_usage(payload(window=40.0, weekly=81.0), now=now)           # its week resets at now + 86400
+        filled = fill_unreported(muse_idle_usage(now=now + 7200), before)
+        windows = by_id(filled["windows"])
+        self.assertEqual((windows["muse:window"]["used"], windows["muse:window"]["reset"], windows["muse:window"]["started"],
+                          windows["muse:window"]["label"]), (0.0, None, False, "5-hour"))
+        self.assertEqual((windows["muse:weekly"]["used"], windows["muse:weekly"]["reset"], windows["muse:weekly"]["started"],
+                          windows["muse:weekly"]["known"], windows["muse:weekly"]["label"]),
+                         (81.0, now + 86400, True, True, "Weekly"))
+        self.assertEqual({r["key"]: (r["used"], r["reset"]) for r in filled["raw_windows"]},
+                         {"muse:window": (0.0, None), "muse:weekly": (81.0, now + 86400)})
+        self.assertEqual(filled["checked"], now + 7200)
+        self.assertNotIn("unreported", filled)
+        # The next such answer stands on this one, and once the week's reset has passed the week has not started.
+        again = by_id(fill_unreported(muse_idle_usage(now=now + 9000), filled)["windows"])["muse:weekly"]
+        self.assertEqual((again["used"], again["reset"]), (81.0, now + 86400))
+        ended = by_id(fill_unreported(muse_idle_usage(now=now + 86400), filled)["windows"])["muse:weekly"]
+        self.assertEqual((ended["used"], ended["reset"], ended["started"]), (0.0, None, False))
+
+    def test_a_week_nobody_has_read_stays_unknown_and_a_full_one_stays_blocked(self):
+        now = NOW_MS / 1000
+        for nothing in (None, {}, {"windows": []}, muse_usage({"allowance": {"tier": "Muse Code Max Usage"}}, now=now)):
+            weekly = by_id(fill_unreported(muse_idle_usage(now=now), nothing)["windows"])["muse:weekly"]
+            self.assertEqual((weekly["used"], weekly["known"], weekly["reset"]), (None, False, None))
+        full = muse_usage(payload(window=10.0, weekly=104.0, reason="usage_limited"), now=now)
+        weekly = by_id(fill_unreported(muse_idle_usage(now=now + 7200), full)["windows"])["muse:weekly"]
+        self.assertEqual((weekly["used"], weekly["blocked"]), (104.0, "usage_limited"))
+        # A reading with every window reported is not touched: nothing of the one before reaches it.
+        self.assertIs(fill_unreported(full, muse_usage(payload(), now=now)), full)
 
     def test_login_output(self):
         text = ("Open this page to sign in:\n  https://auth.meta.com/oauth/device/?code=ABCD-1234\n"
@@ -137,6 +179,31 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(reading.credential, "reauth_required")
         self.assertEqual(str(reading.error), REJECTED_MESSAGE)
         self.assertEqual(self.leftovers(), [])
+
+    def test_the_no_usage_answer_is_a_reading_however_the_login_is_kept(self):
+        """Muse's real answer for an account with nothing used since its 5-hour block ended (2026-11-16)."""
+        no_usage(self.paths, "main@example.test", "side@example.test")
+        answers = [self.muse.usage(live=True),
+                   self.muse.usage(muse_auth("side@example.test"), persist=lambda doc: "accepted")]
+        atomic_write(self.auth, json_bytes(muse_auth("main@example.test", storage="keychain")))
+        answers.append(self.muse.usage(live=True))
+        for reading in answers:
+            self.assertIsNone(reading.error)
+            windows = by_id(reading.usage["windows"])
+            self.assertEqual((windows["muse:window"]["used"], windows["muse:window"]["reset"],
+                              windows["muse:window"]["started"]), (0.0, None, False))
+            self.assertEqual((windows["muse:weekly"]["used"], windows["muse:weekly"]["known"]), (None, False))
+            self.assertEqual(reading.usage["unreported"], ["muse:weekly"])
+            self.assertEqual(reading.outcomes, (("helper", "idle", "2xx"),))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_another_answer_without_an_allowance_is_still_a_failed_check(self):
+        for answer in ({"schemaVersion": 1, "allowance": None, "reason": "no_allowance"},
+                       {"schemaVersion": 1, "allowance": None, "reason": None}, {"allowance": None}, {}):
+            with mock.patch.object(Muse, "_run_usage", lambda *args, answer=answer, **kwargs: answer):
+                reading = self.muse.usage(live=True)
+            self.assertIsNone(reading.usage, answer)
+            self.assertEqual((reading.error.kind, reading.error.detail), ("codex", "no_allowance"), answer)
 
     def test_keychain_and_api_key_logins_cannot_be_saved_or_replaced(self):
         atomic_write(self.auth, json_bytes(muse_auth("main@example.test", storage="keychain")))
@@ -892,6 +959,138 @@ class ReviewFindingsTest(EngineCase):
         self.assertEqual(self.act("switch", key)["report"]["outcome"], "success")
         self.assertEqual(engine.vault.get(main["id"])["providers"]["meta"]["refresh_token"], renewed)
 
+
+
+class NoUsageAnswerTest(EngineCase):
+    """Muse answers "no usage data" for an account with nothing used since its 5-hour block ended. The app took
+    that for a failed check: on 2026-11-16 both Muse rows of the real app said "Couldn't refresh" and their
+    readings grew old, from the end of each account's block. The synthetic Muse prints the real answer."""
+
+    ACTIVE = {"muse": "main@example.test"}
+
+    def save_side(self):
+        side = muse_auth("side@example.test")
+        return self.engine.accounts.save("muse", side, self.engine.providers["muse"].identity(side), source="login")
+
+    def stored(self, key):
+        account = self.engine.store.account(key)
+        return account, by_id(account["last_good_usage"]["windows"])
+
+    def test_a_saved_account_keeps_its_week_and_shows_no_error(self):
+        engine = self.make()
+        key = self.save_side()
+        self.assertEqual(engine.accounts.read(key, active_identity=self.ACTIVE), "ok")
+        first, before = self.stored(key)
+        self.assertGreater(before["muse:weekly"]["used"], 0)
+        no_usage(self.paths, "side@example.test")
+        self.assertEqual(engine.accounts.read(key, active_identity=self.ACTIVE), "ok")
+        account, after = self.stored(key)
+        self.assertEqual((account["error"], account["error_code"]), (None, None))
+        self.assertGreater(account["last_good_at"], first["last_good_at"])           # the answer is a new reading
+        self.assertNotIn("unreported", account["last_good_usage"])
+        self.assertEqual((after["muse:window"]["used"], after["muse:window"]["reset"], after["muse:window"]["started"]),
+                         (0.0, None, False))
+        self.assertEqual((after["muse:weekly"]["used"], after["muse:weekly"]["reset"]),
+                         (before["muse:weekly"]["used"], before["muse:weekly"]["reset"]))
+        row = self.muse_rows()["side@example.test"]
+        self.assertEqual((row["state"], row["error"], row["age_tier"]), ("ok", None, "fresh"))
+        self.assertNotIn(row["headline"]["kind"], ("stale", "unknown", "checking"))
+        self.assertEqual({w["id"]: w["state"] for w in row["windows"]}, {"muse:window": "not_started", "muse:weekly": "live"})
+        # The next answer of the same kind stands on the one before it.
+        self.assertEqual(engine.accounts.read(key, active_identity=self.ACTIVE), "ok")
+        self.assertEqual(self.stored(key)[1]["muse:weekly"]["used"], before["muse:weekly"]["used"])
+
+    def test_usage_comes_back_with_the_next_message(self):
+        engine = self.make()
+        key = self.save_side()
+        no_usage(self.paths, "side@example.test")
+        self.assertEqual(engine.accounts.read(key, active_identity=self.ACTIVE), "ok")
+        no_usage(self.paths)
+        self.assertEqual(engine.accounts.read(key, active_identity=self.ACTIVE), "ok")
+        windows = self.stored(key)[1]
+        self.assertTrue(windows["muse:window"]["started"])
+        self.assertIsNotNone(windows["muse:weekly"]["reset"])
+
+    def test_an_account_never_read_before_reports_no_week(self):
+        engine = self.make()
+        key = self.save_side()
+        no_usage(self.paths, "side@example.test")
+        self.assertEqual(engine.accounts.read(key, active_identity=self.ACTIVE), "ok")
+        account, windows = self.stored(key)
+        self.assertIsNone(account["error"])
+        self.assertFalse(windows["muse:window"]["started"])
+        self.assertEqual((windows["muse:weekly"]["used"], windows["muse:weekly"]["known"]), (None, False))
+        self.assertEqual(self.muse_rows()["side@example.test"]["headline"]["text"], "Ready")
+
+    def test_a_week_that_ended_since_has_not_started(self):
+        engine = self.make()
+        key = self.save_side()
+        now = time.time()
+        ended = {"allowance": {"tier": "Muse Code Max Usage",
+                               "window": {"usedPercent": 30.0, "resetsAtMs": (now - 600) * 1000},
+                               "weekly": {"usedPercent": 64.0, "resetsAtMs": (now - 60) * 1000}},
+                 "asOfMs": (now - 3600) * 1000}
+        readings.record(engine.store, key, muse_usage(ended, now=now))
+        self.assertEqual(self.stored(key)[1]["muse:weekly"]["used"], 64.0)
+        no_usage(self.paths, "side@example.test")
+        self.assertEqual(engine.accounts.read(key, active_identity=self.ACTIVE), "ok")
+        weekly = self.stored(key)[1]["muse:weekly"]
+        self.assertEqual((weekly["used"], weekly["reset"], weekly["started"]), (0.0, None, False))
+
+    def test_the_signed_in_account_that_is_not_saved_keeps_its_week(self):
+        engine = self.make(storage="keychain")
+        engine.tick()
+        before = by_id(self.muse_rows()["main@example.test"]["windows"])
+        self.assertGreater(before["muse:weekly"]["used"], 0)
+        no_usage(self.paths, "main@example.test")
+        self.assertEqual(engine._refresh("unsaved-muse"), "ok")           # the engine's own read of one account
+        row = self.muse_rows()["main@example.test"]
+        after = by_id(row["windows"])
+        self.assertEqual((row["state"], row["error"]), ("ok", None))
+        self.assertEqual(after["muse:window"]["state"], "not_started")
+        self.assertEqual((after["muse:weekly"]["used"], after["muse:weekly"]["reset"]),
+                         (before["muse:weekly"]["used"], before["muse:weekly"]["reset"]))
+
+    def test_a_switch_to_an_account_with_nothing_used_is_verified_and_keeps_its_week(self):
+        engine = self.make()
+        engine.tick()
+        self.act("capture")
+        key = self.save_side()
+        self.assertEqual(engine.accounts.read(key, active_identity=dict(engine.active_identity)), "ok")
+        before = self.stored(key)[1]["muse:weekly"]
+        no_usage(self.paths, "side@example.test")
+        report = self.act("switch", key)["report"]
+        self.assertEqual((report["outcome"], report["verified"]), ("success", "verified"), report)
+        weekly = self.stored(key)[1]["muse:weekly"]
+        self.assertEqual((weekly["used"], weekly["reset"]), (before["used"], before["reset"]))
+
+
+class NoUsageRowOnThePageTest(EngineCase, test_dashboard.DashboardTestCase):
+    """What a person sees after Muse's "no usage data" answer: the real page from the real server, on an engine
+    that read the synthetic Muse. Both rows are covered, the signed-in account and a saved one."""
+
+    def test_both_rows_say_not_started_keep_their_week_and_show_no_trouble(self):
+        engine = self.make()
+        engine.tick()
+        side = muse_auth("side@example.test")
+        key = engine.accounts.save("muse", side, engine.providers["muse"].identity(side), source="login")
+        self.assertEqual(engine._refresh(key), "ok")
+        week = {a["email"]: by_id(a["windows"])["muse:weekly"]["used"] for a in self.muse_rows().values()}
+        no_usage(self.paths, "main@example.test", "side@example.test")
+        self.assertEqual((engine._refresh("unsaved-muse"), engine._refresh(key)), ("ok", "ok"))
+        server = Server(("127.0.0.1", 0), engine)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.browser.open(server)
+        for email, account in self.muse_rows().items():
+            with self.subTest(email=email):
+                words = self.browser.js(f"{test_dashboard.row(account)}.innerText")
+                for said in ("5-hour", "Not started", "Starts with your next message", "Weekly",
+                             f"{round(week[email])}% used", "Resets in"):
+                    self.assertIn(said, words)
+                for trouble in ("Couldn't refresh", "Reading is", "Refill expected", "Not reported", "No reading yet"):
+                    self.assertNotIn(trouble, words)
 
 
 class RealFormatTest(EngineCase):

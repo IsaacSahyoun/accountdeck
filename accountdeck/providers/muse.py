@@ -16,6 +16,10 @@ mode; Muse renews the token itself when it must, and the renewed auth.json goes 
 signed-in account is read in place, in the mode its auth.json names, so Muse uses the copy it owns.
 Saving the signed-in account and switching need a file-mode login: a Keychain login cannot be copied, and
 replacing its auth.json would leave the Keychain one behind.
+
+An account with nothing used since its 5-hour block ended has no usage for Muse to report. 1.4.20 then
+prints `"allowance": null, "reason": "server_sent_no_usage"` and exits 0 (seen 2026-11-16). That is a
+reading: the block has not started and the week stands where it stood (`usage.muse_idle_usage`).
 """
 from __future__ import annotations
 
@@ -35,7 +39,7 @@ from ..config import Timings
 from ..core import DeckError, atomic_write, json_bytes, read_json
 from ..platform import facts_mac
 from ..procs import DEVNULL
-from ..usage import muse_plan, muse_usage
+from ..usage import MUSE_NO_USAGE, muse_idle_usage, muse_plan, muse_usage
 from .base import Reading
 from .codex import ActiveIdentity, stash
 from .errors import ProviderError
@@ -318,6 +322,10 @@ class Muse:
             return Reading(usage=None, source="helper", error=exc, outcomes=(("helper", exc.kind, exc.http_class),),
                            credential=credential, checked=now)
         allowance = data.get("allowance")
+        if allowance is None and data.get("reason") == MUSE_NO_USAGE:
+            # Nothing used since the account's 5-hour block ended: an answer, not a failed check.
+            return Reading(usage=muse_idle_usage(now=now), source="helper", outcomes=(("helper", "idle", "2xx"),),
+                           checked=now)
         if not isinstance(allowance, dict):
             exc = ProviderError("codex", detail="no_allowance", meta={"class": "other"},
                                 message=UNREADABLE_MESSAGE)

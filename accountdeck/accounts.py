@@ -18,6 +18,7 @@ from .core import DeckError, FrozenAccountError, is_frozen
 from .providers import Reading
 from .providers import muse as muse_auth
 from .providers.codex import freshness, identity_key, refresh_due, token_state
+from .usage import fill_unreported
 
 READ_FAILED = "Could not refresh this account. Your last reading is kept."
 BUSY_ACCOUNT = "This account is being refreshed. Try again in a moment."
@@ -468,7 +469,8 @@ class AccountService:
             return error_code(exc)
         self._record(provider, UNSAVED_IDS[provider], reading.outcomes, now)
         if reading.usage is not None:
-            row.update(usage=reading.usage, last_good_at=reading.usage["checked"], error=None, last_outcome="2xx")
+            usage = fill_unreported(reading.usage, row.get("usage"))
+            row.update(usage=usage, last_good_at=usage["checked"], error=None, last_outcome="2xx")
             return "ok"
         if reading.error is None:
             if reading.meta.get("hollow"):

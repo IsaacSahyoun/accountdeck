@@ -289,6 +289,12 @@ import time
 from pathlib import Path
 
 
+# What Muse 1.4.20 printed, with exit code 0, for an account with no message sent since its 5-hour block ended
+# (2026-11-16, byte for byte).
+NO_USAGE = ('{"schemaVersion":1,"allowance":null,"reason":"server_sent_no_usage","hint":"the server sent no usage '
+            'data for this subscription; this can happen before your first use in a new window"}')
+
+
 def auth_path():
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "muse" / "auth.json"
 
@@ -338,6 +344,10 @@ def usage():
         meta.update(access_token="synthetic-muse-access-" + secrets.token_hex(12),
                     refresh_token="synthetic-muse-refresh-" + secrets.token_hex(12), expires_at=int(now + 3600))
         save(doc)
+    idle = Path(__file__).with_name("stub-no-usage")       # a test lists the accounts with nothing used, one a line
+    if idle.exists() and str(meta.get("user_email")) in idle.read_text(encoding="utf-8").split():
+        print(NO_USAGE)
+        return 0
     seed = int(hashlib.sha256(str(meta.get("user_email")).encode()).hexdigest(), 16)
     now_ms = int(now * 1000)
     print(json.dumps({"allowance": {

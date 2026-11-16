@@ -52,7 +52,7 @@ Each stage of a Codex switch has a scenario that holds it there: `switching` (wa
 
 Tests to reuse:
 - `tests/test_switch_safety.py`: `CodexSwitchTest`, `CodexInterruptedSwitchTest`, `CodexRenewalTest`, `CodexHelperFolderTest`, `MuseSwitchTest`, `MuseInterruptedSwitchTest`;
-- `tests/test_muse.py` (60 tests): the usage parser, the adapter, the engine, and `RealFormatTest` for the real file format;
+- `tests/test_muse.py` (71 tests): the usage parser, the adapter, the engine, `RealFormatTest` for the real file format, and `NoUsageAnswerTest` for Muse's answer when nothing was used;
 - `tests/test_second_review.py`, `CodexRecoverWaitsForUsageChecksTest`, `ConfirmationStillHoldsAfterTheLaneWaitTest`, `CodexCancelDuringTheLaneWaitTest` (a terminal switch beside a Codex wait); `tests/test_switch_safety.py`, `WaitDeadlineTest`;
 - every row action for a Codex and a Muse row: `tests/test_dashboard.py`, `EveryClientRowsTest`.
 
@@ -63,6 +63,7 @@ Tests to reuse:
 - The `switching` and `stopping` demos answer 409 to a stop. The tools end those demos themselves.
 - Neither client has a test that kills the app at each write, the way Claude Code does (`test_the_app_dies_at_each_step`). Their crash cover is the interrupted-switch tests named above.
 - The shape of `muse usage --json` on a real account has one open question: whether the answer carries `asOfMs`. The tests use the shape seen so far.
+- An account with nothing used since its 5-hour block ended gets `"allowance": null, "reason": "server_sent_no_usage"` from Muse, with exit code 0 (real answer, 2026-11-16). The row then shows the 5-hour limit as "Not started" and keeps its week. The synthetic Muse prints that answer for each account a test lists in `stub-no-usage` beside the binary (`no_usage` in `tests/test_muse.py`). `NoUsageAnswerTest` covers the engine and `NoUsageRowOnThePageTest` the page.
 
 ## Only on the real Mac
 - The real Codex and Muse login files, and a real session that is open during a switch.

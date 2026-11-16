@@ -287,6 +287,49 @@ def muse_usage(data, *, now=None):
             "raw_windows": raw, "credits": [], "reset_credits": [], "tokens": None}
 
 
+MUSE_NO_USAGE = "server_sent_no_usage"
+
+
+def muse_idle_usage(*, now):
+    """The reading in Muse's "no usage data" answer: `allowance` null and `reason` MUSE_NO_USAGE, with exit
+    code 0 (Muse 1.4.20, 2026-11-16). Muse gives it from the end of an account's 5-hour block until the next
+    message, so that block has not started. The answer says nothing of the week. `unreported` names the weekly
+    window for `fill_unreported`, which takes it from the reading before."""
+    windows = [_window("muse:window", "session", _span_label(None, "primary"), _span_short(None, "primary"), None,
+                       None, 0.0, None),
+               _window("muse:weekly", "weekly", _span_label(WEEKLY_MINUTES, "secondary"),
+                       _span_short(WEEKLY_MINUTES, "secondary"), None, WEEKLY_MINUTES, None, None)]
+    return {"checked": now, "windows": _shown(windows),
+            "raw_windows": [{"key": w["id"], "used": w["used"], "reset": w["reset"]} for w in windows],
+            "credits": [], "reset_credits": [], "tokens": None, "unreported": ["muse:weekly"]}
+
+
+def fill_unreported(usage, previous):
+    """`usage` with each window its answer could not report (`unreported`) as `previous`, the reading before
+    it, had it. Such an answer comes only while nothing is being used, so a week still running stands where
+    that reading left it, short at most of what was used between that reading and the end of its 5-hour block.
+    A week whose reset has passed since has not started. With no reading before, the window stays unknown.
+    A reading that names no such window comes back as it is."""
+    names = usage.get("unreported")
+    if not names:
+        return usage
+    before = {w.get("id"): w for w in previous.get("windows") or () if isinstance(w, dict)} \
+        if isinstance(previous, dict) else {}
+    windows = []
+    for window in usage["windows"]:
+        old = before.get(window["id"]) if window["id"] in names else None
+        if old is not None and number(old.get("used")) is not None:
+            ended = number(old.get("reset")) is not None and old["reset"] <= usage["checked"]
+            used, reset, blocked = (0.0, None, None) if ended else (float(old["used"]), old.get("reset"), old.get("blocked"))
+            window = {**_window(window["id"], window["kind"], window["label"], window["short"], window["model"],
+                                window["minutes"], used, reset), "blocked": blocked}
+        windows.append(window)
+    raw = {r["key"]: r for r in usage["raw_windows"]}
+    raw.update({w["id"]: {"key": w["id"], "used": w["used"], "reset": w["reset"]} for w in windows if w["id"] in names})
+    return {**{key: value for key, value in usage.items() if key != "unreported"},
+            "windows": windows, "raw_windows": list(raw.values())}
+
+
 def muse_plan(data):
     """A short plan name from `muse usage --json`'s tier ("Muse Code Max Usage" → "Max"); "" when absent."""
     allowance = data.get("allowance") if isinstance(data, dict) and isinstance(data.get("allowance"), dict) else {}

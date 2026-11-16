@@ -1,12 +1,15 @@
 """Storing a usage reading of a saved account. One place for all four clients, so a refill is noticed whichever
 client the account belongs to."""
 from . import intel
+from .usage import fill_unreported
 
 
 def record(store, key, usage, *, reset=None):
     """Stores a successful reading, dated by its own `checked` time, and records the refills it shows against
-    the reading the account had before it."""
+    the reading the account had before it. A window the answer could not report is taken from that reading
+    (`usage.fill_unreported`)."""
     previous = (store.account(key) or {}).get("last_good_usage")
+    usage = fill_unreported(usage, previous)
     store.observe(key, usage, at=usage.get("checked"), **({"reset": reset} if reset is not None else {}))
     refills(store, key, previous, usage)
 
