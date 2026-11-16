@@ -1469,7 +1469,12 @@ class TerminalForecastTest(DeckCase):
         the engine cannot see that. The reading was left out, the forecast went by the rise before it and
         counted the 4 minutes since that older reading again, and the terminals moved off an account at
         96.5%: the hole of the second round by another way in. The reading counts, as taken when it is stored."""
+        engine, key = self.engine, self.first["id"]
         self.slowed(late=3)
+        week = next(window["id"] for window in engine.store.account(key)["last_good_usage"]["windows"]
+                    if window.get("kind") == "weekly")
+        last = engine.store.taken(key, week, engine.forecast_from["claude_cli"])[-1]
+        self.assertEqual((last["used"], round(last["at"] - engine.clock(), 3)), (96.5, 0))
         self.assertTrue(96.5 < self.forecast() < 98, self.forecast())
         self.checks()
         self.assertEqual(self.started, [])
@@ -1540,8 +1545,9 @@ class TerminalForecastTest(DeckCase):
         Claude answered a read. The clock was put right, the engine saw it and started the forecast over, and
         then the reading was stored: the first of the new series, dated an hour after now. The time from it
         to each later reading was below zero, so two new readings that rose from 82% to 96% in 150 seconds
-        made no forecast, for over an hour. It is noted as taken when it is stored, 5 seconds after the clock
-        was put right, and is the first reading of the new series."""
+        made no forecast, for over an hour. It is noted as taken when it is stored, on the clock as it reads
+        then, 5 seconds after the readings from before the clock was set ahead, and is the first reading of
+        the new series."""
         engine, key = self.engine, self.first["id"]
         self.stop_the_clock()
         self.read(first=76, second=92, wanted=100)
@@ -1554,8 +1560,10 @@ class TerminalForecastTest(DeckCase):
         # and is the account's last one. Only the forecast takes it as of the moment it was stored.
         row = engine.store.account(key)
         week = next(window for window in row["last_good_usage"]["windows"] if window.get("kind") == "weekly")
+        stored = engine.store.readings(key, week["id"])[-1]
         self.assertAlmostEqual(row["last_good_at"] - engine.clock(), 3595, places=3)
-        self.assertEqual((week["used"], engine.store.readings(key, week["id"])[-1]["used"]), (78, 78))
+        self.assertAlmostEqual(stored["at"] - engine.clock(), 3595, places=3)
+        self.assertEqual((week["used"], stored["used"]), (78, 78))
         self.assertEqual(engine.store.reading_mark(), count + 1)
         taken = engine.store.taken(key, week["id"], count)
         self.assertEqual([reading["used"] for reading in taken], [78])
@@ -2402,10 +2410,17 @@ class TerminalFailedSwitchTest(DeckCase):
         self.no_wait("soon")
 
     def test_a_wait_without_an_end_is_no_wait(self):
-        """Found by the fifth round (Sol 3). A number too large for the file's format is read back as infinity.
+        """Found by the fifth round (Sol 3). A number in the file such as `1e400` is read back as infinity.
         The rule takes that for no wait (`cli_policy.number`), and went on asking for a reading. The read
         took it for a wait that never ends, and asked Claude for no renewal again."""
         self.no_wait(float("inf"))
+
+    def test_a_wait_too_large_to_be_a_time_is_no_wait(self):
+        """Found by the sixth round (Opus 1). A whole number with 400 digits is read back from the file as it
+        is, and the test for a number raised on it (`math.isfinite`): the rule could make no decision, the
+        page's state could not be built, and since the fix of the fifth round the read ended in an unplanned
+        error too."""
+        self.no_wait(10 ** 400)
 
     def no_wait(self, value):
         engine, key = self.engine, self.wanted["id"]
@@ -3093,12 +3108,19 @@ class TerminalFableLimitTest(DeckCase):
                   "limits": [{"kind": "weekly_all", "percent": 30, "resets_at": iso},
                              {"kind": "weekly_scoped", "percent": 80, "resets_at": iso, "scope": {"model": {"display_name": "Fable 5.1"}}}]}
         self.engine.store.observe(self.first["id"], claude_usage(answer, now=now), at=now)      # the same answer, read now
+        handed, forecast = [], cli_policy.forecast
+
+        def noted(readings, *rest):
+            handed.append([(reading["at"], reading["used"]) for reading in readings[-3:]])
+            return forecast(readings, *rest)
+        self.addCleanup(setattr, cli_policy, "forecast", forecast)
+        cli_policy.forecast = noted
         in_use = next(row for row in cli_auto.inputs(self.engine) if row["active"])
+        cli_policy.forecast = forecast
         self.assertEqual([(w["kind"], w["used"]) for w in in_use["windows"]], [("weekly", 30.0), ("model", 80.0)])
-        for window in in_use["windows"]:
-            taken = self.engine.store.taken(self.first["id"], window["id"], mark)
-            self.assertEqual([reading["at"] for reading in taken[-3:]], [now - 180, now - 60, now],
-                             "the forecast does not read the three readings above: this test proves nothing")
+        # Sol 1 of the sixth round: what the forecast itself is handed, for the week and for the Fable limit.
+        self.assertEqual(handed, [[(now - 180, used), (now - 60, used), (now, used)] for used in (30.0, 80.0)],
+                         "the forecast was not handed the three readings above: this test proves nothing")
         self.assertEqual(in_use["forecast"], {}, "nothing is filling")
         decision = cli_auto.decision(self.engine)
         self.assertEqual((decision["action"], decision["hold"], decision["reason"]), ("none", None, ""))

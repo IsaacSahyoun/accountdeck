@@ -89,7 +89,12 @@ STAY = 900      # an account an automatic switch moved the terminals to is not l
 
 
 def number(value):
-    return value if type(value) in (int, float) and math.isfinite(value) else None
+    """`value` when it is a number that a time or a percentage can be, or None. A whole number too large for
+    a float is none: `math.isfinite` raises on it, and a setting read back from the file can hold one."""
+    try:
+        return value if type(value) in (int, float) and math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 def tried(note):
