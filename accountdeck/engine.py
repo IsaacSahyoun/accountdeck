@@ -673,13 +673,17 @@ class Engine:
         settings = self.prefs.public()
         machine, slow = self._observe(), self._refresh_slow(now)
         rows = self.store.accounts()
+        # One look at who is signed in, for every row. A switch of Claude Code notes the account it moved to
+        # on its own thread, at its end (`switch_cli.perform`). With a look for each row, one fell before
+        # that and one after, and the state had both accounts in use, or neither.
+        in_use = dict(self.active_identity)
         self._counts = self._count_accounts(rows)
         status = {name: self.status(name, now) for name in self.providers}
         refills = {}
         for refill in self.store.refills(now - REFILL_KEEP):
             refills.setdefault(refill["account"], {})[refill["window"]] = {
                 "at": refill["reset_at"], "confirmed": refill["confirmed_at"], "from": refill["previous_used"]}
-        accounts = [self._raw_account(row, now, status, refills.get(row["id"], {})) for row in rows]
+        accounts = [self._raw_account(row, now, status, refills.get(row["id"], {}), in_use) for row in rows]
         accounts += self._unsaved_rows(now, status)
         runner = self.runner.snapshot()
         pending = runner["pending"]
@@ -756,9 +760,9 @@ class Engine:
         return {"consumers": consumers, "daemon": bool(kinds["codex_daemon"]), "desktop": bool(kinds["codex_desktop"]),
                 "checked": now}
 
-    def _raw_account(self, row, now, status, refills):
+    def _raw_account(self, row, now, status, refills, in_use):
         name, key, flags = row["provider"], row["id"], row["flags"]
-        active = row["identity"] == self.active_identity.get(name)
+        active = row["identity"] == in_use.get(name)
         error = None
         if row["error"]:
             error = {"code": row["error_code"] or "network", "message": row["error"],

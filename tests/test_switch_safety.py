@@ -166,6 +166,33 @@ class TerminalSwitchTest(DeckCase):
                          self.vault.get(self.target["id"])["credentials"]["claudeAiOauth"]["refreshToken"])
         self.assertEqual(self.pending_records(), [])
 
+    def test_a_switch_that_ends_while_the_page_state_is_built_leaves_one_account_in_use_in_it(self):
+        """Found by the whole check of 29f0659 with every core busy, in the installed build too (2.2.1, commit
+        41420bb). A switch notes the account the terminals moved to on its own thread, at its end. The page's
+        state looked at who is signed in once for each account's row. With a switch ending between two of
+        those looks, both of its accounts were in use in that state, or neither, and the app's own check of
+        the state refused it. The state is built from one look."""
+        engine, both = self.engine, (self.outgoing["id"], self.target["id"])
+        series, switched = engine.accounts.series, []
+
+        def a_switch_ends(row, now):
+            if row["id"] in both and not switched:      # the look at the first of the two rows was just made
+                switched.append(row["id"])
+                switch_cli.perform(self.service, self.target["id"])
+            return series(row, now)
+
+        def in_use(state):
+            return [row["id"] for row in state["accounts"] if row["provider"] == "claude_cli" and row["active"]]
+        engine.accounts.series = a_switch_ends
+        self.addCleanup(setattr, engine.accounts, "series", series)
+        engine.bump()
+        state = engine.snapshot()
+        self.assertTrue(switched, "no switch ended while the state was built: this test proves nothing")
+        self.assertEqual(in_use(state), [self.outgoing["id"]])
+        # The reverse: the switch told the page of its end, and the state built next names the account moved to.
+        self.assertEqual(in_use(engine.snapshot()), [self.target["id"]])
+        self.assert_consistent("claude_cli", self.identity(self.target["id"]))
+
     def test_a_switch_saves_the_login_claude_code_was_using(self):
         support.claude_code_renews(self.engine)        # the outgoing login is newer on disk than in the vault
         renewed = self.live_credentials()["claudeAiOauth"]["refreshToken"]
