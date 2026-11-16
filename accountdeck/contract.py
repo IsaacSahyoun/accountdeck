@@ -57,6 +57,7 @@ ERROR_CODES = ("invalid", "not_found", "busy", "login_needed", "reauth_required"
                "safety", "cancelled", "confirm_required", "needs_reconfirm", "stale_plan", "outage", "read_only")
 PROVIDER_FAILURES = ("token_refused", "blocked", "scope_missing", "web_session_stale", "rate_limited", "outage", "network")
 ACTIONS = ("refresh", "rename", "switch-plan", "switch", "cancel", "dismiss", "dismiss-report",
+           "reset-status", "reset-use",
            "capture", "add", "finish-login", "cancel-login", "remove", "open", "stop-consumer", "recover",
            "test-notification", "cli-exclude", "cli-undo", "demo-clock", "import-bundle-preview", "import-bundle",
            "import-bundle-dismiss")
@@ -402,6 +403,8 @@ def _check_account_fields(a, path, now, r):
         r.enum(a["health"], ("ok", "needs_signin"), path + ".health")
         r.flag(a["excluded"], path + ".excluded")
         r.flag(a["live_expired"], path + ".live_expired")
+        if "can_reset" in a:
+            r.flag(a["can_reset"], path + ".can_reset")
     r.text(a["label"], f"{path}.label")
     r.text(a["email"], f"{path}.email", nullable=True)
     r.text(a["plan"], f"{path}.plan", nullable=True)

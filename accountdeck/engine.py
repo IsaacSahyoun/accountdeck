@@ -28,6 +28,7 @@ from . import (__version__, alerts, cli_auto, contract, diagnostics, intel, move
                workfolders)
 from .accounts import AccountService
 from .cli_accounts import CLIAccounts
+from .claude_resets import ClaudeResets
 from .cli_policy import considered
 from .config import SETTINGS_SCHEMA, Settings, Timings, safe_mode, validate_settings
 from .core import DeckError, FrozenAccountError, Store, Vault, is_frozen, vault_cipher
@@ -155,6 +156,7 @@ class Engine:
         self.runner = OperationRunner(on_change=self.bump, on_finish=self._finished, on_settle=self._settled,
                                       clock=clock)
         self.cli = CLIAccounts(self, self.providers["claude_cli"])
+        self.resets = ClaudeResets(self)
         if self.owns_login and not self.cli.adapter.readonly_reason:
             self.cli.adopt_stashes()
             self.cli.restore_enrollment()
@@ -672,7 +674,7 @@ class Engine:
         now = self.clock()
         settings = self.prefs.public()
         machine, slow = self._observe(), self._refresh_slow(now)
-        rows = self.store.accounts()
+        rows, renewal_waits = self.cli.rows_and_waits()
         # One look at who is signed in, for every row. A switch of Claude Code notes the account it moved to
         # on its own thread, at its end (`switch_cli.perform`). With a look for each row, one fell before
         # that and one after, and the state had both accounts in use, or neither.
@@ -698,7 +700,7 @@ class Engine:
                 "running": self._running(name, machine, now),
                 "switching": bool(pending and pending["provider"] == name and pending["phase"] not in TERMINAL_PHASES),
                 "paused": bool(self.prefs.get("refresh_paused")) or self.scheduler.provider_pause.get(name, False)}
-        providers["claude_cli"].update(autoswitch=cli_auto.state(self),
+        providers["claude_cli"].update(autoswitch=cli_auto.state(self, (rows, renewal_waits, in_use.get("claude_cli"))),
                                         enrollment=copy.deepcopy(self.cli.phase),
                                         readonly_reason=self.cli.adapter.readonly_reason)
         raw = {"app": "accountdeck2", "version": __version__, "rev": rev, "mode": self.mode, "safe_mode": safe_mode(),
@@ -772,6 +774,7 @@ class Engine:
         samples, trend = self.accounts.series(row, now)
         return {"id": key, "provider": name, "label": row["label"], "email": row["email"], "plan": row["plan"],
                 **({"excluded": flags.get("excluded", False), "health": flags.get("health", "ok"),
+                    "can_reset": self.resets.available(row),
                     "live_expired": flags.get("live_expired", False)} if name == "claude_cli" else {}),
                 "saved": True, "active": active,
                 "switchable": bool(flags.get("restorable", True)) and not is_frozen(row),
@@ -917,6 +920,12 @@ class Engine:
         self._demo_offset = seconds
         self.scheduler.request_all([r["id"] for r in self.store.accounts()], self.clock())
         return {"now": self.clock()}
+
+    def _do_reset_status(self, body):
+        return self.resets.check(self._account_id(body))
+
+    def _do_reset_use(self, body):
+        return self.resets.submit(self._account_id(body), body.get("plan_id"))
 
     def _do_refresh(self, body):
         now = self.clock()

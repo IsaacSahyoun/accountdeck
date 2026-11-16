@@ -93,14 +93,15 @@ def _forecast(engine, row, now):
     return result
 
 
-def inputs(engine):
+def inputs(engine, snapshot=None):
     rows = []
     now = engine.clock()
-    accounts, waits = engine.cli.rows_and_waits()
+    accounts, waits, active_identity = snapshot if snapshot is not None else (
+        *engine.cli.rows_and_waits(), engine.active_identity.get("claude_cli"))
     for row in accounts:
         if row["provider"] != "claude_cli":
             continue
-        active = row["identity"] == engine.active_identity.get("claude_cli")
+        active = row["identity"] == active_identity
         rows.append({"id": row["id"], "label": row["label"], "active": active,
                      "forecast": _forecast(engine, row, now) if active else {},
                      "owner": row["owner"],
@@ -123,7 +124,7 @@ def decision(engine, settings=None):
                                engine.store.setting("cli_history", {}), engine.clock())
 
 
-def state(engine):
+def state(engine, snapshot=None):
     """The state's `providers.claude_cli.autoswitch` block: the decision and the order under each mode
     (one pass over the store, evaluated four times).
 
@@ -135,7 +136,7 @@ def state(engine):
 
     The running operations are read after the history, never before it. A switch that started while this
     state was being built has written its note by then, and it is in the list."""
-    settings, rows = engine.prefs.public(), inputs(engine)
+    settings, rows = engine.prefs.public(), inputs(engine, snapshot)
     history, now = engine.store.setting("cli_history", {}), engine.clock()
     running = {op.account for op in engine.runner.unfinished("claude_cli")}
     if isinstance(history.get("tried"), dict):

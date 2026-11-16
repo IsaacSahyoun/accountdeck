@@ -191,6 +191,10 @@
       AD.dom.closeModal();
       return;
     }
+    watch(result);
+  }
+
+  function watch(result) {
     watching = result && result.op ? { op: result.op, at: Date.now(), seen: false } : null;
     openProgress(last && last.pending);
   }
@@ -326,6 +330,11 @@
   // ---- Report -----------------------------------------------------------------------------------------------
 
   function reportTitle(report) {
+    if (report.kind === 'claude-reset') {
+      if (report.outcome === 'cancelled') return 'Reset cancelled';
+      if (report.outcome === 'failed' || report.verified === 'failed') return 'Reset not used';
+      return report.verified === 'unconfirmed' ? 'Reset unconfirmed' : 'Reset result';
+    }
     if (report.outcome === 'failed') return STRINGS.report.failedTitle;
     if (report.outcome === 'cancelled') return STRINGS.report.cancelledTitle;
     if (report.kind === 'switch' && report.label) return fill(STRINGS.report.switched, { label: mask(report.label) });
@@ -451,5 +460,5 @@
     AD.dom.setModalActions(loginActions(login));
   }
 
-  AD.switch = { open, openPurpose, showPlan, renderPending, renderReport, renderLogin, loginActions, loginText };
+  AD.switch = { open, openPurpose, showPlan, watch, renderPending, renderReport, renderLogin, loginActions, loginText };
 })();

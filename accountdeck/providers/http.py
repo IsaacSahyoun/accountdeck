@@ -1,4 +1,4 @@
-"""Provider HTTP: one request with classification, an honest user agent and the safe-mode host gate.
+"""Provider HTTP: one request with classification, scoped request headers and the safe-mode host gate.
 
 In safe mode (tests, demos) a request may only reach an in-process loopback server registered with
 `register_test_host`; everything else raises SafetyViolation before a socket is opened.
@@ -50,13 +50,20 @@ def unregister_test_host(host_port):
         _test_hosts.discard(f"{host}:{port}")
 
 
-def request_headers(url, *, headers=None, token=None, cookie=None):
+def request_headers(url, *, headers=None, token=None, cookie=None, reset_api=False):
     """The headers sent to `url`: the caller's, except that the user agent, credentials and the
     OAuth beta flag (api.anthropic.com OAuth endpoints only) are always decided here."""
     parts = urllib.parse.urlsplit(url)
     result = {"Accept": "application/json"}
     result.update({key: value for key, value in (headers or {}).items() if key.lower() not in _CONTROLLED})
     result["User-Agent"] = USER_AGENT
+    if reset_api:
+        from .claude_resets import CLIENT, route
+        route(url)
+        if cookie:
+            raise ValueError("Reset requests cannot use cookies")
+        result["User-Agent"] = CLIENT
+        result["anthropic-beta"] = OAUTH_BETA
     if (parts.hostname or "").lower() == OAUTH_HOST and parts.path.startswith(OAUTH_PATH):
         result["anthropic-beta"] = OAUTH_BETA
     if token:
@@ -67,18 +74,22 @@ def request_headers(url, *, headers=None, token=None, cookie=None):
 
 
 def request(method, url, *, headers=None, timeout=DEFAULT_TIMEOUT, cookie=None, token=None,
-            token_was_expired=False, incident=False, json_body=None):
+            token_was_expired=False, incident=False, json_body=None, reset_api=False):
     """Sends one request. Returns (parsed JSON or None, meta) for a 2xx answer and raises a
     classified ProviderError otherwise. meta = {"status", "class", "ms", "cf_mitigated", "server",
     "error_type", "retry_after"}; bodies, tokens and cookies never reach meta or the log."""
     parts = urllib.parse.urlsplit(url)
+    if reset_api:
+        from .claude_resets import route
+        if method != route(url):
+            raise ValueError("Wrong method for a reset endpoint")
     host = (parts.hostname or "").lower()
     test_server = _gate(parts.scheme, host, parts.port or (443 if parts.scheme == "https" else 80))
     handlers = [_NoRedirect()]
     if test_server:
         handlers.append(urllib.request.ProxyHandler({}))
     opener = urllib.request.build_opener(*handlers)
-    sent_headers = request_headers(url, headers=headers, token=token, cookie=cookie)
+    sent_headers = request_headers(url, headers=headers, token=token, cookie=cookie, reset_api=reset_api)
     data = None
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
@@ -104,7 +115,8 @@ def request(method, url, *, headers=None, timeout=DEFAULT_TIMEOUT, cookie=None, 
             error = ProviderError("network", http=meta["status"], detail="oversize", meta=meta,
                                   message="The provider's answer was too large. Your last reading is kept.")
     meta["ms"] = round((time.monotonic() - started) * 1000)
-    diagnostics.log("http.request", "info" if error else "debug", host=host, path=parts.path,
+    log_path = "/api/organizations/{organization}/reset_rate_limits" if reset_api and method == "POST" else parts.path
+    diagnostics.log("http.request", "info" if error else "debug", host=host, path=log_path,
                     status=meta["status"], cls=meta["class"], ms=meta["ms"], cf_mitigated=meta["cf_mitigated"],
                     error_type=meta["error_type"], kind=error.kind if error else None)
     if error:

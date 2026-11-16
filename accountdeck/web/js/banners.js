@@ -180,7 +180,16 @@
     let title = report.summary;
     let icon = 'check-circle';
     let level = 'good';
-    if (report.outcome === 'failed') {
+    if (report.kind === 'claude-reset') {
+      if (report.outcome === 'cancelled') {
+        title = 'Reset cancelled';
+        icon = 'info';
+        level = 'info';
+      } else if (report.verified !== 'verified') {
+        icon = 'warning';
+        level = 'warning';
+      }
+    } else if (report.outcome === 'failed') {
       title = STRINGS.report.failedTitle;
       icon = 'warning';
       level = 'warning';
@@ -192,7 +201,8 @@
       title = fill(STRINGS.report.switched, { label });
       if (report.verified !== 'verified') icon = 'hourglass';
     }
-    const message = title === report.summary ? '' : mask(report.summary);
+    const message = mask([title === report.summary ? '' : report.summary,
+      report.kind === 'claude-reset' ? report.verify_reason : ''].filter(Boolean).join(' '));
     const actions = [
       AD.dom.button(STRINGS.button.viewReport, () => AD.switch.renderReport(last, { open: true }),
         { small: true, attrs: { 'data-keep': 'report-view' } }),

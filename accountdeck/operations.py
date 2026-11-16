@@ -111,9 +111,9 @@ class Operation:
         """Run the block as step `step_id`: active, then done (or the warning/skipped status note()
         gave it), failed on an error, skipped when cancelled or reconfirming. Entering is a checkpoint."""
         self._moving_to(phase)
-        self.checkpoint()
         step = self._step(step_id)
         with self.lock:
+            self.checkpoint()
             self._apply(phase, message, cancellable, eta_seconds)
             step.status, step.started, step.ended = "active", self.clock(), None
             self.current_step = step.id
@@ -131,6 +131,8 @@ class Operation:
         """Move to a running phase; the terminal phases are set when run() ends."""
         self._moving_to(phase)
         with self.lock:
+            if cancellable is False:
+                self.checkpoint()
             self._apply(phase, message, cancellable, eta_seconds)
         self._changed()
 

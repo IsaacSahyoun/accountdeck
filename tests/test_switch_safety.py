@@ -1039,6 +1039,7 @@ class TerminalPausedAccountTest(DeckCase):
 
         def read_again():
             """The pause of `other` is over and Claude answers its read with the numbers it had."""
+            engine.store.update(other["id"], paused_until=engine.clock())
             answer = copy.deepcopy(engine.store.account(other["id"])["last_good_usage"])
             answer["checked"] = engine.clock()
             engine.cli.adapter.usage = lambda credentials: answer
@@ -1703,7 +1704,7 @@ class TerminalForecastTest(DeckCase):
                   for ago, used in ((300, 60.0), (150, 90.0))]
         result = self.bring_over({
             "id": "pc-second", "provider": "claude_cli", "identity": row["identity"], "label": row["label"],
-            "email": row["email"] or "", "plan": row["plan"] or "", "org": "", "created": 1_700_000_000,
+            "email": row["email"] or "", "plan": row["plan"] or "", "org": row["org"], "created": 1_700_000_000,
             "live_on_pc": True, "refills": [],
             "history": {"last_good_usage": None, "last_good_at": None, "readings": before, "snapshots": []}})
         self.assertEqual(result["failures"], [])
@@ -2815,12 +2816,12 @@ class TerminalFailedSwitchTest(DeckCase):
             go.wait(30)
             return real_perform(*args, **how)
 
-        def inputs(engine):
+        def inputs(engine, snapshot=None):
             if not gap:
                 gap.append(True)
                 cli_auto.tick(engine)                   # the next check, while the state is being built
                 self.assertTrue(held.wait(30))          # the second try has written its note and is held
-            return real_inputs(engine)
+            return real_inputs(engine, snapshot)
         with mock.patch.object(switch_cli, "perform", perform), mock.patch.object(cli_auto, "inputs", inputs):
             try:
                 self.assertEqual((self.said(), self.tries(self.wanted), gap), ((None, None), 2, [True]))

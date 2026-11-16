@@ -48,6 +48,12 @@ in its row) with **Rename…** and **Remove…**. Remove makes AccountDeck forge
 The account itself is not affected, and you can add it again. The Claude Code account your
 terminals are using cannot be removed; switch to another one first.
 
+**Claude Ultra resets:** Choose **More → Resets…** on a saved Ultra account to check its Fable
+and Full reset offers. The sheet shows remaining uses, expiry, and what each offer restores.
+Confirm the account and offer to spend one reset. This does not switch accounts, and auto-switch
+never spends resets. Availability comes from Claude and can change. If a result is unconfirmed,
+open **Resets…** again to check it; AccountDeck does not repeat the claim.
+
 **Auto-switch:** This applies to Claude Code only. It starts on and needs at least two saved
 accounts. It moves your terminals when the account in use reaches 95% of its weekly limit or of
 its Fable weekly limit, and it judges the account it moves to by both limits too. One case is

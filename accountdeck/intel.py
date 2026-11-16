@@ -259,6 +259,7 @@ def build_account(acct, *, now, pinned="", tz=None):
     reset_credits = _reset_credits(usage) if known else []
     if acct["provider"] == "claude_cli":
         account.update(excluded=bool(acct.get("excluded")), health=acct.get("health", "ok"),
+                       can_reset=bool(acct.get("can_reset")),
                        live_expired=bool(acct.get("live_expired")))
     if reset_credits:
         account["reset_credits"] = reset_credits

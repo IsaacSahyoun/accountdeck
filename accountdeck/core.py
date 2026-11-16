@@ -339,10 +339,12 @@ CREATE TABLE accounts(id TEXT PRIMARY KEY, provider TEXT NOT NULL, identity TEXT
 
 _TABLES = """
 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, at REAL, kind TEXT, message TEXT);
+CREATE TABLE IF NOT EXISTS reset_boundaries(account TEXT, window_id TEXT, segment INTEGER,
+  PRIMARY KEY(account, window_id));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS snapshots(id INTEGER PRIMARY KEY, account TEXT, at REAL, usage TEXT);
 CREATE TABLE IF NOT EXISTS readings(id INTEGER PRIMARY KEY, account TEXT NOT NULL,
-  window_id TEXT NOT NULL, at REAL NOT NULL, used REAL NOT NULL, reset REAL);
+  window_id TEXT NOT NULL, at REAL NOT NULL, used REAL NOT NULL, reset REAL, segment INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS refills(id INTEGER PRIMARY KEY, account TEXT NOT NULL,
   window_id TEXT NOT NULL, reset_at REAL NOT NULL, confirmed_at REAL NOT NULL, previous_used REAL,
   UNIQUE(account, window_id, reset_at));
@@ -448,7 +450,7 @@ class Store:
 
     def _migrate(self):
         """Create schema v2 in a new folder. One transaction: all or nothing. A schema-v2 database (every
-        AccountDeck 2 build) opens unchanged; an older or newer one is refused before anything changes."""
+        AccountDeck 2 build) gets additive forecast metadata; an older or newer one is refused."""
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
             try:
@@ -464,6 +466,30 @@ class Store:
                     for statement in _statements(_ACCOUNTS + _TABLES):
                         self.db.execute(statement)
                     self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                self.db.execute("CREATE TABLE IF NOT EXISTS reset_boundaries(account TEXT, window_id TEXT, "
+                                "segment INTEGER, PRIMARY KEY(account, window_id))")
+                self.db.execute("CREATE TABLE IF NOT EXISTS reset_attempts(account TEXT, request TEXT, "
+                                "PRIMARY KEY(account, request))")
+                self.db.execute("CREATE TABLE IF NOT EXISTS reset_applied(account TEXT, request TEXT, window_id TEXT, "
+                                "PRIMARY KEY(account, request, window_id))")
+                if "verified" not in {row[1] for row in self.db.execute("PRAGMA table_info(reset_attempts)")}:
+                    self.db.execute("ALTER TABLE reset_attempts ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
+                    # Legacy markers guarded the whole request, including every existing boundary.
+                    # Preserve that guard without claiming that its usage write completed.
+                    self.db.execute("INSERT OR IGNORE INTO reset_applied(account, request, window_id) "
+                                    "SELECT a.account, a.request, b.window_id FROM reset_attempts a "
+                                    "JOIN reset_boundaries b ON b.account=a.account")
+                if "segment" not in {row[1] for row in self.db.execute("PRAGMA table_info(readings)")}:
+                    self.db.execute("ALTER TABLE readings ADD COLUMN segment INTEGER NOT NULL DEFAULT 0")
+                if "window_meta" not in {row[1] for row in self.db.execute("PRAGMA table_info(readings)")}:
+                    self.db.execute("ALTER TABLE readings ADD COLUMN window_meta TEXT")
+                has_proofs = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reset_proofs'").fetchone()
+                self.db.execute("CREATE TABLE IF NOT EXISTS reset_proofs(provider TEXT, identity TEXT, org TEXT, request TEXT, "
+                                "PRIMARY KEY(provider, identity, org, request))")
+                if not has_proofs:
+                    self.db.execute("INSERT OR IGNORE INTO reset_proofs "
+                                    "SELECT a.provider, a.identity, a.org, r.request FROM reset_attempts r "
+                                    "JOIN accounts a ON a.id=r.account WHERE r.verified=1")
                 self.db.commit()
             except BaseException:
                 self.db.rollback()
@@ -491,9 +517,10 @@ class Store:
         return _account(row) if row else None
 
     def save_account(self, provider, identity, label, email="", plan="", org="", *,
-                     imported_from=None, owner="v2"):
+                     imported_from=None, owner="v2", only_new=False):
         """Add an account, or refresh email/plan/org of the saved one with the same identity (its
-        label, owner and position stay). Returns the account id."""
+        label, owner and position stay). With only_new, an existing identity is refused without writes.
+        Returns the account id."""
         if owner not in OWNERS:
             raise ValueError(f"Invalid account owner {owner!r}")
         if self.clients is not None and provider not in self.clients:
@@ -503,6 +530,8 @@ class Store:
             old = self.db.execute("SELECT id FROM accounts WHERE provider=? AND identity=?",
                                   (provider, identity)).fetchone()
             if old:
+                if only_new:
+                    raise DeckError("This account was saved by another action. Try again.", "busy")
                 self.db.execute("UPDATE accounts SET email=?, plan=?, org=?, updated=? WHERE id=?",
                                 (email, plan, org, now, old["id"]))
                 self.db.commit()
@@ -552,14 +581,14 @@ class Store:
             if self._foreign(key):
                 return
             self.db.execute("DELETE FROM accounts WHERE id=?", (key,))
-            for table in ("snapshots", "readings", "refills", "generations", "alerts"):
+            for table in ("snapshots", "readings", "refills", "generations", "alerts", "reset_boundaries", "reset_attempts", "reset_applied"):
                 self.db.execute(f"DELETE FROM {table} WHERE account=?", (key,))
             self.db.commit()
             for kept in [kept for kept in self._taken if kept[0] == key]:
                 del self._taken[kept]
 
     # ---- readings ----
-    def observe(self, key, usage, *, at=None):
+    def observe(self, key, usage, *, at=None, reset=None):
         """Persist a successful reading: the account's last good reading, one `readings` row per
         window with a known percentage (kept 7 days for pace, trend and history) and at most one
         v1-style snapshot per quarter hour (kept 90 days). Clears the account's error. This is the one way a
@@ -579,22 +608,45 @@ class Store:
         with self.lock:
             now = self.clock()
             at = now if at is None else at
-            rows = [(key, window["id"], at, window["used"], window.get("reset"))
+            rows = [(key, window["id"], at, window["used"], window.get("reset"),
+                     _encode({name: window[name] for name in ("kind", "model", "scope") if name in window}))
                     for window in usage.get("windows") or ()
                     if isinstance(window, dict) and isinstance(window.get("id"), str) and _is_number(window.get("used"))]
             if self._foreign(key):
                 return
-            self.db.execute("UPDATE accounts SET last_good_usage=?, last_good_at=?, error=NULL, error_code=NULL "
-                            "WHERE id=?", (payload, at, key))
-            self.db.executemany("INSERT INTO readings(account, window_id, at, used, reset) VALUES(?, ?, ?, ?, ?)", rows)
-            last = self.db.execute("SELECT MAX(at) FROM snapshots WHERE account=?", (key,)).fetchone()[0]
-            if last is None or at - last >= SNAPSHOT_EVERY:
-                self.db.execute("INSERT INTO snapshots(account, at, usage) VALUES(?, ?, ?)", (key, at, payload))
-            self.db.execute("DELETE FROM snapshots WHERE at < ?", (now - _SNAPSHOT_DAYS * _DAY,))
-            self.db.execute("DELETE FROM readings WHERE at < ?", (now - _READING_DAYS * _DAY,))
-            self.db.commit()
+            applied = set()
+            try:
+                update = "UPDATE accounts SET last_good_usage=?, last_good_at=?, error=NULL, error_code=NULL WHERE id=?"
+                values = (payload, at, key)
+                if reset is not None:
+                    request, windows, owner = reset
+                    update += " AND provider=? AND identity=? AND org IS ?"
+                    values += tuple(owner[name] for name in ("provider", "identity", "org"))
+                changed = self.db.execute(update, values)
+                if reset is not None:
+                    if changed.rowcount != 1:
+                        raise DeckError("The account changed during reset verification. No usage was saved.", "identity")
+                    applied = self._start_reset_segment(key, windows, request)
+                    self.db.execute("UPDATE reset_attempts SET verified=1 WHERE account=? AND request=?", (key, request))
+                    self.db.execute("INSERT OR IGNORE INTO reset_proofs "
+                                    "SELECT provider, identity, org, ? FROM accounts WHERE id=?", (request, key))
+                self.db.executemany("INSERT INTO readings(account, window_id, at, used, reset, window_meta, segment) "
+                                    "VALUES(?, ?, ?, ?, ?, ?, COALESCE((SELECT segment FROM reset_boundaries "
+                                    "WHERE account=? AND window_id=?), 0))",
+                                    [(*row, row[0], row[1]) for row in rows])
+                last = self.db.execute("SELECT MAX(at) FROM snapshots WHERE account=?", (key,)).fetchone()[0]
+                if last is None or at - last >= SNAPSHOT_EVERY:
+                    self.db.execute("INSERT INTO snapshots(account, at, usage) VALUES(?, ?, ?)", (key, at, payload))
+                self.db.execute("DELETE FROM snapshots WHERE at < ?", (now - _SNAPSHOT_DAYS * _DAY,))
+                self.db.execute("DELETE FROM readings WHERE at < ?", (now - _READING_DAYS * _DAY,))
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
+            for window in applied:
+                self._taken.pop((key, window), None)
             self._takes += 1
-            for _, window, _, used, reset in rows:
+            for _, window, _, used, reset, _meta in rows:
                 kept = self._taken.setdefault((key, window), collections.deque(maxlen=TAKEN_KEPT))
                 kept.append((self._takes, min(at, now), used, reset))
 
@@ -602,8 +654,39 @@ class Store:
         """[{"at", "used", "reset"}] of one window, oldest first."""
         with self.lock:
             rows = self.db.execute("SELECT at, used, reset FROM readings WHERE account=? AND window_id=? AND at>=? "
-                                   "ORDER BY at, id", (key, window, since or 0)).fetchall()
+                                   "AND segment = COALESCE((SELECT segment FROM reset_boundaries WHERE account=? AND window_id=?), 0) "
+                                   "ORDER BY at, id", (key, window, since or 0, key, window)).fetchall()
         return [dict(row) for row in rows]
+
+    def _start_reset_segment(self, key, windows, request):
+        # Replacement rows keep local samples. Import archives samples without reset provenance.
+        if request and self.reset_verified(key, request) and not self.db.execute(
+                "SELECT 1 FROM reset_attempts WHERE account=? AND request=?", (key, request)).fetchone():
+            return set()
+        applied = set(windows)
+        if request:
+            applied.difference_update(row[0] for row in self.db.execute(
+                "SELECT window_id FROM reset_applied WHERE account=? AND request=?", (key, request)))
+        self.db.executemany("INSERT INTO reset_boundaries VALUES(?, ?, 1) "
+                            "ON CONFLICT(account, window_id) DO UPDATE SET segment=segment+1",
+                            [(key, window) for window in applied])
+        if request:
+            self.db.execute("INSERT OR IGNORE INTO reset_attempts(account, request) VALUES(?, ?)", (key, request))
+            self.db.executemany("INSERT INTO reset_applied VALUES(?, ?, ?)",
+                                [(key, request, window) for window in applied])
+        return applied
+
+    def reading_windows(self, key):
+        """Retained window identities, including their original semantic scope when recorded."""
+        with self.lock:
+            rows = self.db.execute("SELECT DISTINCT window_id, window_meta FROM readings WHERE account=?", (key,)).fetchall()
+        return [dict(json.loads(row[1]) if row[1] else {}, id=row[0]) for row in rows]
+
+    def reset_verified(self, key, request):
+        with self.lock:
+            return self.db.execute("SELECT 1 FROM reset_proofs p JOIN accounts a ON a.provider=p.provider "
+                                   "AND a.identity=p.identity AND a.org=p.org WHERE a.id=? AND p.request=?",
+                                   (key, request)).fetchone() is not None
 
     def reading_mark(self):
         """A mark for `taken`: how many times this run of the app has stored a read so far (`observe`), of any

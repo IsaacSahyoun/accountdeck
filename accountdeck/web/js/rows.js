@@ -75,7 +75,7 @@
       return { ...off, label: T.signIn, run: () => (cli ? AD.terminal.add() : AD.switch.openPurpose(account.provider, 'add')) };
     }
     if (account.active || !account.switchable) return null;
-    const target = !!state.pending && state.pending.account === account.id;
+    const target = !!state.pending && state.pending.kind === 'switch' && state.pending.account === account.id;
     // A terminal switch may start at once; the other clients always show the plan first.
     return { ...off, label: target ? STRINGS.shell.switching : (cli ? T.switch : T.switchReview),
       run: () => AD.switch.open(account.id), prominent: ctx.nextId === account.id || ctx.bestId === account.id };
@@ -89,6 +89,7 @@
     const cli = isTerminal(account);
     const locked = cli && account.active && !A.needsSignin(account);
     return [
+      cli && account.can_reset ? { label: 'Resets…', icon: 'clock', run: () => AD.resets.open(account.id) } : null,
       cli ? { label: account.excluded ? M.include : M.leaveOut, icon: account.excluded ? 'plus-circle' : 'minus-circle',
         run: () => AD.terminal.exclude(account) } : null,
       { label: M.rename, icon: 'pencil', run: () => rename(account) },

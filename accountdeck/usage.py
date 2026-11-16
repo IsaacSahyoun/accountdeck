@@ -135,11 +135,13 @@ def _from_keys(raw):
     """The ids of the limits that came from a named key of Claude's answer, read from a reading's
     `raw_windows`. That list has every number of the answer under the place it came from: a named key under
     its own name, which is its limit's id too, and a list entry under "limits[n].kind.model". A list
-    entry that has a named key's id took that key's place (`claude_usage`), so that id is the list's. This
+    numeric entry that has a named key's id took that key's place (`claude_usage`), so that id is the list's. This
     build and the 2.0.0 build save `raw_windows` with every reading. A reading without it names no key,
     and `_one_per_model` then leaves every limit in."""
-    keys = [entry["key"] for entry in raw or () if isinstance(entry, dict) and isinstance(entry.get("key"), str)]
-    listed = {"seven_day_" + key.rpartition(".")[2] for key in keys if key.startswith("limits[")}
+    entries = [entry for entry in raw or () if isinstance(entry, dict) and isinstance(entry.get("key"), str)]
+    keys = [entry["key"] for entry in entries]
+    listed = {entry.get("limit_id") or "seven_day_" + entry["key"].rpartition(".")[2]
+              for entry in entries if entry["key"].startswith("limits[") and number(entry.get("used")) is not None}
     return {key for key in keys if not key.startswith("limits[")} - listed
 
 
@@ -147,15 +149,18 @@ def claude_usage(data, *, now=None):
     """Claude's limits are weekly. It dropped its 5-hour limit, so a number an answer still carries for one
     stays in ``raw_windows`` and becomes no window: nothing shows it, counts it or switches on it. A reading
     saved before that goes through `saved_reading`."""
-    windows, raw, structured = [], [], {}
+    windows, raw, structured = [], [], set()
     for key, value in data.items():
         described = classify_key(key, value)
+        if described is None and (key.startswith("seven_day") or key == "five_hour" or key in _OTHER_KEYS):
+            described = classify_key(key, {"utilization": 0})
         if described is None:
             continue
         kind, label, short, model, _primary = described
+        value = value if isinstance(value, dict) else {}
         used, reset = _percent(value), timestamp(value.get("resets_at"))
         raw.append({"key": key, "used": used, "reset": reset})
-        if kind == "session":
+        if used is None or kind == "session":
             continue
         windows.append(_window(key, kind, label, short, model, _describe(key)[4], used, reset,
                                scope=model if kind == "model" else key if kind == "other" else None))
@@ -163,30 +168,29 @@ def claude_usage(data, *, now=None):
         if not isinstance(limit, dict):
             continue
         used = _float(limit.get("percent", limit.get("utilization")))
-        if used is None:
-            continue
         reset = timestamp(limit.get("resets_at"))
         wid, raw_key, (kind, label, short, model, minutes) = _limit_shape(index, limit)
-        raw.append({"key": raw_key, "used": used, "reset": reset})
-        if kind == "session":
+        raw.append({"key": raw_key, "limit_id": wid, "kind": kind, "model": model, "used": used, "reset": reset})
+        if used is None or kind == "session":
             continue
+        scope = model if kind == "model" else wid if kind == "other" else None
         if wid in structured:
-            if (used, reset) in structured[wid]:
-                continue
-            structured[wid].append((used, reset))
             wid = _unique(wid, windows)
         else:
             # The structured entry replaces its legacy alias, even when the asynchronously
             # updated percentages differ slightly.
             windows = [w for w in windows if w["id"] != wid]
-            structured[wid] = [(used, reset)]
+            structured.add(wid)
         severity = limit.get("severity")
         active = limit.get("is_active")
         windows.append(_window(wid, kind, label, short, model, minutes, used, reset,
-                               group=_text(limit.get("group")), scope=model,
+                               group=_text(limit.get("group")), scope=scope,
                                severity_hint=severity if isinstance(severity, str) else None,
                                is_active=active if isinstance(active, bool) else None))
-    return {"checked": time.time() if now is None else now, "windows": _shown(_one_per_model(windows, _from_keys(raw))),
+    normalized = _one_per_model(windows, _from_keys(raw))
+    shown = _shown(normalized)
+    unstarted = [w for w in normalized if w not in shown]
+    return {"checked": time.time() if now is None else now, "windows": shown, "unstarted_windows": unstarted,
             "raw_windows": raw, "credits": _claude_credits(data), "reset_credits": [], "tokens": None}
 
 

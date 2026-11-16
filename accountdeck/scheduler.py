@@ -77,7 +77,8 @@ class RequestGovernor:
     def __init__(self, *, per_hour=PER_HOUR, spacing=SPACING, urgent_spacing=URGENT_SPACING):
         self.per_hour, self.spacing, self.urgent_spacing = per_hour, spacing, urgent_spacing
         self._sent: dict[str, deque] = {}
-        self._lock = threading.Lock()
+        self._background_until = {}
+        self._lock = threading.RLock()
 
     def delay(self, key, now, *, urgent=False) -> float:
         """Seconds until a request for `key` may go (0: now)."""
@@ -102,6 +103,25 @@ class RequestGovernor:
     def record(self, key, now) -> None:
         with self._lock:
             self._sent.setdefault(key, deque()).append(now)
+
+    def reserve(self, key, now, count, *, paced=False, urgent=False, leave=0, hold=0):
+        """Reserve a request batch atomically; background reads also respect the spacing."""
+        with self._lock:
+            if paced:
+                wait = max(self.delay(key, now, urgent=urgent), self._background_until.get(key, 0) - now)
+                if wait > 0:
+                    return wait
+            sent = self._sent.setdefault(key, deque())
+            while sent and sent[0] <= now - HOUR:
+                sent.popleft()
+            excess = len(sent) + count + leave - self.per_hour
+            wait = max(0.0, sent[excess - 1] + HOUR - now) if 0 < excess <= len(sent) else HOUR if excess > 0 else 0
+            if leave:
+                self._background_until[key] = now + wait + hold
+            if wait:
+                return wait
+            sent.extend([now] * count)
+            return 0.0
 
 
 @dataclass
@@ -208,11 +228,15 @@ class RefreshScheduler:
                 plan = self._plans[target.id]
                 if plan.running or target.provider in self._helper_reads:
                     continue
+                if target.provider == "claude_cli":
+                    wait = self.governor.reserve(governor_key(target), now, 1,
+                                                 paced=True, urgent=target.active and target.hot)
+                    if wait:
+                        plan.next = now + wait
+                        continue
                 plan.running = True
                 if target.provider in self._helpers:
                     self._helper_reads.add(target.provider)
-            if target.provider == "claude_cli":
-                self.governor.record(governor_key(target), now)
             started.append(target.id)
             if self.inline:
                 self._read(target, clock)

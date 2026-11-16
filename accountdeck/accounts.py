@@ -102,7 +102,7 @@ class AccountService:
             raise FrozenAccountError(existing)
         if existing is None:
             key = self.store.save_account(provider, info["identity"], label or default_label(info.get("email"), provider),
-                                          info.get("email", ""), info.get("plan", ""), info.get("org", ""), owner=owner)
+                                          info.get("email", ""), info.get("plan", ""), info.get("org", ""), owner=owner, only_new=True)
             try:
                 digest = self.vault.put(key, profile)
             except BaseException:

@@ -109,6 +109,33 @@ class DemoCLI(ClaudeCLI):
         super().__init__(paths, clock=clock)
         self.timelines = {key: Timeline(script, clock) for key, script in scripts.items()}
         self.ids = ids
+        self.reset_counts = {}
+        self.reset_expires = clock() + 30 * 86400
+
+    def reset_profile(self, credentials):
+        who = self.resolve_account(credentials)
+        who["organizationUuid"] = str(uuid.uuid5(NAMESPACE, who["accountUuid"] + "/org"))
+        return who
+
+    def reset_status(self, credentials):
+        token = credentials["claudeAiOauth"]["accessToken"]
+        counts = self.reset_counts.setdefault(token, [1, 1])
+        grants = [{"id": "demo-" + kind, "resets_left": count, "paused": False, "usable_now": bool(count),
+                   "use_requires_limit": False, "gives_back_weekly": kind == "fable",
+                   "clears": ["seven_day_overage_included"] if kind == "fable"
+                   else ["seven_day", "seven_day_overage_included"],
+                   "ends_at": self.reset_expires}
+                  for kind, count in zip(("fable", "full"), counts)]
+        return {"eligible": True, "event_props": {"tier": "claude_max_20x"}, "grants": grants,
+                "next_grant_id": next((g["id"] for g in grants if g["resets_left"]), None)}
+
+    def redeem_reset(self, credentials, org, grant, request_id):
+        counts = self.reset_counts[credentials["claudeAiOauth"]["accessToken"]]
+        index = ("demo-fable", "demo-full").index(grant)
+        if not counts[index]:
+            return {"result": "already_used"}
+        counts[index] -= 1
+        return {"result": "reset"}
 
     def resolve_account(self, credentials, *, timeout=None):
         key = credentials["claudeAiOauth"]["accessToken"].removeprefix("demo-access-")
@@ -117,7 +144,14 @@ class DemoCLI(ClaudeCLI):
     def usage(self, credentials):
         key = credentials["claudeAiOauth"]["accessToken"].removeprefix("demo-access-")
         data = self.timelines[key].current()
-        return claude_usage(data, now=self.clock())
+        usage = claude_usage(data, now=self.clock())
+        counts = self.reset_counts.get(credentials["claudeAiOauth"]["accessToken"], [1, 1])
+        for window in usage["windows"]:
+            if counts[1] == 0 and window["kind"] == "weekly":
+                window["used"] = 0.0
+            elif counts[0] == 0 and window["kind"] == "weekly" and window["used"] is not None:
+                window["used"] /= 2
+        return usage
 
     def refresh(self, credentials, *, timeout=None):
         result = copy.deepcopy(credentials)
@@ -448,7 +482,8 @@ class _Builder:
         key = account["id"]
         credentials = {"claudeAiOauth": {"accessToken": "demo-access-" + key,
             "refreshToken": "demo-refresh-" + key, "expiresAt": (self.base + 8 * 3600) * 1000,
-            "subscriptionType": "max", "scopes": ["user:profile"]}, "trustedDeviceToken": "demo-device-" + key}
+            "subscriptionType": "max", "rateLimitTier": "default_claude_max_20x",
+            "scopes": ["user:profile"]}, "trustedDeviceToken": "demo-device-" + key}
         return cli_profile(credentials, {"accountUuid": self.ids[key], "emailAddress": account["email"],
                            "organizationUuid": self._org(self.ids[key])}, self.base)
 

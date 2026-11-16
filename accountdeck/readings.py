@@ -3,11 +3,11 @@ client the account belongs to."""
 from . import intel
 
 
-def record(store, key, usage):
+def record(store, key, usage, *, reset=None):
     """Stores a successful reading, dated by its own `checked` time, and records the refills it shows against
     the reading the account had before it."""
     previous = (store.account(key) or {}).get("last_good_usage")
-    store.observe(key, usage, at=usage.get("checked"))
+    store.observe(key, usage, at=usage.get("checked"), **({"reset": reset} if reset is not None else {}))
     refills(store, key, previous, usage)
 
 

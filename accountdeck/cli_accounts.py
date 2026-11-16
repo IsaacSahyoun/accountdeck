@@ -248,7 +248,7 @@ class CLIAccounts:
                 else:
                     incoming["label"] = incoming["email"].partition("@")[0] or "Terminal account"
                 key = old["id"] if old else self.store.save_account("claude_cli", incoming["identity"], incoming["label"],
-                          incoming["email"], incoming["plan"], incoming["organizationUuid"])
+                          incoming["email"], incoming["plan"], incoming["organizationUuid"], only_new=True)
                 try:
                     digest = self.vault.put(key, incoming)
                 except BaseException:
@@ -518,8 +518,11 @@ class CLIAccounts:
     def read(self, key):
         """Reads one terminal account under its lock."""
         with self.engine.scheduler.account_lock(key):
-            if is_frozen(self.store.account(key)):
+            row = self.store.account(key)
+            if row is None or is_frozen(row):
                 return "skipped"
+            if (row["paused_until"] or 0) > self.clock():
+                return "rate_limited"
             return self._read(key)
 
     def _read(self, key):

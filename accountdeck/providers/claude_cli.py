@@ -111,6 +111,26 @@ class ClaudeCLI:
         return {"accountUuid": account.get("uuid"), "emailAddress": account.get("email", account.get("email_address", "")),
                 "organizationUuid": org.get("uuid", "")}
 
+    def reset_profile(self, credentials):
+        data, _ = self.http("GET", OAUTH_PROFILE_URL, token=oauth(credentials)["accessToken"], reset_api=True)
+        if not isinstance(data, dict) or not isinstance(data.get("account"), dict) or not isinstance(data.get("organization"), dict):
+            raise DeckError("Claude could not confirm this reset's account.", "identity")
+        return {"accountUuid": data["account"].get("uuid"), "organizationUuid": data["organization"].get("uuid")}
+
+    def reset_status(self, credentials):
+        from .claude_resets import STATUS_URL
+        data, _ = self.http("GET", STATUS_URL, token=oauth(credentials)["accessToken"], reset_api=True)
+        return data.get("cedar_ember") if isinstance(data, dict) else None
+
+    def redeem_reset(self, credentials, organization, grant, request_id):
+        from .claude_resets import IDS, UUID
+        if not UUID.fullmatch(organization) or not IDS.fullmatch(grant) or not UUID.fullmatch(request_id):
+            raise DeckError("The reset request is incomplete. Check the offers again.", "invalid")
+        data, _ = self.http("POST", f"https://api.anthropic.com/api/organizations/{organization}/reset_rate_limits",
+                            token=oauth(credentials)["accessToken"], reset_api=True, timeout=25,
+                            json_body={"program": "cedar_ember", "grant_id": grant, "request_id": request_id})
+        return data
+
     def refresh(self, credentials, *, timeout=8):
         old = oauth(credentials)
         data, _ = self.http("POST", TOKEN_URL, json_body={"grant_type": "refresh_token",

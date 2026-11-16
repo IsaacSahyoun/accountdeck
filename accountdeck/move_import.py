@@ -75,10 +75,13 @@ NO_CODE = ("There is no confirmation code, because the code covers every account
            "its accounts: use Cancel move there.")
 REASONS = {
     "identity": "Its sign-in in the bundle belongs to another account.",
+    "organization": "This account is saved for a different organization.",
+    "bundle_organization": "The account and sign-in in this bundle name different organizations.",
     "damaged": "Its sign-in in the bundle is damaged.",
     "unsupported": "Its sign-in comes from an AccountDeck version this one cannot read.",
     "conflict": "Another account saved here holds this sign-in.",
     "not_waiting": "It is not waiting for a hand-over on this Mac.",
+    "busy": "Another action is using this account.",
     "unsaved": "It could not be saved here.",
     "history": "Its sign-in was saved, but its usage history could not be copied.",
 }
@@ -86,7 +89,7 @@ ON_PC_ALLOWED = frozenset({"rename", "remove"})       # the only actions that ma
 OUTCOMES = ("new", "updated", "filled", "kept", "on_pc", "left_out", "failed")
 _NOTES = {"new": "Brought over.", "updated": "Already here; it now has the newer sign-in from the PC.",
           "filled": "Its sign-in from the PC is now saved here.", "kept": "Already here; the newer sign-in here is kept.",
-          "on_pc": "Still signed in on the PC: listed here with its history, without its sign-in.",
+          "on_pc": "Still signed in on the PC. Its sign-in is needed before this Mac can refresh usage.",
           "left_out": f"Left out. {LEFT_OUT}"}
 _NO_HISTORY = " Its usage history could not be copied."
 
@@ -119,6 +122,17 @@ def open_file(path, passphrase, *, paths, expect_kind=None):
 
 # ---- planning (shared by the preview and the import) ----
 
+def _organization_conflict(vault, row, account):
+    if row is None or account["provider"] != "claude_cli" or row["org"] == account["org"]:
+        return False
+    if row["org"] and not account["org"]:
+        return "secret" in account and (row["owner"] == ON_PC or not vault.path(row["id"]).exists())
+    if not row["org"] and row["owner"] != ON_PC:
+        return False
+    return not (row["owner"] == ON_PC and not row["org"] and "secret" in account
+                and not vault.path(row["id"]).exists())
+
+
 def _plan(engine, header, payload, ledger_entry):
     """[(account, row here or None, action, reason)] in bundle order. action: "new", "update", "on_pc"
     (listed without a sign-in), "fill" (a waiting "on_pc" row gets its sign-in), "refused" (a hand-over
@@ -132,6 +146,9 @@ def _plan(engine, header, payload, ledger_entry):
             plan.append((account, None, "left_out", LEFT_OUT))
             continue
         row = engine.store.find(account["provider"], account["identity"])
+        if _organization_conflict(engine.vault, row, account):
+            plan.append((account, row, "refused", REASONS["organization"]))
+            continue
         if header.kind == "handover":
             if row is not None and row["owner"] == ON_PC:
                 plan.append((account, row, "fill", None))
@@ -193,13 +210,19 @@ def preview(engine, path, passphrase):
     return {"bundle_id": header.bundle_id, "kind": header.kind, "created": header.created,
             "source_platform": payload["source_platform"], "accounts": accounts, "counts": counts,
             "refused": refused, "settings": settings,
-            "message": _preview_message(header.kind, counts, refused, settings)}
+            "message": _refusal_message(plan, preview=True) if refused else _preview_message(header.kind, counts, settings)}
 
 
-def _preview_message(kind, counts, refused, settings):
-    if refused:
-        return (f"{_count(counts['refused'], 'account')} in this hand-over bundle {_verb(counts['refused'], 'is')} "
-                "not waiting on this Mac. Import the main move bundle first; nothing will be imported.")
+def _refusal_message(plan, *, preview=False):
+    reasons = [reason for _account, _row, action, reason in plan if action == "refused"]
+    ending = "Nothing will be imported." if preview else "Nothing was imported."
+    if all(reason == REASONS["not_waiting"] for reason in reasons):
+        return (f"{_count(len(reasons), 'account')} in this hand-over bundle {_verb(len(reasons), 'is')} "
+                f"not waiting on this Mac. Import the main move bundle first. {ending}")
+    return " ".join(dict.fromkeys(reasons)) + " " + ending
+
+
+def _preview_message(kind, counts, settings):
     parts = []
     if kind == "handover":
         total = counts["fill"] + counts["update"]
@@ -236,8 +259,7 @@ class ImportBundle(Operation):
         plan = _plan(engine, header, payload, _ledger(engine).entry(header.bundle_id))
         refused = sum(1 for _account, _row, action, _reason in plan if action == "refused")
         if refused:
-            raise DeckError(f"{_count(refused, 'account')} in this hand-over bundle {_verb(refused, 'is')} not waiting "
-                            "on this Mac. Import the main move bundle first. Nothing was imported.", "invalid")
+            raise DeckError(_refusal_message(plan), "invalid")
         steps = [(f"account-{number}", f"{'Leaving out' if action == 'left_out' else 'Bringing over'} {_label(account)}")
                  for number, (account, _row, action, _reason) in enumerate(plan, 1)]
         super().__init__(IMPORT_KIND, steps=steps + [("finish", "Finishing the move")])
@@ -267,7 +289,7 @@ class ImportBundle(Operation):
                     counts[outcome] += 1
                     if outcome == "failed":
                         failures.append({"label": _label(account), "provider": account["provider"], "reason": reason})
-                        self.note(f"Not imported. {reason}", status="failed")
+                        self.note(reason if not history else f"Not imported. {reason}", status="failed")
                         continue
                     stored.add(account["id"])
                     mapping[account["id"]] = key
@@ -317,7 +339,7 @@ class _Importer:
     def bring_over(self, account):
         self.created = None
         try:
-            outcome, key = self._save(account)
+            outcome, key, history = self._save(account)
         except SafetyViolation:
             raise
         except _Refused as exc:
@@ -328,13 +350,8 @@ class _Importer:
             log("move.import_account", "warning", provider=account["provider"], result="failed",
                 error_type=type(exc).__name__, code=getattr(exc, "code", None))
             self._forget()
-            return "failed", None, REASONS["unsaved"], True
-        history = True
-        try:
-            _copy_history(self.store, key, account, self.clock())
-        except Exception as exc:
-            history = False
-            log("move.import_history", "warning", acct=account_ref(key), error_type=type(exc).__name__)
+            reason = "busy" if getattr(exc, "code", None) == "busy" else "unsaved"
+            return "failed", None, REASONS[reason], True
         log("move.import_account", acct=account_ref(key), provider=account["provider"], result=outcome)
         self.engine.bump()
         if not history:
@@ -355,35 +372,51 @@ class _Importer:
     def _save(self, account):
         provider = account["provider"]
         row = self.store.find(provider, account["identity"])
-        if "secret" not in account:                       # still signed in on the PC: a listing only
-            if row is None:
-                key = self._create(account)
-                flags = {"restorable": False, **({"excluded": True} if provider == "claude_cli" else {})}
-                self.store.update(key, flags=flags)
-                return "on_pc", key
-            self._refresh_metadata(row, account)
-            return ("on_pc" if row["owner"] == ON_PC else "kept"), row["id"]
         if row is None:
-            # A new row stays "on_pc" (never read) until its sign-in is stored, so an interruption never
-            # leaves a "v2" row without one.
-            key = self._create(account)
-            self.store.update(key, flags={"restorable": False})
+            # A new row is on_pc until its sign-in is stored, so readers cannot use it yet.
+            row = self.store.account(self._create(account))
+        key = row["id"]
+        with _account_lock(self.engine, key):
             row = self.store.account(key)
-        else:
-            self._refresh_metadata(row, account)
-            row = self.store.account(row["id"])
-        waiting = row["owner"] == ON_PC
-        with _account_lock(self.engine, row["id"]):
-            outcome = self._terminal(row, account) if provider == "claude_cli" else self._codex(row, account)
-            if waiting:
-                self.store.update(row["id"], owner="v2")
+            if row is None:
+                raise _Refused("unsaved")
+            outcome = self._save_locked(row, account)
+            history = True
+            try:
+                _copy_history(self.store, key, account, self.clock())
+            except Exception as exc:
+                history = False
+                log("move.import_history", "warning", acct=account_ref(key), error_type=type(exc).__name__)
+        return outcome, key, history
+
+    def _save_locked(self, row, account):
+        provider = account["provider"]
+        if _organization_conflict(self.vault, row, account):
+            raise _Refused("organization")
+        if "secret" not in account:                       # still signed in on the PC: a listing only
+            if self.created is not None:
+                flags = {"restorable": False, **({"excluded": True} if provider == "claude_cli" else {})}
+                self.store.update(row["id"], flags=flags)
+                return "on_pc"
+            if row["owner"] == ON_PC:
+                self._refresh_metadata(row, account)
+            return "on_pc" if row["owner"] == ON_PC else "kept"
         if self.created is not None:
-            return "new", row["id"]
-        return ("filled" if waiting else outcome), row["id"]
+            self.store.update(row["id"], flags={"restorable": False})
+        row = self.store.account(row["id"])
+        waiting = row["owner"] == ON_PC
+        outcome = self._terminal(row, account) if provider == "claude_cli" else self._codex(row, account)
+        if provider != "claude_cli" and outcome != "kept":
+            self._refresh_metadata(row, account)
+        if waiting:
+            self.store.update(row["id"], owner="v2")
+        if self.created is not None:
+            return "new"
+        return "filled" if waiting else outcome
 
     def _create(self, account):
         key = self.store.save_account(account["provider"], account["identity"], _label(account), account["email"],
-                                      account["plan"], account["org"], imported_from=IMPORTED_FROM, owner=ON_PC)
+                                      account["plan"], account["org"], imported_from=IMPORTED_FROM, owner=ON_PC, only_new=True)
         self.created = key
         return key
 
@@ -398,20 +431,33 @@ class _Importer:
         with cli.mutex, cli.key_lock(key):
             previous = _vault_record(self.vault, key)
             if isinstance(previous, dict) and previous.get("identity") == row["identity"]:
-                if previous.get("credentials") == record.get("credentials") and previous.get("health") == record["health"]:
-                    return "kept"
-                if self.engine.active_identity.get("claude_cli") == row["identity"]:
-                    return "kept"            # the login the terminals use here is the one to keep
+                previous_org = previous.get("organizationUuid", "")
+                if previous_org != row["org"] and (row["org"] or previous_org != record["organizationUuid"]):
+                    raise _Refused("organization")
                 healthier = record["health"] == "ok" and previous.get("health") != "ok"
-                if not healthier and (_terminal_time(previous) >= _terminal_time(record) or record["health"] != "ok"):
-                    return "kept"
+                keep = (previous.get("credentials") == record.get("credentials") and previous.get("health") == record["health"]
+                        or self.engine.active_identity.get("claude_cli") == row["identity"]
+                        or not healthier and (_terminal_time(previous) >= _terminal_time(record) or record["health"] != "ok")
+                        or row["org"] and not record["organizationUuid"])
+                if keep:
+                    if previous_org == row["org"]:
+                        return "kept"
+                    record = copy.deepcopy(previous)
                 record["excluded"] = bool(previous.get("excluded", record["excluded"]))
-            digest = self.vault.put(key, record)
+            if row["org"] and not record["organizationUuid"]:
+                raise _Refused("organization")
             healthy = record["health"] == "ok"
             flags = dict(self.store.account(key)["flags"])
             flags.update(restorable=healthy, health=record["health"], excluded=record["excluded"], live_expired=False)
-            self.store.update(key, flags=flags, credential_state="fresh" if healthy else "reauth_required", error=None,
-                              error_code=None, expires_at=cli_expires(record["credentials"]) if healthy else None)
+            metadata = dict(flags=flags, credential_state="fresh" if healthy else "reauth_required", error=None,
+                            error_code=None, expires_at=cli_expires(record["credentials"]) if healthy else None,
+                            email=record["email"], plan=record["plan"], org=record["organizationUuid"])
+            empty_listing = row["owner"] == ON_PC and not self.vault.path(key).exists()
+            if empty_listing:
+                self.store.update(key, **metadata)
+            digest = self.vault.put(key, record)
+            if not empty_listing:
+                self.store.update(key, **metadata)
             self.store.record_generation(key, digest, source=GENERATION_SOURCE, health=record["health"])
         return "updated"
 
@@ -448,9 +494,13 @@ def _terminal_record(account, row, now):
         raise _Refused("damaged")
     if record["identity"] != row["identity"]:
         raise _Refused("identity")
+    if record.get("organizationUuid", "") != account["org"]:
+        raise _Refused("bundle_organization")
     oauth = record.get("oauthAccount")
     if oauth is not None and (not isinstance(oauth, dict) or oauth.get("accountUuid", row["identity"]) != row["identity"]):
         raise _Refused("identity")
+    if isinstance(oauth, dict) and oauth.get("organizationUuid", account["org"]) != account["org"]:
+        raise _Refused("bundle_organization")
     record = copy.deepcopy(record)
     record.pop("refresh_attempt", None)
     health = record.get("health", "ok")
@@ -595,6 +645,12 @@ class _LedgerStore:
             return found
 
 
+def _failure_hint(failures):
+    if all(item.get("reason") in {REASONS["busy"], REASONS["history"]} for item in failures):
+        return "Import the same bundle again."
+    return CANCEL_HINT
+
+
 def _entry_public(entry):
     """An import as the state and the action result show it; the PC-to-Mac id mapping stays inside."""
     failures = [dict(item) for item in entry.get("failures") or []]
@@ -607,7 +663,7 @@ def _entry_public(entry):
         message = f"{_count(len(failures), 'account')} could not be imported. {_left_out(counts['left_out'], 'was')} {NO_CODE}"
     elif failures:
         message = (f"{_count(len(failures), 'account')} could not be imported, so there is no confirmation code. "
-                   f"{CANCEL_HINT}")
+                   f"{_failure_hint(failures)}")
     elif counts["left_out"]:
         saved = sum(counts[key] for key in ("new", "updated", "filled", "kept", "on_pc"))
         message = (f"{_left_out(counts['left_out'], 'was')} "
@@ -672,20 +728,43 @@ def start_import(engine, body):
 
 def _copy_history(store, key, account, now):
     """The bundle's readings, snapshots and refills of one account with core.Store's retention, never a
-    row twice, and its last good reading when newer than the one here."""
+    row twice. Without local reset proof, a newer last-good reading can become current."""
     history = account["history"]
+    usage, at = history["last_good_usage"], history["last_good_at"]
     with store.lock:
         try:
-            present = {row[0] for row in store.db.execute("SELECT at FROM snapshots WHERE account=?", (key,))}
+            # Bundles carry no reset provenance. After a verified local reset, their samples
+            # remain history but cannot join this account's current forecast.
+            reset_here = store.db.execute(
+                "SELECT 1 FROM reset_proofs p JOIN accounts a ON a.provider=p.provider "
+                "AND a.identity=p.identity AND (a.org=p.org OR COALESCE(a.org, '')='') WHERE a.id=? LIMIT 1", (key,)).fetchone()
+            local = store.account(key)
+            archive = reset_here or (local["provider"] == "claude_cli" and local["org"] != account.get("org", local["org"]))
+            snapshots = list(history["snapshots"])
+            if archive and usage is not None and at is not None:
+                snapshots.append({"at": at, "usage": usage})
+            snapshots = [item for item in snapshots if item["usage"] is not None and item["at"] >= now - SNAPSHOT_DAYS * _DAY]
+            times = sorted({item["at"] for item in snapshots})
+            present = set()
+            for start in range(0, len(times), 500):
+                batch = times[start:start + 500]
+                slots = ",".join("?" for _ in batch)
+                present.update((row[0], json.dumps(json.loads(row[1]), sort_keys=True)) for row in store.db.execute(
+                    f"SELECT at, usage FROM snapshots WHERE account=? AND at IN ({slots}) AND usage IS NOT NULL", (key, *batch)))
+            new_snapshots = []
+            for item in snapshots:
+                marker = (item["at"], json.dumps(item["usage"], sort_keys=True))
+                if marker not in present:
+                    new_snapshots.append((key, item["at"], _encode(item["usage"])))
+                    present.add(marker)
             store.db.executemany(
-                "INSERT INTO snapshots(account, at, usage) VALUES(?, ?, ?)",
-                [(key, item["at"], _encode(item["usage"])) for item in history["snapshots"]
-                 if item["usage"] is not None and item["at"] >= now - SNAPSHOT_DAYS * _DAY and item["at"] not in present])
+                "INSERT INTO snapshots(account, at, usage) VALUES(?, ?, ?)", new_snapshots)
             present = {(row[0], row[1]) for row in store.db.execute(
                 "SELECT window_id, at FROM readings WHERE account=?", (key,))}
             store.db.executemany(
-                "INSERT INTO readings(account, window_id, at, used, reset) VALUES(?, ?, ?, ?, ?)",
-                [(key, item["window_id"], item["at"], item["used"], item["reset"]) for item in history["readings"]
+                "INSERT INTO readings(account, window_id, at, used, reset, segment) VALUES(?, ?, ?, ?, ?, ?)",
+                [(key, item["window_id"], item["at"], item["used"], item["reset"], -1 if archive else 0)
+                 for item in history["readings"]
                  if item["at"] >= now - READING_DAYS * _DAY and (item["window_id"], item["at"]) not in present])
             store.db.executemany(
                 "INSERT OR IGNORE INTO refills(account, window_id, reset_at, confirmed_at, previous_used) "
@@ -696,11 +775,10 @@ def _copy_history(store, key, account, now):
         except BaseException:
             store.db.rollback()
             raise
-    usage, at = history["last_good_usage"], history["last_good_at"]
-    if usage is not None and at is not None:
-        held = store.account(key)["last_good_at"]
-        if held is None or at > held:
-            store.update(key, last_good_usage=usage, last_good_at=at)
+        if not archive and usage is not None and at is not None:
+            held = store.account(key)["last_good_at"]
+            if held is None or at > held:
+                store.update(key, last_good_usage=usage, last_good_at=at)
 
 
 # ---- small helpers ----
@@ -747,7 +825,7 @@ def _summary(kind, counts, failures, code, settings):
     if failures and counts["left_out"]:
         return f"{text} {_count(len(failures), 'account')} could not be imported. {_left_out(counts['left_out'], 'was')} {NO_CODE}"
     if failures:
-        return f"{text} {_count(len(failures), 'account')} could not be imported. {CANCEL_HINT}"
+        return f"{text} {_count(len(failures), 'account')} could not be imported. {_failure_hint(failures)}"
     if settings:
         text += f" {_count(len(settings), 'setting')} now {'matches' if len(settings) == 1 else 'match'} the PC: {_listed(settings)}."
     if counts["left_out"]:

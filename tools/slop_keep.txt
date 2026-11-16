@@ -23,3 +23,5 @@ tests-only | accountdeck/server.py::log_message | overrides http.server's reques
 # Controls of the fake machine that tests drive.
 tests-only | accountdeck/procs.py::exit_process | test control of the fake process table: ends a process
 tests-only | accountdeck/providers/http.py::unregister_test_host | undoes register_test_host, the only way a safe-mode test reaches a loopback server
+unused | accountdeck/engine.py::_do_reset_status | Action handler selected by name in Engine.action.
+unused | accountdeck/engine.py::_do_reset_use | Action handler selected by name in Engine.action.
